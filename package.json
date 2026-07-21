@@ -1,0 +1,25 @@
+{
+  "name": "sprint-trainer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node node_modules/vite/bin/vite.js",
+    "build": "node node_modules/vite/bin/vite.js build",
+    "preview": "node node_modules/vite/bin/vite.js preview",
+    "extract-css": "node scripts/extract-css.mjs",
+    "cap:sync": "npm run build && node node_modules/@capacitor/cli/bin/capacitor sync",
+    "cap:ios": "node node_modules/@capacitor/cli/bin/capacitor open ios",
+    "cap:android": "node node_modules/@capacitor/cli/bin/capacitor open android"
+  },
+  "devDependencies": {
+    "vite": "^8.0.12"
+  },
+  "dependencies": {
+    "@capacitor-community/bluetooth-le": "^8.1.3",
+    "@capacitor/android": "^8.3.4",
+    "@capacitor/cli": "^8.3.4",
+    "@capacitor/core": "^8.3.4",
+    "@capacitor/ios": "^8.3.4"
+  }
+}

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" role="img" aria-label="10 Kicks Ring Ready icon">
+  <rect width="192" height="192" rx="38" fill="#0a0a0a"/>
+  <rect x="14" y="14" width="164" height="164" rx="28" fill="none" stroke="#f5c842" stroke-width="8"/>
+  <path d="M44 58h104v18H110v84H82V76H44z" fill="#f5c842"/>
+  <path d="M54 128c12-19 27-29 45-29 19 0 34 10 45 29" fill="none" stroke="#f0f0f0" stroke-width="10" stroke-linecap="round"/>
+  <path d="M62 144h68" stroke="#f5c842" stroke-width="10" stroke-linecap="round"/>
+  <circle cx="143" cy="143" r="9" fill="#3ecf6e"/>
+</svg>

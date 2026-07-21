@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="theme-color" content="#f5c842">
+  <meta name="description" content="Roadwork planning and sprint recovery tracking for 10 Kicks athletes.">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="./app-icon.svg">
+  <title>10 Kicks: Ring Ready</title>
+</head>
+<body>
+<div id="app">
+
+  <!-- HOME -->
+  <div id="home" class="screen active">
+    <div class="home-header">
+      <div class="home-brand">
+        <img class="home-brand-logo" src="./10-kicks-logo.jpg" alt="10 Kicks logo">
+        <div class="home-brand-copy">
+          <div class="logo-text">10 Kicks</div>
+          <div class="home-title-line"><div class="home-title">Ring Ready</div><button type="button" class="header-athlete-chip" id="header-athlete-name" data-page-target="athlete-profile" aria-label="Open athlete profile">Set Profile</button></div>
+        </div>
+      </div>
+      <div class="home-actions">
+        <button type="button" class="header-action" id="open-week-menu-btn" data-open-menu aria-label="Open app menu">MENU</button>
+        <button type="button" class="header-action" id="open-sprint-setup-btn" aria-label="Open sprint timer">TIMER</button>
+      </div>
+    </div>
+
+    <div class="home-body">
+      <section class="program-info" aria-label="Program information">
+        <div class="info-card info-card-feature">
+          <div class="field-label">Program Guide</div>
+          <h2>Roadwork built for fight camp.</h2>
+          <p>Use this app as the athlete-side version of the roadwork sheet: check the week, open the daily assignment, follow the target zone, and capture sprint recovery when the timer is used.</p>
+        </div>
+</section>
+
+      <section class="app-nav-grid" aria-label="App sections">
+        <button type="button" class="app-nav-card" data-page-target="welcome-page">
+          <span>Start Here</span>
+          <strong>Welcome</strong>
+        </button>
+        <button type="button" class="app-nav-card" data-page-target="sc-page">
+          <span>Strength</span>
+          <strong>S&amp;C</strong>
+        </button>
+      </section>
+      <section class="week-panel">
+        <div class="week-panel-head">
+          <button type="button" class="icon-btn" id="week-prev-btn" aria-label="Previous week">&lt;</button>
+          <div>
+            <div class="field-label">Weekly Plan</div>
+            <div class="week-title" id="current-week-label">Week 1</div>
+            <div class="week-focus" id="current-week-focus"></div>
+          </div>
+          <button type="button" class="icon-btn" id="week-next-btn" aria-label="Next week">&gt;</button>
+        </div>
+        <div class="week-workouts" id="week-workouts"></div>
+      </section>
+</div>
+  </div>
+
+
+  <!-- ATHLETE PROFILE PAGE -->
+  <div id="athlete-profile" class="screen app-page">
+    <div class="page-header">
+      <div class="page-actions">
+        <button type="button" class="header-action" data-page-target="home" aria-label="Back to home">HOME</button>
+        <button type="button" class="header-action" data-open-menu aria-label="Open app menu">MENU</button>
+      </div>
+      <div>
+        <div class="logo-text">10 Kicks</div>
+        <div class="page-title">Athlete Profile</div>
+      </div>
+    </div>
+    <div class="page-body">
+      <section class="page-hero profile-hero">
+        <div class="field-label">Your Profile</div>
+        <h2>Build your fight-camp profile.</h2>
+        <p>Add the basics that help personalize your plan, keep your sessions organized, and make your progress easy to track.</p>
+      </section>
+      <section class="profile-dashboard" id="profile-dashboard" aria-label="Athlete progress dashboard"></section>
+      <section class="page-panel profile-form-panel" id="profile-form-panel">
+        <div class="profile-panel-head">
+          <div class="info-kicker">Profile Info</div>
+          <button type="button" class="profile-toggle-btn" id="profile-form-toggle-btn" aria-expanded="true" aria-controls="profile-form-content">HIDE</button>
+        </div>
+        <div class="profile-form-content" id="profile-form-content">
+          <div class="input-grid compact-inputs profile-form-grid">
+          <label class="app-input-wrap" for="profile-athlete-name">
+            <span>Name</span>
+            <input type="text" id="profile-athlete-name" autocomplete="name" placeholder="First Last">
+          </label>
+          <label class="app-input-wrap" for="profile-age-input">
+            <span>Age</span>
+            <input type="number" id="profile-age-input" inputmode="numeric" min="0" placeholder="--">
+          </label>
+          <label class="app-input-wrap" for="profile-gender-select">
+            <span>Gender</span>
+            <select id="profile-gender-select">
+              <option value="">Select</option>
+              <option value="Female">Female</option>
+              <option value="Male">Male</option>
+              <option value="Non-binary">Non-binary</option>
+              <option value="Prefer not to say">Prefer not to say</option>
+              <option value="Self describe">Self describe</option>
+            </select>
+          </label>
+          <label class="app-input-wrap" for="profile-gender-detail-input">
+            <span>Gender Details</span>
+            <input type="text" id="profile-gender-detail-input" placeholder="Optional">
+          </label>
+          <label class="app-input-wrap" for="profile-tenure-select">
+            <span>Training Tenure</span>
+            <select id="profile-tenure-select">
+              <option value="">Select</option>
+              <option value="Less than 6 months">Less than 6 months</option>
+              <option value="6-12 months">6-12 months</option>
+              <option value="1-3 years">1-3 years</option>
+              <option value="3-5 years">3-5 years</option>
+              <option value="5+ years">5+ years</option>
+            </select>
+          </label>
+
+          <label class="app-input-wrap" for="profile-fight-date-input">
+            <span>Fight Date</span>
+            <input type="date" id="profile-fight-date-input">
+          </label>
+          <label class="app-input-wrap" for="profile-camp-length-select">
+            <span>Camp Length</span>
+            <select id="profile-camp-length-select">
+              <option value="7">7 Week Camp</option>
+              <option value="4">4 Week Camp</option>
+            </select>
+          </label>
+          </div>
+          <button type="button" class="start-btn page-save-btn" id="save-athlete-profile-btn">SAVE PROFILE</button>
+          <button type="button" class="profile-reset-btn" id="clear-test-data-btn">CLEAR LOCAL TEST DATA</button>
+        </div>
+      </section>
+    </div>
+  </div>
+  <!-- WELCOME PAGE -->
+  <div id="welcome-page" class="screen app-page">
+    <div class="page-header">
+      <div class="page-actions">
+        <button type="button" class="header-action" data-page-target="home" aria-label="Back to home">HOME</button>
+        <button type="button" class="header-action" data-open-menu aria-label="Open app menu">MENU</button>
+      </div>
+      <div>
+        <div class="logo-text">10 Kicks</div>
+        <div class="page-title">Welcome</div>
+      </div>
+    </div>
+    <div class="page-body">
+      <section class="page-hero">
+        <div class="field-label">Read First</div>
+        <h2>Everything athletes need, without opening the sheet.</h2>
+        <p>The old welcome tab is now an app page: system instructions, gear, cardio swaps, science notes, and nutrition reminders are all organized here.</p>
+      </section>
+      <div class="welcome-grid" id="welcome-content"></div>
+    </div>
+  </div>
+
+  <!-- HR INFO PAGE -->
+  <div id="hr-info" class="screen app-page">
+    <div class="page-header">
+      <div class="page-actions">
+        <button type="button" class="header-action" data-page-target="home" aria-label="Back to home">HOME</button>
+        <button type="button" class="header-action" data-open-menu aria-label="Open app menu">MENU</button>
+      </div>
+      <div>
+        <div class="logo-text">10 Kicks</div>
+        <div class="page-title">HR Info</div>
+      </div>
+    </div>
+    <div class="page-body">
+      <section class="page-hero hr-hero">
+        <div class="field-label">Your HR Info</div>
+        <h2>Set the numbers. The zones update here.</h2>
+        <p>These replace the yellow cells from the sheet. Max HR can come from the Mile Test, while resting HR helps calculate practical training zones.</p>
+      </section>
+      <section class="page-panel">
+        <div class="info-kicker">Editable Inputs</div>
+        <div class="input-grid compact-inputs">
+          <label class="app-input-wrap" for="hr-goal-weight-input">
+            <span>Goal Weight</span>
+            <input type="number" id="hr-goal-weight-input" inputmode="decimal">
+          </label>
+          <label class="app-input-wrap" for="hr-target-date-input">
+            <span>Target Date</span>
+            <input type="date" id="hr-target-date-input">
+          </label>
+          <label class="app-input-wrap" for="hr-max-input">
+            <span>Max HR</span>
+            <input type="number" id="hr-max-input" inputmode="numeric">
+          </label>
+          <label class="app-input-wrap" for="hr-resting-input">
+            <span>Resting HR</span>
+            <input type="number" id="hr-resting-input" inputmode="numeric">
+          </label>
+        </div>
+        <button type="button" class="start-btn page-save-btn" id="save-hr-info-btn">SAVE HR INFO</button>
+      </section>
+      <section class="page-panel">
+        <div class="info-kicker">Training Zones</div>
+        <div class="zone-list" id="hr-zone-list"></div>
+      </section>
+    </div>
+  </div>
+
+  <!-- S&C PAGE -->
+  <div id="sc-page" class="screen app-page">
+    <div class="page-header">
+      <div class="page-actions">
+        <button type="button" class="header-action" data-page-target="home" aria-label="Back to home">HOME</button>
+        <button type="button" class="header-action" data-open-menu aria-label="Open app menu">MENU</button>
+      </div>
+      <div>
+        <div class="logo-text">10 Kicks</div>
+        <div class="page-title">S&amp;C</div>
+      </div>
+    </div>
+    <div class="page-body">
+      <section class="page-hero sc-hero">
+        <div class="field-label">Strength &amp; Conditioning</div>
+        <h2>Pick your track, then follow the week.</h2>
+        <p>Choose the commercial gym plan or the calisthenics plan. RIR means reps in reserve: stop with that many clean reps still left.</p>
+      </section>
+      <section class="page-panel sc-controls">
+        <div class="segmented-row" aria-label="S&C modality">
+          <button type="button" class="segmented-btn" data-sc-mode="Gym Machines">GYM</button>
+          <button type="button" class="segmented-btn" data-sc-mode="Calisthenics">CALISTHENICS</button>
+        </div>
+        <div class="sc-week-tabs" id="sc-week-tabs" aria-label="S&C week selector"></div>
+      </section>
+      <div class="sc-session-list" id="sc-session-list"></div>
+    </div>
+  </div>
+
+  <!-- MILE TEST PAGE -->
+  <div id="mile-test-page" class="screen app-page">
+    <div class="page-header">
+      <div class="page-actions">
+        <button type="button" class="header-action" data-page-target="home" aria-label="Back to home">HOME</button>
+        <button type="button" class="header-action" data-open-menu aria-label="Open app menu">MENU</button>
+      </div>
+      <div>
+        <div class="logo-text">10 Kicks</div>
+        <div class="page-title">Mile Test</div>
+      </div>
+    </div>
+    <div class="page-body">
+      <section class="page-hero mile-hero">
+        <div class="field-label">Max HR Test</div>
+        <h2 id="mile-test-title">Mile Test</h2>
+        <p id="mile-test-desc"></p>
+      </section>
+      <section class="page-panel">
+        <div class="info-kicker">Test Instructions</div>
+        <div class="instruction-stack">
+          <div class="instruction-row"><span>When</span><strong id="mile-test-day"></strong></div>
+          <div class="instruction-row"><span>Warmup</span><strong id="mile-test-warmup"></strong></div>
+        </div>
+        <a class="secondary-link" id="mile-warmup-link" href="#" target="_blank" rel="noreferrer">WATCH WARMUP VIDEO</a>
+      </section>
+      <section class="page-panel">
+        <div class="info-kicker">Log Result</div>
+        <div class="input-grid compact-inputs">
+          <label class="app-input-wrap" for="mile-distance-input">
+            <span>Distance</span>
+            <input type="number" id="mile-distance-input" inputmode="decimal" step="0.01">
+          </label>
+          <label class="app-input-wrap" for="mile-time-input">
+            <span>Total Minutes</span>
+            <input type="number" id="mile-time-input" inputmode="decimal" step="0.01">
+          </label>
+          <label class="app-input-wrap" for="mile-avg-bpm-input">
+            <span>Average BPM</span>
+            <input type="number" id="mile-avg-bpm-input" inputmode="numeric">
+          </label>
+          <label class="app-input-wrap" for="mile-max-bpm-input">
+            <span>Max BPM</span>
+            <input type="number" id="mile-max-bpm-input" inputmode="numeric">
+          </label>
+        </div>
+        <button type="button" class="start-btn page-save-btn" id="save-mile-test-btn">SAVE MILE TEST</button>
+        <div class="last-result" id="mile-last-result"></div>
+      </section>
+      <section class="page-panel">
+        <div class="info-kicker">Suggested Locations</div>
+        <div class="location-list" id="mile-location-list"></div>
+      </section>
+    </div>
+  </div>
+  <!-- SETUP -->
+  <div id="setup" class="screen">
+    <div class="setup-header with-action">
+      <button type="button" class="header-action dark" id="setup-back-btn" aria-label="Back to home">HOME</button>
+      <div class="logo-text">10 Kicks</div>
+      <div class="setup-title">Ring<br>Ready</div>
+    </div>
+    <div class="setup-body">
+      <div class="field-group">
+        <div class="field-label">Intervals</div>
+        <div class="stepper">
+          <button type="button" data-adjust="reps" data-delta="-1" aria-label="Decrease intervals">-</button>
+          <div class="stepper-center">
+            <div class="stepper-val" id="reps-val">8</div>
+            <span class="stepper-unit">sprints</span>
+          </div>
+          <button type="button" data-adjust="reps" data-delta="1" aria-label="Increase intervals">+</button>
+        </div>
+      </div>
+
+      <div class="field-group">
+        <div class="field-label">Rest Between Sprints</div>
+        <div class="stepper">
+          <button type="button" data-adjust="rest" data-delta="-5" aria-label="Decrease rest">-</button>
+          <div class="stepper-center">
+            <div class="stepper-val" id="rest-val">90</div>
+            <span class="stepper-unit">seconds</span>
+          </div>
+          <button type="button" data-adjust="rest" data-delta="5" aria-label="Increase rest">+</button>
+        </div>
+      </div>
+
+      <div class="field-group">
+        <div class="field-label">Heart Rate Zones</div>
+        <div class="field-sublabel">Sets your target BPM display during session</div>
+        <div class="hr-row">
+          <div class="hr-input-wrap">
+            <label for="max-hr">Max HR</label>
+            <input type="number" id="max-hr" value="181" inputmode="numeric">
+          </div>
+          <div class="hr-input-wrap">
+            <label for="target-pct">Target %</label>
+            <input type="number" id="target-pct" value="90" inputmode="numeric">
+          </div>
+        </div>
+      </div>
+
+      <div class="field-group">
+        <div class="field-label">Heart Rate Monitor</div>
+        <div class="field-sublabel" id="hr-setup-copy">Optional. Works with most BLE chest straps on compatible Android/Desktop browsers. ANT+ is not supported. iPhone/iPad Safari uses manual HR entry.</div>
+        <div class="ble-row" id="ble-row">
+          <div class="ble-dot" id="ble-dot"></div>
+          <div class="ble-info">
+            <div class="ble-name" id="ble-name">Not Connected</div>
+            <div class="ble-status" id="ble-status">Manual HR entry will be used unless connected</div>
+          </div>
+          <button type="button" class="ble-btn" id="ble-btn" aria-label="Connect heart rate monitor">CONNECT</button>
+        </div>
+      </div>
+
+      <button type="button" class="start-btn" id="start-session-btn" aria-label="Start sprint session">START SESSION</button>
+    </div>
+  </div>
+
+
+  <!-- WORKOUT DETAIL -->
+  <div id="workout-detail" class="screen">
+    <div class="detail-header">
+      <button type="button" class="header-action" id="detail-back-btn" aria-label="Back to home">HOME</button>
+      <div class="detail-week" id="detail-week">Week / Day</div>
+      <div class="detail-title" id="detail-title">Workout</div>
+    </div>
+    <div class="detail-body">
+      <div class="detail-card primary">
+        <div class="field-label">Daily Workout</div>
+        <p id="detail-desc"></p>
+      </div>
+      <div class="detail-grid">
+        <div class="detail-card">
+          <div class="summary-label">Warmup</div>
+          <div class="detail-value" id="detail-warmup"></div>
+        </div>
+        <div class="detail-card">
+          <div class="summary-label">Target Zone</div>
+          <div class="detail-value" id="detail-zone"></div>
+        </div>
+        <div class="detail-card">
+          <div class="summary-label">Target BPM</div>
+          <div class="detail-value big" id="detail-bpm"></div>
+        </div>
+      </div>
+      <section class="detail-card detail-log-card" id="detail-log-card" hidden>
+        <div class="field-label">Workout Log</div>
+        <div class="input-grid compact-inputs">
+          <label class="app-input-wrap" for="detail-total-minutes-input">
+            <span>Total Time (MM:SS)</span>
+            <input type="text" id="detail-total-minutes-input" inputmode="text" autocomplete="off" placeholder="23:15">
+          </label>
+          <label class="app-input-wrap" for="detail-avg-bpm-input">
+            <span>Average HR</span>
+            <input type="text" id="detail-avg-bpm-input" inputmode="numeric" maxlength="3" pattern="[0-9]*" autocomplete="off">
+          </label>
+          <label class="app-input-wrap" for="detail-max-bpm-input">
+            <span>Max HR</span>
+            <input type="text" id="detail-max-bpm-input" inputmode="numeric" maxlength="3" pattern="[0-9]*" autocomplete="off">
+          </label>
+          <label class="app-input-wrap" for="detail-distance-input">
+            <span>Distance (mi)</span>
+            <input type="number" id="detail-distance-input" inputmode="decimal" step="0.01">
+          </label>
+        </div>
+      </section>
+      <div class="detail-actions">
+        <button type="button" class="start-btn" id="detail-action-btn">OPEN SPRINT TIMER</button>
+        <button type="button" class="secondary-danger-btn" id="detail-clear-completion-btn" hidden>CLEAR COMPLETION</button>
+      </div>
+    </div>
+  </div>
+  <!-- SESSION -->
+  <div id="session" class="screen">
+    <div class="session-top">
+      <div class="interval-counter">
+        <div class="interval-label">Interval</div>
+        <div class="interval-num" id="curr-interval">1</div>
+        <div class="interval-total" id="total-intervals">of 8</div>
+      </div>
+      <div class="session-right">
+        <div class="status-pill ready" id="status-pill">READY</div>
+        <div class="live-badge" id="live-badge" style="display:none">
+          <div class="live-badge-dot"></div>
+          <div class="live-badge-val" id="live-hr-val">--</div>
+          <div class="live-badge-label">BPM</div>
+        </div>
+        <div class="target-block">
+          <div class="interval-label" style="text-align:right">Target</div>
+          <div class="target-val" id="target-bpm-display">165</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="dots-row" id="dots-row"></div>
+
+    <div class="center-display">
+      <div class="timer-ring-wrap">
+        <svg viewBox="0 0 240 240" width="240" height="240">
+          <circle class="ring-bg" cx="120" cy="120" r="108"/>
+          <circle class="ring-progress rest-ring" id="ring" cx="120" cy="120" r="108"
+            stroke-dasharray="678.6" stroke-dashoffset="0"/>
+        </svg>
+        <div class="timer-inner">
+          <div class="timer-phase" id="timer-phase">PRESS GO</div>
+          <div class="timer-digits" id="timer-digits">GO</div>
+          <div class="timer-sub" id="timer-sub">tap to begin</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hr-strip">
+      <div class="hr-chip"><div class="hr-chip-label">Last Sprint HR</div><div class="hr-chip-val" id="chip-sprint">--</div></div>
+      <div class="hr-chip"><div class="hr-chip-label">Last Rest HR</div><div class="hr-chip-val" id="chip-rest">--</div></div>
+      <div class="hr-chip"><div class="hr-chip-label">Last Drop</div><div class="hr-chip-val" id="chip-drop">--</div></div>
+    </div>
+
+    <div class="main-btn-wrap">
+      <button type="button" class="main-btn btn-go" id="main-btn" aria-label="Start sprint or go">GO</button>
+      <button type="button" class="cancel-session-btn" id="cancel-session-btn" aria-label="Cancel session">CANCEL SESSION</button>
+    </div>
+  </div>
+
+  <!-- RESULTS -->
+  <div id="results" class="screen">
+    <div class="results-header">
+      <div class="logo-text">Session Complete</div>
+      <div class="results-title">Ring Ready<br>Results</div>
+      <div class="results-sub" id="results-date"></div>
+    </div>
+    <div class="results-body" id="results-body"></div>
+    <div class="results-actions">
+      <button type="button" class="complete-workout-btn" id="complete-workout-btn" aria-label="Mark workout complete">COMPLETE WORKOUT</button>
+      <button type="button" class="secondary-danger-btn" id="clear-result-completion-btn" hidden>MARK WORKOUT INCOMPLETE</button>
+      <button type="button" class="copy-btn" id="copy-results-btn" aria-label="Copy session data to clipboard">COPY DATA TO CLIPBOARD</button>
+      <button type="button" class="new-session-btn" id="new-session-btn" aria-label="Start new session">NEW SESSION</button>
+    </div>
+  </div>
+
+  <div class="drawer-backdrop" id="week-drawer-backdrop"></div>
+  <aside class="week-drawer" id="week-drawer" aria-hidden="true" aria-label="App navigation">
+    <div class="drawer-head">
+      <div>
+        <div class="field-label">Navigation</div>
+        <div class="drawer-title">Ring Ready</div>
+      </div>
+      <button type="button" class="icon-btn" id="close-week-menu-btn" aria-label="Close app menu">X</button>
+    </div>
+    <div class="drawer-page-list">
+      <button type="button" class="drawer-page-btn" data-page-target="home">Home</button>
+      <button type="button" class="drawer-page-btn" data-page-target="athlete-profile">Profile</button>
+      <button type="button" class="drawer-page-btn" data-page-target="welcome-page">Welcome</button>
+      <button type="button" class="drawer-page-btn" data-page-target="hr-info">HR Info</button>
+      <button type="button" class="drawer-page-btn" data-page-target="sc-page">S&amp;C</button>
+      <button type="button" class="drawer-page-btn" data-page-target="mile-test-page">Mile Test</button>
+    </div>
+    <div class="drawer-section-label">Training Weeks</div>
+    <div class="drawer-week-list" id="drawer-week-list"></div>
+  </aside>
+</div>
+
+<!-- HR MODAL -->
+<div id="hr-modal">
+  <div class="hr-modal-sheet">
+    <div class="modal-title" id="modal-title">Interval 1 Complete</div>
+    <div class="modal-sub" id="modal-sub">Enter your heart rate readings</div>
+    <div class="modal-inputs">
+      <div class="modal-input-wrap" id="wrap-sprint-hr">
+        <label for="modal-sprint-hr">Sprint HR</label>
+        <input type="number" id="modal-sprint-hr" inputmode="numeric" placeholder="--">
+      </div>
+      <div class="modal-input-wrap" id="wrap-rest-hr" style="opacity:0.35">
+        <label for="modal-rest-hr">Rest HR @ 60s</label>
+        <input type="number" id="modal-rest-hr" inputmode="numeric" placeholder="--" disabled>
+      </div>
+    </div>
+    <button type="button" class="modal-confirm" id="modal-confirm-btn" aria-label="Confirm heart rate readings">CONFIRM</button>
+    <button type="button" class="export-close-btn" id="modal-cancel-btn" aria-label="Cancel session">CANCEL SESSION</button>
+  </div>
+</div>
+
+<!-- EXPORT MODAL -->
+<div id="export-modal">
+  <div class="export-modal-sheet">
+    <div class="modal-title">Copy Session Data</div>
+    <div class="modal-sub">Clipboard unavailable. Select the text below and copy manually.</div>
+    <textarea id="export-text" readonly aria-label="Session export data"></textarea>
+    <button type="button" class="modal-confirm" id="export-select-btn" aria-label="Select all export text">SELECT ALL</button>
+    <button type="button" class="export-close-btn" id="export-close-btn" aria-label="Close export modal">CLOSE</button>
+  </div>
+</div>
+
+<div class="onboarding-modal" id="onboarding-modal" hidden aria-hidden="true" role="dialog" aria-labelledby="onboarding-title">
+  <div class="onboarding-sheet">
+    <div class="field-label">Start Here</div>
+    <h2 id="onboarding-title">Set up Ring Ready</h2>
+    <p>Build your profile, set your heart-rate numbers, then start Week 1.</p>
+    <div class="onboarding-steps">
+      <button type="button" id="onboarding-profile-btn"><span>1</span><strong>Build Profile</strong><em>Name, camp length, fight date.</em></button>
+      <button type="button" id="onboarding-hr-btn"><span>2</span><strong>Set HR Info</strong><em>Max HR and resting HR.</em></button>
+      <button type="button" id="onboarding-home-btn"><span>3</span><strong>Start Week 1</strong><em>Open the first workout.</em></button>
+    </div>
+    <button type="button" class="onboarding-close-btn" id="onboarding-close-btn">GOT IT</button>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>

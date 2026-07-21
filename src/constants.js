@@ -1,0 +1,13 @@
+﻿export const CIRCUMFERENCE = 2 * Math.PI * 108;
+export const APP_NAME = '10 Kicks: Ring Ready';
+export const STORAGE_KEY = 'sprintTrainerHistory';
+export const WORKOUT_COMPLETIONS_STORAGE_KEY = 'ringReadyWorkoutCompletions';
+export const PROFILE_STORAGE_KEY = 'ringReadyAthleteProfile';
+export const SYNC_QUEUE_KEY = 'ringReadySyncQueue';
+export const SYNC_ENDPOINT_KEY = 'ringReadySheetsEndpoint';
+export const HR_STALE_MS = 10000;
+export const AUTO_START_NEXT_SPRINT = true;
+export const AUTO_START_DELAY_MS = 3000;
+export const REST_CAPTURE_SEC = 60;
+export const REST_COMPLETE_BEEP_HZ = 880;
+export const REST_COMPLETE_BEEP_MS = 300;
