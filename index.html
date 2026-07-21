@@ -15,8 +15,31 @@
 <body>
 <div id="app">
 
+  
+  <!-- AUTH -->
+  <div id="auth" class="screen active auth-screen">
+    <div class="auth-card">
+      <img class="auth-logo" src="./10-kicks-logo.jpg" alt="10 Kicks logo">
+      <div class="logo-text">10 Kicks</div>
+      <h1>Ring Ready</h1>
+      <p id="auth-copy">Sign in to save your profile and training history to your account.</p>
+      <form id="auth-form" class="auth-form">
+        <label class="app-input-wrap" for="auth-email-input">
+          <span>Email</span>
+          <input type="email" id="auth-email-input" autocomplete="email" placeholder="fighter@email.com" required>
+        </label>
+        <label class="app-input-wrap" for="auth-password-input">
+          <span>Password</span>
+          <input type="password" id="auth-password-input" autocomplete="current-password" placeholder="8+ characters" minlength="8" required>
+        </label>
+        <button type="submit" class="start-btn auth-submit-btn" id="auth-submit-btn">SIGN IN</button>
+      </form>
+      <button type="button" class="auth-switch-btn" id="auth-mode-toggle-btn">Create an account instead</button>
+      <div class="auth-status" id="auth-status" role="status"></div>
+    </div>
+  </div>
   <!-- HOME -->
-  <div id="home" class="screen active">
+  <div id="home" class="screen">
     <div class="home-header">
       <div class="home-brand">
         <img class="home-brand-logo" src="./10-kicks-logo.jpg" alt="10 Kicks logo">
@@ -141,6 +164,7 @@
           </div>
           <button type="button" class="start-btn page-save-btn" id="save-athlete-profile-btn">SAVE PROFILE</button>
           <button type="button" class="profile-reset-btn" id="clear-test-data-btn">CLEAR LOCAL TEST DATA</button>
+          <button type="button" class="profile-reset-btn logout-btn" id="logout-btn">LOG OUT</button>
         </div>
       </section>
     </div>
