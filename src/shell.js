@@ -181,24 +181,42 @@ async function hydrateCloudData() {
   const localSessions = getSessionHistory();
   const localMileTest = getMileTestResult();
 
-  const [cloudProfile, cloudHRInfo, cloudCompletions, cloudSessions, cloudMileTest] = await Promise.all([
+  const cloudResults = await Promise.allSettled([
     loadCloudProfile(),
     loadCloudHRInfo(),
     loadCloudWorkoutCompletions(),
     loadCloudSprintSessions(),
     loadCloudMileTest(),
   ]);
+  const readCloudResult = (result, fallback, label) => {
+    if (result.status === 'fulfilled') return result.value ?? fallback;
+    console.warn(`Cloud ${label} load failed`, result.reason);
+    return fallback;
+  };
+  const cloudProfile = readCloudResult(cloudResults[0], null, 'profile');
+  const cloudHRInfo = readCloudResult(cloudResults[1], null, 'HR info');
+  const cloudCompletions = readCloudResult(cloudResults[2], {}, 'workout completions');
+  const cloudSessions = readCloudResult(cloudResults[3], [], 'sprint sessions');
+  const cloudMileTest = readCloudResult(cloudResults[4], null, 'mile test');
 
   if (cloudProfile && hasProfileData(cloudProfile)) {
     saveAthleteProfile(cloudProfile);
   } else if (hasProfileData(localProfile)) {
-    await saveCloudProfile(localProfile);
+    try {
+      await saveCloudProfile(localProfile);
+    } catch (error) {
+      console.warn('Cloud profile backfill failed', error);
+    }
   }
 
   if (cloudHRInfo && hasCustomHRInfo(cloudHRInfo)) {
     saveHRInfo({ ...HR_INFO_DEFAULTS, ...cloudHRInfo });
   } else if (hasCustomHRInfo(localHRInfo)) {
-    await saveCloudHRInfo(localHRInfo);
+    try {
+      await saveCloudHRInfo(localHRInfo);
+    } catch (error) {
+      console.warn('Cloud HR info backfill failed', error);
+    }
   }
 
   const mergedCompletions = mergeWorkoutCompletions(localCompletions, cloudCompletions);
@@ -260,8 +278,8 @@ async function handleLogout() {
     shellHooks?.showToast?.(cleanAuthError(error).toUpperCase());
   }
 }
-function handleAuthStateChange(session) {
-  if (!session && isSupabaseConfigured) showAuthScreen();
+function handleAuthStateChange(session, event) {
+  if (event === 'SIGNED_OUT' && isSupabaseConfigured) showAuthScreen();
 }
 function formatDistance(value) { const num = Number(value); if (!Number.isFinite(num) || num <= 0) return '--'; return num >= 10 ? num.toFixed(1) : num.toFixed(2); }
 function formatDashboardDate(value) {

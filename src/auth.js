@@ -247,9 +247,10 @@ export async function initSupabaseAuth(onChange) {
   currentSession = data.session || null;
 
   if (!authSubscription) {
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'INITIAL_SESSION') return;
       currentSession = session || null;
-      onChange?.(currentSession);
+      onChange?.(currentSession, event);
     });
     authSubscription = listener.subscription;
   }
