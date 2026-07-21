@@ -35,7 +35,7 @@ async function init() {
   registerServiceWorker();
   initPWAInstall();
   initSyncControls({ showToast });
-  initAthleteShell({ showToast, showScreen, setWorkoutContext, showSavedWorkoutResult });
+  await initAthleteShell({ showToast, showScreen, setWorkoutContext, showSavedWorkoutResult });
 
   registerMainHandlers({ handleMainBtn, handleSprintDone });
 

@@ -26,6 +26,18 @@ import {
   saveAthleteProfile,
 } from './sync.js';
 import { getWorkoutCompletion, removeWorkoutCompletion, saveWorkoutCompletion } from './storage.js';
+import {
+  getCurrentUser,
+  initSupabaseAuth,
+  loadCloudHRInfo,
+  loadCloudProfile,
+  saveCloudHRInfo,
+  saveCloudProfile,
+  signInWithEmail,
+  signOut,
+  signUpWithEmail,
+} from './auth.js';
+import { isSupabaseConfigured } from './supabase-client.js';
 
 const WEEK_INDEX_KEY = 'ringReadyActiveWeekIndex';
 const PROFILE_FORM_COLLAPSED_KEY = 'ringReadyProfileFormCollapsed';
@@ -35,6 +47,7 @@ let activeWeekIndex = Number(localStorage.getItem(WEEK_INDEX_KEY) || 0);
 let scMode = localStorage.getItem(SC_MODE_STORAGE_KEY) || 'Gym Machines';
 let scWeek = Number(localStorage.getItem(SC_WEEK_STORAGE_KEY) || activeWeekIndex + 1);
 let shellHooks = null;
+let authMode = 'sign-in';
 
 function readJSON(key, fallback) {
   try { return JSON.parse(localStorage.getItem(key) || JSON.stringify(fallback)); }
@@ -54,6 +67,122 @@ function parseNumberInput(id, fallback) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 function formatWholeNumber(value, fallback = '--') { const num = Number(value); return Number.isFinite(num) && num > 0 ? String(Math.round(num)) : fallback; }
+function cleanAuthError(error) {
+  const message = String(error?.message || error || 'Account action failed.');
+  if (/invalid login credentials/i.test(message)) return 'Email or password did not match.';
+  if (/email not confirmed/i.test(message)) return 'Check your email to confirm this account, then sign in.';
+  return message;
+}
+function hasProfileData(profile = {}) {
+  return ['athleteName', 'age', 'gender', 'genderDetail', 'trainingTenure', 'fightDate'].some((key) => String(profile[key] || '').trim()) || String(profile.campLength || '') === '4';
+}
+function hasCustomHRInfo(hrInfo = {}) {
+  return Number(hrInfo.goalWeight) !== Number(HR_INFO_DEFAULTS.goalWeight)
+    || String(hrInfo.targetDate || '') !== String(HR_INFO_DEFAULTS.targetDate)
+    || Number(hrInfo.maxHr) !== Number(HR_INFO_DEFAULTS.maxHr)
+    || Number(hrInfo.restingHr) !== Number(HR_INFO_DEFAULTS.restingHr);
+}
+function setAuthStatus(message = '', isError = false) {
+  const el = document.getElementById('auth-status');
+  if (!el) return;
+  el.textContent = message;
+  el.classList.toggle('error', isError);
+}
+function renderAuthUI() {
+  const isSignUp = authMode === 'sign-up';
+  setText('auth-copy', isSignUp ? 'Create your Ring Ready account so your profile can follow you across devices.' : 'Sign in to save your profile and training history to your account.');
+  setText('auth-submit-btn', isSignUp ? 'CREATE ACCOUNT' : 'SIGN IN');
+  setText('auth-mode-toggle-btn', isSignUp ? 'Already have an account? Sign in' : 'Create an account instead');
+  const password = document.getElementById('auth-password-input');
+  if (password) password.autocomplete = isSignUp ? 'new-password' : 'current-password';
+}
+function renderAllPages() {
+  renderShell();
+  renderAthleteProfilePage();
+  renderWelcomePage();
+  renderHRInfoPage();
+  renderSCPage();
+  renderMileTestPage();
+}
+function enterAppHome() {
+  renderAllPages();
+  shellHooks?.showScreen('home');
+  setActiveNavigation('home');
+  maybeShowOnboarding();
+}
+function showAuthScreen(message = '') {
+  renderAuthUI();
+  setAuthStatus(message);
+  shellHooks?.showScreen('auth');
+  setActiveNavigation('');
+}
+async function hydrateCloudData() {
+  if (!isSupabaseConfigured || !getCurrentUser()) return;
+  const localProfile = getAthleteProfile();
+  const localHRInfo = getHRInfo();
+  const [cloudProfile, cloudHRInfo] = await Promise.all([loadCloudProfile(), loadCloudHRInfo()]);
+
+  if (cloudProfile && hasProfileData(cloudProfile)) {
+    saveAthleteProfile(cloudProfile);
+  } else if (hasProfileData(localProfile)) {
+    await saveCloudProfile(localProfile);
+  }
+
+  if (cloudHRInfo && hasCustomHRInfo(cloudHRInfo)) {
+    saveHRInfo({ ...HR_INFO_DEFAULTS, ...cloudHRInfo });
+  } else if (hasCustomHRInfo(localHRInfo)) {
+    await saveCloudHRInfo(localHRInfo);
+  }
+}
+async function handleAuthSubmit(event) {
+  event.preventDefault();
+  if (!isSupabaseConfigured) {
+    enterAppHome();
+    return;
+  }
+  const email = readInputValue('auth-email-input');
+  const password = readInputValue('auth-password-input');
+  if (!email || password.length < 8) {
+    setAuthStatus('Enter an email and password with at least 8 characters.', true);
+    return;
+  }
+
+  const submit = document.getElementById('auth-submit-btn');
+  if (submit) submit.disabled = true;
+  setAuthStatus(authMode === 'sign-up' ? 'Creating account...' : 'Signing in...');
+  try {
+    const result = authMode === 'sign-up' ? await signUpWithEmail(email, password) : await signInWithEmail(email, password);
+    if (!result.session && !getCurrentUser()) {
+      authMode = 'sign-in';
+      renderAuthUI();
+      setAuthStatus('Check your email to confirm the account, then sign in.');
+      return;
+    }
+    await hydrateCloudData();
+    enterAppHome();
+    shellHooks?.showToast?.(authMode === 'sign-up' ? 'ACCOUNT CREATED' : 'SIGNED IN');
+  } catch (error) {
+    setAuthStatus(cleanAuthError(error), true);
+  } finally {
+    if (submit) submit.disabled = false;
+  }
+}
+function toggleAuthMode() {
+  authMode = authMode === 'sign-up' ? 'sign-in' : 'sign-up';
+  renderAuthUI();
+  setAuthStatus('');
+}
+async function handleLogout() {
+  try {
+    await signOut();
+    showAuthScreen('Signed out.');
+  } catch (error) {
+    shellHooks?.showToast?.(cleanAuthError(error).toUpperCase());
+  }
+}
+function handleAuthStateChange(session) {
+  if (!session && isSupabaseConfigured) showAuthScreen();
+}
 function formatDistance(value) { const num = Number(value); if (!Number.isFinite(num) || num <= 0) return '--'; return num >= 10 ? num.toFixed(1) : num.toFixed(2); }
 function formatDashboardDate(value) {
   if (!value) return '--';
@@ -355,8 +484,8 @@ function clearLocalTestData() {
   maybeShowOnboarding();
   shellHooks?.showToast?.('LOCAL TEST DATA CLEARED');
 }
-function saveAthleteProfileFromInputs() {
-  const profile = saveAthleteProfile({
+async function saveAthleteProfileFromInputs() {
+  let profile = saveAthleteProfile({
     athleteName: readInputValue('profile-athlete-name'),
     age: readInputValue('profile-age-input'),
     gender: readInputValue('profile-gender-select'),
@@ -367,6 +496,19 @@ function saveAthleteProfileFromInputs() {
     fightDate: readInputValue('profile-fight-date-input'),
     campLength: readInputValue('profile-camp-length-select') || '7',
   });
+
+  let cloudSaved = false;
+  if (profile.athleteName && isSupabaseConfigured && getCurrentUser()) {
+    try {
+      const cloudProfile = await saveCloudProfile(profile);
+      if (cloudProfile) profile = saveAthleteProfile(cloudProfile);
+      cloudSaved = true;
+    } catch (error) {
+      console.warn('Cloud profile save failed', error);
+      shellHooks?.showToast?.('PROFILE SAVED LOCALLY');
+    }
+  }
+
   if (profile.athleteName) {
     localStorage.setItem(PROFILE_FORM_COLLAPSED_KEY, '1');
     enqueueProfileForSync(profile);
@@ -378,7 +520,8 @@ function saveAthleteProfileFromInputs() {
   renderShell();
   renderSCPage();
   maybeShowOnboarding();
-  shellHooks?.showToast?.(profile.athleteName ? `PROFILE SAVED - ${profile.campLength} WEEK CAMP` : 'PROFILE SAVED - NAME STILL BLANK');
+  if (!profile.athleteName) shellHooks?.showToast?.('PROFILE SAVED - NAME STILL BLANK');
+  else shellHooks?.showToast?.(cloudSaved ? `PROFILE SAVED TO ACCOUNT - ${profile.campLength} WEEK CAMP` : `PROFILE SAVED - ${profile.campLength} WEEK CAMP`);
 }
 function workoutTag(workout) {
   if (workout.action === 'sprint') return 'Timer Ready';
@@ -428,13 +571,32 @@ function renderHRInfoPage() {
   if (root) root.innerHTML = HR_ZONES.map((zone, index) => `<div class="zone-row zone-row-${index}"><div><span>${escapeHTML(zone.label)}</span><strong>${calculateZoneBPM(zone, hrInfo)} bpm</strong></div><em>${escapeHTML(zone.uses.join(' / '))}</em></div>`).join('');
   syncSetupHRInputs(hrInfo);
 }
-function saveHRInfoFromInputs() {
-  const hrInfo = saveHRInfo({ goalWeight: parseNumberInput('hr-goal-weight-input', HR_INFO_DEFAULTS.goalWeight), targetDate: readInputValue('hr-target-date-input') || HR_INFO_DEFAULTS.targetDate, maxHr: parseNumberInput('hr-max-input', HR_INFO_DEFAULTS.maxHr), restingHr: parseNumberInput('hr-resting-input', HR_INFO_DEFAULTS.restingHr) });
+async function saveHRInfoFromInputs() {
+  let hrInfo = saveHRInfo({
+    goalWeight: parseNumberInput('hr-goal-weight-input', HR_INFO_DEFAULTS.goalWeight),
+    targetDate: readInputValue('hr-target-date-input') || HR_INFO_DEFAULTS.targetDate,
+    maxHr: parseNumberInput('hr-max-input', HR_INFO_DEFAULTS.maxHr),
+    restingHr: parseNumberInput('hr-resting-input', HR_INFO_DEFAULTS.restingHr),
+  });
+
+  let cloudSaved = false;
+  if (isSupabaseConfigured && getCurrentUser()) {
+    try {
+      const cloudHRInfo = await saveCloudHRInfo(hrInfo);
+      if (cloudHRInfo) hrInfo = saveHRInfo({ ...HR_INFO_DEFAULTS, ...cloudHRInfo });
+      cloudSaved = true;
+    } catch (error) {
+      console.warn('Cloud HR info save failed', error);
+      shellHooks?.showToast?.('HR INFO SAVED LOCALLY');
+    }
+  }
+
   enqueueHRInfoForSync(hrInfo);
   flushQueuedEvent('HR INFO SYNCED');
   renderHRInfoPage();
   renderShell();
-  shellHooks?.showToast?.('HR INFO SAVED');
+  renderAthleteProfileDashboard();
+  shellHooks?.showToast?.(cloudSaved ? 'HR INFO SAVED TO ACCOUNT' : 'HR INFO SAVED');
 }
 function renderSCPage() {
   scWeek = clampSCWeek(scWeek);
@@ -569,6 +731,9 @@ function openWorkoutDetail(weekIndex, workoutIndex) {
   setActiveNavigation('');
 }
 function bindShellEvents() {
+  document.getElementById('auth-form')?.addEventListener('submit', handleAuthSubmit);
+  document.getElementById('auth-mode-toggle-btn')?.addEventListener('click', toggleAuthMode);
+  document.getElementById('logout-btn')?.addEventListener('click', handleLogout);
   document.getElementById('week-prev-btn')?.addEventListener('click', () => { saveWeek(activeWeekIndex - 1); scWeek = activeWeekIndex + 1; renderShell(); renderSCPage(); });
   document.getElementById('week-next-btn')?.addEventListener('click', () => { saveWeek(activeWeekIndex + 1); scWeek = activeWeekIndex + 1; renderShell(); renderSCPage(); });
   document.addEventListener('click', (event) => { const pageBtn = event.target.closest('[data-page-target]'); if (!pageBtn) return; event.preventDefault(); navigateTo(pageBtn.dataset.pageTarget); });
@@ -617,18 +782,31 @@ function bindShellEvents() {
   document.getElementById('onboarding-home-btn')?.addEventListener('click', () => { dismissOnboarding(); navigateTo('home'); });
   document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeWeekDrawer(); });
 }
-export function initAthleteShell(hooks) {
+export async function initAthleteShell(hooks) {
   shellHooks = hooks;
   saveWeek(activeWeekIndex);
   scWeek = clampSCWeek(scWeek);
   bindShellEvents();
   window.addEventListener('ringready:workout-completed', () => { renderShell(); renderAthleteProfileDashboard(); });
-  renderShell();
-  renderAthleteProfilePage();
-  renderWelcomePage();
-  renderHRInfoPage();
-  renderSCPage();
-  renderMileTestPage();
-  setActiveNavigation('home');
-  maybeShowOnboarding();
+
+  renderAllPages();
+  renderAuthUI();
+
+  if (!isSupabaseConfigured) {
+    enterAppHome();
+    return;
+  }
+
+  try {
+    const session = await initSupabaseAuth(handleAuthStateChange);
+    if (!session) {
+      showAuthScreen();
+      return;
+    }
+    await hydrateCloudData();
+    enterAppHome();
+  } catch (error) {
+    console.warn('Supabase auth init failed', error);
+    showAuthScreen('Could not connect to accounts. Try refreshing in a moment.');
+  }
 }
