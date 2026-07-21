@@ -457,6 +457,7 @@ export function finishSession() {
   setMainBtn('disabled', 'COMPLETE');
   vibrate([100, 50, 100, 50, 200]);
   activeResultRecord = saveSessionToHistory(cfg, state.data);
+  window.dispatchEvent(new CustomEvent('ringready:sprint-session-saved', { detail: activeResultRecord }));
   enqueueSessionForSync(cfg, state.data);
   flushSyncQueue().then((result) => {
     if (result.sent > 0) showToast('SESSION SYNCED');
@@ -623,7 +624,7 @@ export function clearResultWorkoutCompletion() {
   delete activeResultRecord.completedAt;
   delete activeResultRecord.completionKey;
   updateCompleteWorkoutButton(activeResultRecord);
-  window.dispatchEvent(new CustomEvent('ringready:workout-completed'));
+  window.dispatchEvent(new CustomEvent('ringready:workout-completion-cleared', { detail: { weekIndex: context.weekIndex, workoutIndex: context.workoutIndex } }));
   showToast('WORKOUT MARKED INCOMPLETE');
 }
 

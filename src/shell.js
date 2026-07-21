@@ -1,38 +1,17 @@
 import {
-  PROFILE_STORAGE_KEY,
-  STORAGE_KEY,
-  SYNC_QUEUE_KEY,
-  WORKOUT_COMPLETIONS_STORAGE_KEY,
-} from './constants.js';
-import { PROGRAM, getWeek } from './program.js';
-import {
-  HR_INFO_DEFAULTS,
-  HR_INFO_STORAGE_KEY,
-  HR_ZONES,
-  MILE_TEST_INFO,
-  MILE_TEST_STORAGE_KEY,
-  SC_MODE_STORAGE_KEY,
-  SC_SESSIONS,
-  SC_WEEK_STORAGE_KEY,
-  WELCOME_SECTIONS,
-} from './app-content.js';
-import {
-  enqueueDailyWorkoutForSync,
-  enqueueHRInfoForSync,
-  enqueueMileTestForSync,
-  enqueueProfileForSync,
-  flushSyncQueue,
-  getAthleteProfile,
-  saveAthleteProfile,
-} from './sync.js';
-import { getWorkoutCompletion, removeWorkoutCompletion, saveWorkoutCompletion } from './storage.js';
-import {
+  deleteCloudWorkoutCompletion,
   getCurrentUser,
   initSupabaseAuth,
   loadCloudHRInfo,
+  loadCloudMileTest,
   loadCloudProfile,
+  loadCloudSprintSessions,
+  loadCloudWorkoutCompletions,
   saveCloudHRInfo,
+  saveCloudMileTest,
   saveCloudProfile,
+  saveCloudSprintSession,
+  saveCloudWorkoutCompletion,
   signInWithEmail,
   signOut,
   signUpWithEmail,
@@ -42,6 +21,7 @@ import { isSupabaseConfigured } from './supabase-client.js';
 const WEEK_INDEX_KEY = 'ringReadyActiveWeekIndex';
 const PROFILE_FORM_COLLAPSED_KEY = 'ringReadyProfileFormCollapsed';
 const ONBOARDING_DISMISSED_KEY = 'ringReadyOnboardingDismissed';
+const AUTH_USER_STORAGE_KEY = 'ringReadyAuthUserId';
 
 let activeWeekIndex = Number(localStorage.getItem(WEEK_INDEX_KEY) || 0);
 let scMode = localStorage.getItem(SC_MODE_STORAGE_KEY) || 'Gym Machines';
@@ -82,6 +62,78 @@ function hasCustomHRInfo(hrInfo = {}) {
     || Number(hrInfo.maxHr) !== Number(HR_INFO_DEFAULTS.maxHr)
     || Number(hrInfo.restingHr) !== Number(HR_INFO_DEFAULTS.restingHr);
 }
+function getCloudTimestamp(record) {
+  const value = record?.completedAt || record?.savedAt || record?.date || record?.workoutLog?.completedAt || '';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? 0 : date.getTime();
+}
+function clearAccountLocalData() {
+  [PROFILE_STORAGE_KEY, STORAGE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY, HR_INFO_STORAGE_KEY, MILE_TEST_STORAGE_KEY, PROFILE_FORM_COLLAPSED_KEY].forEach((key) => localStorage.removeItem(key));
+}
+function mergeWorkoutCompletions(localCompletions = {}, cloudCompletions = {}) {
+  const merged = { ...localCompletions };
+  Object.entries(cloudCompletions || {}).forEach(([key, cloudRecord]) => {
+    const localRecord = merged[key];
+    if (!localRecord || getCloudTimestamp(cloudRecord) >= getCloudTimestamp(localRecord)) merged[key] = cloudRecord;
+  });
+  return merged;
+}
+function mergeSprintSessions(localSessions = [], cloudSessions = []) {
+  const byId = new Map();
+  [...cloudSessions, ...localSessions].forEach((record) => {
+    if (!record) return;
+    const id = String(record.id || record.sessionId || record.date || Math.random());
+    const existing = byId.get(id);
+    if (!existing || getCloudTimestamp(record) >= getCloudTimestamp(existing)) byId.set(id, record);
+  });
+  return Array.from(byId.values()).sort((a, b) => getCloudTimestamp(b) - getCloudTimestamp(a)).slice(0, 50);
+}
+function chooseLatestMileResult(localResult, cloudResult) {
+  if (!localResult) return cloudResult || null;
+  if (!cloudResult) return localResult;
+  return getCloudTimestamp(cloudResult) >= getCloudTimestamp(localResult) ? cloudResult : localResult;
+}
+async function saveTrainingDataToCloud({ completions = {}, sessions = [], mileTest = null } = {}) {
+  if (!isSupabaseConfigured || !getCurrentUser()) return;
+  const saves = [
+    ...Object.values(completions).filter(Boolean).map((record) => saveCloudWorkoutCompletion(record)),
+    ...sessions.filter(Boolean).map((record) => saveCloudSprintSession(record)),
+  ];
+  if (mileTest) saves.push(saveCloudMileTest(mileTest, getHRInfo(), { weekTab: 'Mile Test', workoutType: MILE_TEST_INFO.workout, dayOfWeek: MILE_TEST_INFO.day, description: MILE_TEST_INFO.description, warmup: MILE_TEST_INFO.warmup }));
+  const results = await Promise.allSettled(saves);
+  results.filter((result) => result.status === 'rejected').forEach((result) => console.warn('Cloud training save failed', result.reason));
+}
+async function saveWorkoutCompletionToCloud(record, successMessage = '') {
+  if (!record || !isSupabaseConfigured || !getCurrentUser()) return false;
+  try {
+    await saveCloudWorkoutCompletion(record);
+    if (successMessage) shellHooks?.showToast?.(successMessage);
+    return true;
+  } catch (error) {
+    console.warn('Cloud workout completion save failed', error);
+    return false;
+  }
+}
+async function deleteWorkoutCompletionFromCloud(weekIndex, workoutIndex) {
+  if (!isSupabaseConfigured || !getCurrentUser()) return false;
+  try {
+    await deleteCloudWorkoutCompletion(weekIndex, workoutIndex);
+    return true;
+  } catch (error) {
+    console.warn('Cloud workout completion delete failed', error);
+    return false;
+  }
+}
+async function saveSprintSessionToCloud(record) {
+  if (!record || !isSupabaseConfigured || !getCurrentUser()) return false;
+  try {
+    await saveCloudSprintSession(record);
+    return true;
+  } catch (error) {
+    console.warn('Cloud sprint session save failed', error);
+    return false;
+  }
+}
 function setAuthStatus(message = '', isError = false) {
   const el = document.getElementById('auth-status');
   if (!el) return;
@@ -118,9 +170,24 @@ function showAuthScreen(message = '') {
 }
 async function hydrateCloudData() {
   if (!isSupabaseConfigured || !getCurrentUser()) return;
+  const user = getCurrentUser();
+  const lastUserId = localStorage.getItem(AUTH_USER_STORAGE_KEY);
+  if (lastUserId && lastUserId !== user.id) clearAccountLocalData();
+  localStorage.setItem(AUTH_USER_STORAGE_KEY, user.id);
+
   const localProfile = getAthleteProfile();
   const localHRInfo = getHRInfo();
-  const [cloudProfile, cloudHRInfo] = await Promise.all([loadCloudProfile(), loadCloudHRInfo()]);
+  const localCompletions = readJSON(WORKOUT_COMPLETIONS_STORAGE_KEY, {});
+  const localSessions = getSessionHistory();
+  const localMileTest = getMileTestResult();
+
+  const [cloudProfile, cloudHRInfo, cloudCompletions, cloudSessions, cloudMileTest] = await Promise.all([
+    loadCloudProfile(),
+    loadCloudHRInfo(),
+    loadCloudWorkoutCompletions(),
+    loadCloudSprintSessions(),
+    loadCloudMileTest(),
+  ]);
 
   if (cloudProfile && hasProfileData(cloudProfile)) {
     saveAthleteProfile(cloudProfile);
@@ -133,6 +200,16 @@ async function hydrateCloudData() {
   } else if (hasCustomHRInfo(localHRInfo)) {
     await saveCloudHRInfo(localHRInfo);
   }
+
+  const mergedCompletions = mergeWorkoutCompletions(localCompletions, cloudCompletions);
+  const mergedSessions = mergeSprintSessions(localSessions, cloudSessions);
+  const latestMileTest = chooseLatestMileResult(localMileTest, cloudMileTest);
+
+  writeJSON(WORKOUT_COMPLETIONS_STORAGE_KEY, mergedCompletions);
+  writeJSON(STORAGE_KEY, mergedSessions);
+  if (latestMileTest) writeJSON(MILE_TEST_STORAGE_KEY, latestMileTest);
+
+  await saveTrainingDataToCloud({ completions: mergedCompletions, sessions: mergedSessions, mileTest: latestMileTest });
 }
 async function handleAuthSubmit(event) {
   event.preventDefault();
@@ -175,6 +252,9 @@ function toggleAuthMode() {
 async function handleLogout() {
   try {
     await signOut();
+    clearAccountLocalData();
+    localStorage.removeItem(AUTH_USER_STORAGE_KEY);
+    renderAllPages();
     showAuthScreen('Signed out.');
   } catch (error) {
     shellHooks?.showToast?.(cleanAuthError(error).toUpperCase());
@@ -351,7 +431,7 @@ function flushQueuedEvent(syncMessage) {
     else if (result.status === 'offline') shellHooks?.showToast?.('SAVED LOCALLY - WILL SYNC LATER');
   });
 }
-function completeWorkoutFromDetail(weekIndex, workoutIndex) {
+async function completeWorkoutFromDetail(weekIndex, workoutIndex) {
   const safeWeekIndex = Number(weekIndex);
   const safeWorkoutIndex = Number(workoutIndex);
   const week = getWeek(safeWeekIndex);
@@ -362,6 +442,8 @@ function completeWorkoutFromDetail(weekIndex, workoutIndex) {
   const record = buildBasicWorkoutCompletion(week, workout, safeWeekIndex, safeWorkoutIndex, workoutLog);
   if (existing?.id) record.id = existing.id;
   const completed = saveWorkoutCompletion(record);
+  let cloudSaved = false;
+  if (completed) cloudSaved = await saveWorkoutCompletionToCloud(completed);
   if (completed && !existing) {
     enqueueDailyWorkoutForSync(workoutLog, record.workoutContext);
     flushQueuedEvent('WORKOUT SYNCED');
@@ -369,15 +451,18 @@ function completeWorkoutFromDetail(weekIndex, workoutIndex) {
   renderShell();
   renderAthleteProfileDashboard();
   openWorkoutDetail(safeWeekIndex, safeWorkoutIndex);
-  shellHooks?.showToast?.(completed ? (existing ? 'WORKOUT UPDATED' : 'WORKOUT COMPLETE') : 'COULD NOT SAVE WORKOUT');
+  if (!completed) shellHooks?.showToast?.('COULD NOT SAVE WORKOUT');
+  else if (cloudSaved) shellHooks?.showToast?.(existing ? 'WORKOUT UPDATED IN ACCOUNT' : 'WORKOUT SAVED TO ACCOUNT');
+  else shellHooks?.showToast?.(existing ? 'WORKOUT UPDATED' : 'WORKOUT COMPLETE');
 }
-function clearCompletionFromDetail(weekIndex, workoutIndex) {
+async function clearCompletionFromDetail(weekIndex, workoutIndex) {
   const safeWeekIndex = Number(weekIndex);
   const safeWorkoutIndex = Number(workoutIndex);
   if (!Number.isFinite(safeWeekIndex) || !Number.isFinite(safeWorkoutIndex)) return;
   if (!window.confirm('Mark this workout incomplete on this device?')) return;
   const removed = removeWorkoutCompletion(safeWeekIndex, safeWorkoutIndex);
   if (!removed) { shellHooks?.showToast?.('NO COMPLETION TO CLEAR'); return; }
+  await deleteWorkoutCompletionFromCloud(safeWeekIndex, safeWorkoutIndex);
   renderShell();
   renderAthleteProfileDashboard();
   openWorkoutDetail(safeWeekIndex, safeWorkoutIndex);
@@ -470,7 +555,7 @@ function renderAthleteProfilePage() {
 }
 function clearLocalTestData() {
   if (!window.confirm('Clear local test data on this device? This resets profile, HR info, mile test, completed workouts, sprint history, pending sync, and onboarding.')) return;
-  [PROFILE_STORAGE_KEY, STORAGE_KEY, SYNC_QUEUE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY, HR_INFO_STORAGE_KEY, MILE_TEST_STORAGE_KEY, SC_MODE_STORAGE_KEY, SC_WEEK_STORAGE_KEY, WEEK_INDEX_KEY, PROFILE_FORM_COLLAPSED_KEY, ONBOARDING_DISMISSED_KEY].forEach((key) => localStorage.removeItem(key));
+  [PROFILE_STORAGE_KEY, STORAGE_KEY, SYNC_QUEUE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY, HR_INFO_STORAGE_KEY, MILE_TEST_STORAGE_KEY, AUTH_USER_STORAGE_KEY, SC_MODE_STORAGE_KEY, SC_WEEK_STORAGE_KEY, WEEK_INDEX_KEY, PROFILE_FORM_COLLAPSED_KEY, ONBOARDING_DISMISSED_KEY].forEach((key) => localStorage.removeItem(key));
   activeWeekIndex = 0;
   scMode = 'Gym Machines';
   scWeek = 1;
@@ -629,25 +714,37 @@ function renderMileTestPage() {
   const locations = document.getElementById('mile-location-list');
   if (locations) locations.innerHTML = MILE_TEST_INFO.locations.map((location) => `<div>${escapeHTML(location)}</div>`).join('');
 }
-function saveMileTestResult() {
+async function saveMileTestResult() {
   const distance = parseNumberInput('mile-distance-input', NaN);
   const totalMinutes = parseNumberInput('mile-time-input', NaN);
   const avgBpm = parseNumberInput('mile-avg-bpm-input', 0);
   const maxBpm = parseNumberInput('mile-max-bpm-input', 0);
   if (![distance, totalMinutes].every((value) => Number.isFinite(value) && value > 0)) { shellHooks?.showToast?.('ENTER DISTANCE AND TIME'); return; }
   if (avgBpm > 999 || maxBpm > 999) { shellHooks?.showToast?.('HR MUST BE 3 DIGITS OR LESS'); return; }
-  const result = { distance, totalMinutes, avgBpm, maxBpm, paceMinPerMile: distance > 0 ? totalMinutes / distance : '', savedAt: new Date().toISOString() };
+  const result = { distance, totalMinutes, totalSeconds: Math.round(totalMinutes * 60), avgBpm, maxBpm, paceMinPerMile: distance > 0 ? totalMinutes / distance : '', savedAt: new Date().toISOString() };
   writeJSON(MILE_TEST_STORAGE_KEY, result);
   if (maxBpm > 0) saveHRInfo({ ...getHRInfo(), maxHr: maxBpm });
+  const testContext = { weekTab: 'Mile Test', workoutType: MILE_TEST_INFO.workout, dayOfWeek: MILE_TEST_INFO.day, description: MILE_TEST_INFO.description, warmup: MILE_TEST_INFO.warmup };
+  let cloudSaved = false;
+  if (isSupabaseConfigured && getCurrentUser()) {
+    try {
+      await saveCloudMileTest(result, getHRInfo(), testContext);
+      if (maxBpm > 0) await saveCloudHRInfo(getHRInfo());
+      cloudSaved = true;
+    } catch (error) {
+      console.warn('Cloud mile test save failed', error);
+    }
+  }
   if (getAthleteProfile().athleteName) {
-    enqueueMileTestForSync(result, getHRInfo(), { weekTab: 'Mile Test', workoutType: MILE_TEST_INFO.workout, dayOfWeek: MILE_TEST_INFO.day, description: MILE_TEST_INFO.description, warmup: MILE_TEST_INFO.warmup });
+    enqueueMileTestForSync(result, getHRInfo(), testContext);
     flushQueuedEvent('MILE TEST SYNCED');
   }
   renderMileTestPage();
   renderHRInfoPage();
   renderShell();
   renderAthleteProfileDashboard();
-  shellHooks?.showToast?.(maxBpm > 0 ? 'MILE TEST SAVED + MAX HR UPDATED' : 'MILE TEST SAVED');
+  if (cloudSaved) shellHooks?.showToast?.(maxBpm > 0 ? 'MILE TEST SAVED TO ACCOUNT + MAX HR UPDATED' : 'MILE TEST SAVED TO ACCOUNT');
+  else shellHooks?.showToast?.(maxBpm > 0 ? 'MILE TEST SAVED + MAX HR UPDATED' : 'MILE TEST SAVED');
 }
 function renderDrawerWeeks() {
   const root = document.getElementById('drawer-week-list');
@@ -787,7 +884,19 @@ export async function initAthleteShell(hooks) {
   saveWeek(activeWeekIndex);
   scWeek = clampSCWeek(scWeek);
   bindShellEvents();
-  window.addEventListener('ringready:workout-completed', () => { renderShell(); renderAthleteProfileDashboard(); });
+  window.addEventListener('ringready:workout-completed', (event) => {
+    renderShell();
+    renderAthleteProfileDashboard();
+    if (event.detail) saveWorkoutCompletionToCloud(event.detail);
+  });
+  window.addEventListener('ringready:workout-completion-cleared', (event) => {
+    renderShell();
+    renderAthleteProfileDashboard();
+    if (event.detail) deleteWorkoutCompletionFromCloud(event.detail.weekIndex, event.detail.workoutIndex);
+  });
+  window.addEventListener('ringready:sprint-session-saved', (event) => {
+    if (event.detail) saveSprintSessionToCloud(event.detail);
+  });
 
   renderAllPages();
   renderAuthUI();
