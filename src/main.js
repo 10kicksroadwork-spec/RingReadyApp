@@ -1,6 +1,7 @@
 import './style.css';
 import { initPWAInstall, registerServiceWorker } from './pwa.js';
 import { initAthleteShell } from './shell.js';
+import { enforceAthleteOnboarding, installSignupNameCapture } from './onboarding.js';
 import { MILE_TEST_STORAGE_KEY } from './app-content.js';
 import { getHRMonitorSetupCopy } from './platform.js';
 import { initSyncControls } from './sync.js';
@@ -11,13 +12,7 @@ import {
   connectHR,
   onHRDisconnectUI,
 } from './hr-service.js';
-import {
-  registerMainHandlers,
-  showToast,
-  selectExportText,
-  closeExportModal,
-  showScreen,
-} from './ui.js';
+import { registerMainHandlers, showToast, selectExportText, closeExportModal, showScreen } from './ui.js';
 import {
   adjust,
   setWorkoutContext,
@@ -100,15 +95,12 @@ function parseDuration(value) {
   if (!raw) return null;
 
   const colonMatch = raw.match(/^(\d{1,3}):([0-5]?\d)$/);
-
   if (colonMatch) {
     const minutes = Number(colonMatch[1]);
     const seconds = Number(colonMatch[2]);
     const totalSeconds = minutes * 60 + seconds;
 
-    if (!Number.isFinite(totalSeconds) || totalSeconds <= 0) {
-      return null;
-    }
+    if (!Number.isFinite(totalSeconds) || totalSeconds <= 0) return null;
 
     return {
       totalSeconds,
@@ -118,43 +110,28 @@ function parseDuration(value) {
   }
 
   const decimalMinutes = Number(raw);
-
-  if (!Number.isFinite(decimalMinutes) || decimalMinutes <= 0) {
-    return null;
-  }
+  if (!Number.isFinite(decimalMinutes) || decimalMinutes <= 0) return null;
 
   const totalSeconds = Math.round(decimalMinutes * 60);
 
   return {
     totalSeconds,
     totalMinutes: Number((totalSeconds / 60).toFixed(4)),
-    display: `${Math.floor(totalSeconds / 60)}:${String(
-      totalSeconds % 60
-    ).padStart(2, '0')}`,
+    display: `${Math.floor(totalSeconds / 60)}:${String(totalSeconds % 60).padStart(2, '0')}`,
   };
 }
 
 function sanitizeDuration(value) {
   const cleaned = String(value || '').replace(/[^\d:]/g, '');
-
-  if (!cleaned.includes(':')) {
-    return cleaned.slice(0, 3);
-  }
+  if (!cleaned.includes(':')) return cleaned.slice(0, 3);
 
   const [minutes, ...secondsParts] = cleaned.split(':');
-
-  return `${minutes.slice(0, 3)}:${secondsParts
-    .join('')
-    .slice(0, 2)}`;
+  return `${minutes.slice(0, 3)}:${secondsParts.join('').slice(0, 2)}`;
 }
 
 function formatDistance(value) {
   const num = Number(value);
-
-  if (!Number.isFinite(num) || num <= 0) {
-    return '--';
-  }
-
+  if (!Number.isFinite(num) || num <= 0) return '--';
   return num >= 10 ? num.toFixed(1) : num.toFixed(2);
 }
 
@@ -165,17 +142,12 @@ function formatDate(value) {
 
   return Number.isNaN(date.getTime())
     ? '--'
-    : date.toLocaleDateString('en-US', {
-        month: 'short',
-        day: 'numeric',
-      });
+    : date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
 function getSavedMileResult() {
   try {
-    return JSON.parse(
-      localStorage.getItem(MILE_TEST_STORAGE_KEY) || 'null'
-    );
+    return JSON.parse(localStorage.getItem(MILE_TEST_STORAGE_KEY) || 'null');
   } catch (error) {
     console.warn('Could not read saved Mile Test result', error);
     return null;
@@ -184,15 +156,9 @@ function getSavedMileResult() {
 
 function getSavedMileDuration(result) {
   if (!result) return null;
+  if (result.totalTimeDisplay) return parseDuration(result.totalTimeDisplay);
 
-  if (result.totalTimeDisplay) {
-    return parseDuration(result.totalTimeDisplay);
-  }
-
-  if (
-    Number.isFinite(Number(result.totalSeconds)) &&
-    Number(result.totalSeconds) > 0
-  ) {
+  if (Number.isFinite(Number(result.totalSeconds)) && Number(result.totalSeconds) > 0) {
     return parseDuration(Number(result.totalSeconds) / 60);
   }
 
@@ -205,35 +171,26 @@ function refreshMileResultCopy() {
 
   const duration = getSavedMileDuration(result);
   const maxBpm = Number(result.maxBpm);
-
   const formattedMaxBpm =
-    Number.isFinite(maxBpm) && maxBpm > 0
-      ? Math.round(maxBpm)
-      : '--';
+    Number.isFinite(maxBpm) && maxBpm > 0 ? Math.round(maxBpm) : '--';
 
   const last = document.getElementById('mile-last-result');
 
   if (last) {
     last.textContent =
       `Last saved: ${formatDistance(result.distance)} mi / ` +
-      `${duration?.display || '--'} / ` +
-      `${formattedMaxBpm} max bpm / ` +
+      `${duration?.display || '--'} / ${formattedMaxBpm} max bpm / ` +
       `${formatDate(result.savedAt)}`;
   }
 
   document.querySelectorAll('.dash-detail-card').forEach((card) => {
     const heading = card.querySelector('span');
-
-    if (heading?.textContent?.trim() !== 'HR Profile') {
-      return;
-    }
+    if (heading?.textContent?.trim() !== 'HR Profile') return;
 
     const copy = card.querySelector('p');
-
     if (copy) {
       copy.textContent =
-        `Mile Test: ${duration?.display || '--'} / ` +
-        `${formattedMaxBpm} max bpm`;
+        `Mile Test: ${duration?.display || '--'} / ${formattedMaxBpm} max bpm`;
     }
   });
 }
@@ -242,23 +199,14 @@ function configureMileTimeInput() {
   const input = document.getElementById('mile-time-input');
   if (!input) return;
 
-  const label = input
-    .closest('.app-input-wrap')
-    ?.querySelector('span');
-
-  if (label) {
-    label.textContent = 'Total Time (MM:SS)';
-  }
+  const label = input.closest('.app-input-wrap')?.querySelector('span');
+  if (label) label.textContent = 'Total Time (MM:SS)';
 
   input.type = 'text';
   input.inputMode = 'numeric';
   input.autocomplete = 'off';
   input.placeholder = '6:30';
-
-  input.setAttribute(
-    'aria-label',
-    'Mile time in minutes and seconds'
-  );
+  input.setAttribute('aria-label', 'Mile time in minutes and seconds');
 
   if (!input.dataset.durationBound) {
     input.dataset.durationBound = 'true';
@@ -267,20 +215,14 @@ function configureMileTimeInput() {
       if (mileSaveInProgress) return;
 
       const next = sanitizeDuration(input.value);
-
-      if (input.value !== next) {
-        input.value = next;
-      }
+      if (input.value !== next) input.value = next;
     });
 
     input.addEventListener('blur', () => {
       if (mileSaveInProgress) return;
 
       const parsed = parseDuration(input.value);
-
-      if (parsed) {
-        input.value = parsed.display;
-      }
+      if (parsed) input.value = parsed.display;
     });
   }
 
@@ -291,10 +233,7 @@ function configureMileTimeInput() {
     !input.value.includes(':')
   ) {
     const parsed = parseDuration(input.value);
-
-    if (parsed) {
-      input.value = parsed.display;
-    }
+    if (parsed) input.value = parsed.display;
   }
 
   refreshMileResultCopy();
@@ -308,9 +247,9 @@ function prepareMileValueForSave() {
   if (!parsed) return;
 
   /*
-   * shell.js currently stores decimal minutes.
-   * Convert immediately before its existing save handler runs,
-   * then restore the athlete-facing MM:SS value afterward.
+   * shell.js currently stores decimal minutes. Convert immediately before
+   * its existing save handler runs, then restore the athlete-facing MM:SS
+   * format immediately afterward.
    */
   mileSaveInProgress = true;
   input.value = String(parsed.totalMinutes);
@@ -322,42 +261,29 @@ function prepareMileValueForSave() {
 }
 
 function initReadabilityEnhancements() {
-  if (
-    !document.getElementById(
-      'ring-ready-readability-styles'
-    )
-  ) {
+  if (!document.getElementById('ring-ready-readability-styles')) {
     const style = document.createElement('style');
-
     style.id = 'ring-ready-readability-styles';
     style.textContent = READABILITY_STYLES;
-
     document.head.appendChild(style);
   }
 
   configureMileTimeInput();
 
-  document
-    .getElementById('save-mile-test-btn')
-    ?.addEventListener(
-      'click',
-      prepareMileValueForSave,
-      true
-    );
+  document.getElementById('save-mile-test-btn')?.addEventListener(
+    'click',
+    prepareMileValueForSave,
+    true
+  );
 
   document.addEventListener('click', (event) => {
-    if (
-      event.target.closest(
-        '[data-page-target="mile-test-page"]'
-      )
-    ) {
+    if (event.target.closest('[data-page-target="mile-test-page"]')) {
       window.setTimeout(configureMileTimeInput, 0);
     }
   });
 
   window.setInterval(() => {
-    const milePage =
-      document.getElementById('mile-test-page');
+    const milePage = document.getElementById('mile-test-page');
 
     if (milePage?.classList.contains('active')) {
       configureMileTimeInput();
@@ -371,20 +297,12 @@ async function init() {
   registerServiceWorker();
   initPWAInstall();
   initSyncControls({ showToast });
-
-  await initAthleteShell({
-    showToast,
-    showScreen,
-    setWorkoutContext,
-    showSavedWorkoutResult,
-  });
+  installSignupNameCapture();
+  await initAthleteShell({ showToast, showScreen, setWorkoutContext, showSavedWorkoutResult });
 
   initReadabilityEnhancements();
-
-  registerMainHandlers({
-    handleMainBtn,
-    handleSprintDone,
-  });
+  await enforceAthleteOnboarding({ showScreen });
+  registerMainHandlers({ handleMainBtn, handleSprintDone });
 
   initHRService({
     showToast,
@@ -394,13 +312,8 @@ async function init() {
   await initHRTransport();
   applyPlatformBLEMode();
 
-  const setupCopy =
-    document.getElementById('hr-setup-copy');
-
-  if (setupCopy) {
-    setupCopy.textContent =
-      getHRMonitorSetupCopy();
-  }
+  const setupCopy = document.getElementById('hr-setup-copy');
+  if (setupCopy) setupCopy.textContent = getHRMonitorSetupCopy();
 
   bindClick('ble-btn', () => connectHR());
   bindClick('start-session-btn', () => startSession());
@@ -409,30 +322,18 @@ async function init() {
   bindClick('modal-cancel-btn', () => cancelSession());
   bindClick('copy-results-btn', () => copyResults());
   bindClick('complete-workout-btn', () => completeWorkout());
-
-  bindClick(
-    'clear-result-completion-btn',
-    () => clearResultWorkoutCompletion()
-  );
-
+  bindClick('clear-result-completion-btn', () => clearResultWorkoutCompletion());
   bindClick('new-session-btn', () => newSession());
   bindClick('export-select-btn', () => selectExportText());
   bindClick('export-close-btn', () => closeExportModal());
 
-  document
-    .querySelectorAll('[data-adjust]')
-    .forEach((btn) => {
-      btn.addEventListener('click', () => {
-        adjust(
-          btn.dataset.adjust,
-          Number(btn.dataset.delta)
-        );
-      });
+  document.querySelectorAll('[data-adjust]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      adjust(btn.dataset.adjust, Number(btn.dataset.delta));
     });
+  });
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-  init().catch((err) =>
-    console.error('Init failed', err)
-  );
+  init().catch((err) => console.error('Init failed', err));
 });
