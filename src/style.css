@@ -939,6 +939,22 @@
 
   .detail-grid { display: grid; grid-template-columns: 1fr; gap: 12px; }
 
+  .detail-card.warmup-card-link {
+    cursor: pointer;
+    transition: border-color 0.2s ease, transform 0.2s ease;
+  }
+
+  .detail-card.warmup-card-link:hover,
+  .detail-card.warmup-card-link:focus-visible {
+    border-color: var(--gold);
+    transform: translateY(-1px);
+  }
+
+  .detail-card.warmup-card-link:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(245, 200, 66, 0.25);
+  }
+
   .detail-value {
     margin-top: 8px;
     font-size: 15px;

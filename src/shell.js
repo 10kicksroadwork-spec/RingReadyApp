@@ -65,6 +65,49 @@ function writeJSON(key, value) { localStorage.setItem(key, JSON.stringify(value)
 function escapeHTML(value) {
   return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
 }
+function openExternalLink(url) {
+  if (!url) return;
+  try {
+    const popup = window.open(url, '_blank', 'noopener,noreferrer');
+    if (!popup) window.location.assign(url);
+  } catch (error) {
+    window.location.assign(url);
+  }
+}
+function renderWarmupCard(workout) {
+  const warmupCard = document.getElementById('detail-warmup-card');
+  const warmupValue = document.getElementById('detail-warmup');
+  if (!warmupCard || !warmupValue) return;
+
+  const warmupText = workout.warmup || 'As assigned';
+  const videoUrl = workout.videoUrl || '';
+  const hasVideo = Boolean(videoUrl);
+
+  warmupValue.innerHTML = hasVideo
+    ? `${escapeHTML(warmupText)}<a class="secondary-link warmup-video-link" href="${escapeHTML(videoUrl)}" target="_blank" rel="noopener noreferrer">WATCH WARMUP VIDEO</a>`
+    : escapeHTML(warmupText);
+
+  warmupCard.classList.toggle('warmup-card-link', hasVideo);
+  warmupCard.setAttribute('role', hasVideo ? 'button' : 'group');
+  warmupCard.setAttribute('tabindex', hasVideo ? '0' : '-1');
+
+  if (hasVideo) {
+    warmupCard.onclick = (event) => {
+      if (event.target.closest('a')) return;
+      event.preventDefault();
+      openExternalLink(videoUrl);
+    };
+    warmupCard.onkeydown = (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        openExternalLink(videoUrl);
+      }
+    };
+  } else {
+    warmupCard.onclick = null;
+    warmupCard.onkeydown = null;
+  }
+}
 function setText(id, value) { const el = document.getElementById(id); if (el) el.textContent = value ?? ''; }
 function setInputValue(id, value) { const el = document.getElementById(id); if (el) el.value = value ?? ''; }
 function readInputValue(id) { const el = document.getElementById(id); return el ? String(el.value || '').trim() : ''; }
@@ -847,7 +890,7 @@ function openWorkoutDetail(weekIndex, workoutIndex) {
   setText('detail-week', `${week.label} / ${workout.day}`);
   setText('detail-title', workout.type);
   setText('detail-desc', workout.description);
-  setText('detail-warmup', workout.warmup || 'As assigned');
+  renderWarmupCard(workout);
   setText('detail-zone', workout.targetZone || '--');
   const targetBPM = getWorkoutTargetBPM(workout);
   setText('detail-bpm', targetBPM ? String(targetBPM) : '--');
