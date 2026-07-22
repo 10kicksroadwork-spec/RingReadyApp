@@ -168,7 +168,6 @@ function syncSignupNameVisibility() {
   const isSignUp = isCreateAccountMode();
   wrap.hidden = !isSignUp;
   input.required = isSignUp;
-  input.disabled = !isSignUp;
 }
 
 function ensureSignupNameField() {
@@ -194,7 +193,6 @@ function ensureSignupNameField() {
       autocomplete="name"
       placeholder="First Last"
       maxlength="80"
-      disabled
     >
   `;
   form.insertBefore(wrap, emailWrap);
