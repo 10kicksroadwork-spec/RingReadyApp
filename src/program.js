@@ -22,7 +22,7 @@ export const PROGRAM = [
       { day: 'Monday', type: 'Sprint Intervals', description: '5x150 m Sprints (90 Second rest). Focus on fast but controlled reps. Record HR after 60 seconds rest', warmup: '5 min easy jog; 2x60 m strides; 2x60 m A-skips; followed by 5 minute run at 85% MaxHR / 5 minute walk', targetZone: '90-95%', targetBPM: 172, action: 'sprint' },
       { day: 'Tuesday', type: 'Benchmark Run', description: '30 min conversational jog, HR and Time stay the same, goal is more distance', warmup: 'Dynamic Stretches (Video)', targetZone: '60-70%', targetBPM: 137, action: 'log' },
       { day: 'Wednesday', type: 'Threshold Run', description: '3x4min at 84%-88% HRmax (2 min easy jog recovery between rounds). Total time in Minutes to be recorded is 18', warmup: '10 min easy jog; 2x100 m strides / 5 minute walk', targetZone: '84-88%', targetBPM: 163, action: 'log' },
-      { day: 'Thursday', type: 'Easy Run + Finisher', description: '20 min easy jog (recovery).', warmup: 'Dynamic Stretches (Video)', targetZone: '60-70%', targetBPM: 137, action: 'log' },
+      { day: 'Thursday', type: 'Easy Run', description: '20 min easy jog (recovery).', warmup: 'Dynamic Stretches (Video)', targetZone: '60-70%', targetBPM: 137, action: 'log' },
       { day: 'Saturday/Sunday', type: 'Long Run', description: '45 min easy continuous run.', warmup: 'Dynamic Stretches (Video)', targetZone: '60-70%', targetBPM: 137, action: 'log' },
     ].map(addVideoLink),
   },
