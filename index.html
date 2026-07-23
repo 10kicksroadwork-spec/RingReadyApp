@@ -480,6 +480,27 @@
           </label>
         </div>
       </section>
+
+      <section class="detail-card workout-note-card" id="detail-note-card">
+        <div class="detail-note-head">
+          <div class="field-label">Workout Notes</div>
+          <div class="detail-note-counter" id="detail-note-counter">0 / 200</div>
+        </div>
+        <textarea
+          id="detail-note-input"
+          class="detail-note-input"
+          maxlength="200"
+          rows="4"
+          autocomplete="off"
+          placeholder="How did the session feel? Add anything your coach should know."
+          aria-describedby="detail-note-status detail-note-counter"
+        ></textarea>
+        <div class="detail-note-footer">
+          <div class="detail-note-status" id="detail-note-status">Saved on this device as you type.</div>
+          <button type="button" class="detail-note-save-btn" id="detail-save-note-btn">SAVE NOTE</button>
+        </div>
+      </section>
+
       <div class="detail-actions">
         <button type="button" class="start-btn" id="detail-action-btn">OPEN SPRINT TIMER</button>
         <button type="button" class="secondary-danger-btn" id="detail-clear-completion-btn" hidden>CLEAR COMPLETION</button>
