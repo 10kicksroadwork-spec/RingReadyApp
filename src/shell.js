@@ -50,6 +50,8 @@ const WEEK_INDEX_KEY = 'ringReadyActiveWeekIndex';
 const PROFILE_FORM_COLLAPSED_KEY = 'ringReadyProfileFormCollapsed';
 const ONBOARDING_DISMISSED_KEY = 'ringReadyOnboardingDismissed';
 const AUTH_USER_STORAGE_KEY = 'ringReadyAuthUserId';
+const WORKOUT_NOTES_STORAGE_KEY = 'ringReadyWorkoutNotes';
+const WORKOUT_NOTE_MAX_LENGTH = 200;
 
 let activeWeekIndex = Number(localStorage.getItem(WEEK_INDEX_KEY) || 0);
 let scMode = localStorage.getItem(SC_MODE_STORAGE_KEY) || 'Gym Machines';
@@ -139,7 +141,7 @@ function getCloudTimestamp(record) {
   return Number.isNaN(date.getTime()) ? 0 : date.getTime();
 }
 function clearAccountLocalData() {
-  [PROFILE_STORAGE_KEY, STORAGE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY, HR_INFO_STORAGE_KEY, MILE_TEST_STORAGE_KEY, PROFILE_FORM_COLLAPSED_KEY].forEach((key) => localStorage.removeItem(key));
+  [PROFILE_STORAGE_KEY, STORAGE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY, HR_INFO_STORAGE_KEY, MILE_TEST_STORAGE_KEY, PROFILE_FORM_COLLAPSED_KEY, WORKOUT_NOTES_STORAGE_KEY].forEach((key) => localStorage.removeItem(key));
 }
 function mergeWorkoutCompletions(localCompletions = {}, cloudCompletions = {}) {
   const merged = { ...localCompletions };
@@ -418,7 +420,110 @@ function makeWorkoutCompletionId() { return window.crypto && typeof window.crypt
 function hasSessionResults(completion) { return Array.isArray(completion?.data) && completion.data.length > 0; }
 function buildBasicWorkoutCompletion(week, workout, weekIndex, workoutIndex, workoutLog = null) {
   const context = buildWorkoutContext(week, workout, weekIndex, workoutIndex);
-  return { id: makeWorkoutCompletionId(), date: new Date().toISOString(), type: 'daily-workout-completion', cfg: { workoutContext: context }, workoutContext: context, workoutLog, data: [], avgDrop: null, peakHR: workoutLog ? workoutLog.maxBpm : null };
+  const note = sanitizeWorkoutNote(workoutLog?.note || getStoredWorkoutNote(weekIndex, workoutIndex));
+  return { id: makeWorkoutCompletionId(), date: new Date().toISOString(), type: 'daily-workout-completion', cfg: { workoutContext: context }, workoutContext: context, workoutLog, note, data: [], avgDrop: null, peakHR: workoutLog ? workoutLog.maxBpm : null };
+}
+function getWorkoutNoteKey(weekIndex, workoutIndex) {
+  return `${Number(weekIndex)}:${Number(workoutIndex)}`;
+}
+function sanitizeWorkoutNote(value) {
+  return String(value || '').slice(0, WORKOUT_NOTE_MAX_LENGTH);
+}
+function getStoredWorkoutNote(weekIndex, workoutIndex) {
+  const notes = readJSON(WORKOUT_NOTES_STORAGE_KEY, {});
+  return sanitizeWorkoutNote(notes[getWorkoutNoteKey(weekIndex, workoutIndex)] || '');
+}
+function setStoredWorkoutNote(weekIndex, workoutIndex, value) {
+  const notes = readJSON(WORKOUT_NOTES_STORAGE_KEY, {});
+  const key = getWorkoutNoteKey(weekIndex, workoutIndex);
+  const note = sanitizeWorkoutNote(value);
+  if (note) notes[key] = note;
+  else delete notes[key];
+  writeJSON(WORKOUT_NOTES_STORAGE_KEY, notes);
+  return note;
+}
+function getCompletionWorkoutNote(completion) {
+  return sanitizeWorkoutNote(completion?.note || completion?.workoutLog?.note || '');
+}
+function updateDetailNoteCounter() {
+  const input = document.getElementById('detail-note-input');
+  const counter = document.getElementById('detail-note-counter');
+  if (!input || !counter) return;
+  const length = sanitizeWorkoutNote(input.value).length;
+  counter.textContent = `${length} / ${WORKOUT_NOTE_MAX_LENGTH}`;
+  counter.classList.toggle('near-limit', length >= 160 && length < WORKOUT_NOTE_MAX_LENGTH);
+  counter.classList.toggle('at-limit', length >= WORKOUT_NOTE_MAX_LENGTH);
+}
+function setDetailNoteStatus(message) {
+  setText('detail-note-status', message);
+}
+function setDetailWorkoutNote(completion, weekIndex, workoutIndex) {
+  const input = document.getElementById('detail-note-input');
+  const saveButton = document.getElementById('detail-save-note-btn');
+  const completionNote = getCompletionWorkoutNote(completion);
+  const note = completionNote || getStoredWorkoutNote(weekIndex, workoutIndex);
+  if (input) {
+    input.value = note;
+    input.dataset.weekIndex = String(weekIndex);
+    input.dataset.workoutIndex = String(workoutIndex);
+  }
+  if (saveButton) {
+    saveButton.dataset.weekIndex = String(weekIndex);
+    saveButton.dataset.workoutIndex = String(workoutIndex);
+  }
+  setDetailNoteStatus(completionNote ? 'Saved with this workout.' : 'Saved on this device as you type.');
+  updateDetailNoteCounter();
+}
+function handleDetailNoteInput(event) {
+  const input = event.currentTarget;
+  if (!(input instanceof HTMLTextAreaElement)) return;
+  const note = sanitizeWorkoutNote(input.value);
+  if (input.value !== note) input.value = note;
+  setStoredWorkoutNote(input.dataset.weekIndex, input.dataset.workoutIndex, note);
+  setDetailNoteStatus('Saved on this device as you type.');
+  updateDetailNoteCounter();
+}
+async function saveWorkoutNoteFromDetail(event) {
+  const button = event.currentTarget;
+  const weekIndex = Number(button.dataset.weekIndex);
+  const workoutIndex = Number(button.dataset.workoutIndex);
+  if (!Number.isFinite(weekIndex) || !Number.isFinite(workoutIndex)) return;
+  const input = document.getElementById('detail-note-input');
+  const note = setStoredWorkoutNote(weekIndex, workoutIndex, sanitizeWorkoutNote(input?.value || ''));
+  const completion = getWorkoutCompletion(weekIndex, workoutIndex);
+
+  button.disabled = true;
+  try {
+    if (!completion) {
+      setDetailNoteStatus(note ? 'Saved on this device. It will attach when the workout is completed.' : 'Note cleared on this device.');
+      shellHooks?.showToast?.(note ? 'NOTE SAVED' : 'NOTE CLEARED');
+      return;
+    }
+
+    const updated = { ...completion, note };
+    if (completion.workoutLog) {
+      updated.workoutLog = { ...completion.workoutLog, note };
+    }
+
+    const saved = saveWorkoutCompletion(updated) || updated;
+    const cloudSaved = await saveWorkoutCompletionToCloud(saved);
+    setDetailNoteStatus(cloudSaved ? 'Saved with this workout and synced to your account.' : 'Saved with this workout on this device.');
+    shellHooks?.showToast?.(note ? 'NOTE SAVED' : 'NOTE CLEARED');
+  } finally {
+    button.disabled = false;
+  }
+}
+function attachStoredNoteToCompletion(record) {
+  if (!record) return record;
+  const context = getRecordContext(record);
+  const weekIndex = Number(context.weekIndex);
+  const workoutIndex = Number(context.workoutIndex);
+  if (!Number.isFinite(weekIndex) || !Number.isFinite(workoutIndex)) return record;
+  const note = getStoredWorkoutNote(weekIndex, workoutIndex);
+  if (!note) return record;
+  const updated = { ...record, note };
+  if (record.workoutLog) updated.workoutLog = { ...record.workoutLog, note };
+  return updated;
 }
 function parseWorkoutDuration(value) {
   const raw = String(value || '').trim();
@@ -459,7 +564,8 @@ function readDetailWorkoutLog(options = {}) {
   if (!duration || ![avgBpm, maxBpm, distance].every((value) => Number.isFinite(value) && value > 0)) { if (!silent) shellHooks?.showToast?.('FILL OUT WORKOUT LOG'); return null; }
   if (avgBpm > 999 || maxBpm > 999) { if (!silent) shellHooks?.showToast?.('HR MUST BE 3 DIGITS OR LESS'); return null; }
   if (maxBpm < avgBpm) { if (!silent) shellHooks?.showToast?.('MAX HR SHOULD BE AVG OR HIGHER'); return null; }
-  return { totalMinutes: duration.totalMinutes, totalSeconds: duration.totalSeconds, totalTimeDisplay: duration.totalTimeDisplay, avgBpm, maxBpm, distance, completedAt: new Date().toISOString() };
+  const note = sanitizeWorkoutNote(readInputValue('detail-note-input'));
+  return { totalMinutes: duration.totalMinutes, totalSeconds: duration.totalSeconds, totalTimeDisplay: duration.totalTimeDisplay, avgBpm, maxBpm, distance, note, completedAt: new Date().toISOString() };
 }
 function sanitizeWorkoutDurationInput(value) {
   const cleaned = String(value || '').replace(/[^\d:.]/g, '');
@@ -527,6 +633,7 @@ async function completeWorkoutFromDetail(weekIndex, workoutIndex) {
   const workout = week.workouts[safeWorkoutIndex] || week.workouts[0];
   const workoutLog = readDetailWorkoutLog();
   if (!workoutLog) return;
+  setStoredWorkoutNote(safeWeekIndex, safeWorkoutIndex, workoutLog.note);
   const existing = getWorkoutCompletion(safeWeekIndex, safeWorkoutIndex);
   const record = buildBasicWorkoutCompletion(week, workout, safeWeekIndex, safeWorkoutIndex, workoutLog);
   if (existing?.id) record.id = existing.id;
@@ -894,22 +1001,28 @@ function openWorkoutDetail(weekIndex, workoutIndex) {
   setText('detail-zone', workout.targetZone || '--');
   const targetBPM = getWorkoutTargetBPM(workout);
   setText('detail-bpm', targetBPM ? String(targetBPM) : '--');
-  const actionType = ['sprint', 'mile-test'].includes(workout.action) ? workout.action : 'complete-workout';
-  setDetailWorkoutLog(actionType === 'complete-workout', completion, workout);
+  const baseActionType = ['sprint', 'mile-test'].includes(workout.action) ? workout.action : 'complete-workout';
+  const actionType = completion && hasSessionResults(completion) ? 'view-results' : baseActionType;
+  setDetailWorkoutLog(baseActionType === 'complete-workout', completion, workout);
+  setDetailWorkoutNote(completion, safeWeekIndex, safeWorkoutIndex);
   const action = document.getElementById('detail-action-btn');
   if (action) {
     const isCompleted = !!completion;
-    const isLoggedWorkout = actionType === 'complete-workout';
-    action.textContent = isLoggedWorkout ? (isCompleted ? 'SAVE CHANGES' : 'COMPLETE WORKOUT') : (isCompleted ? 'WORKOUT COMPLETE' : getActionCopy(workout));
-    action.disabled = isLoggedWorkout ? !readDetailWorkoutLog({ silent: true }) : isCompleted;
-    action.classList.toggle('completed', isCompleted && !isLoggedWorkout);
+    const isLoggedWorkout = baseActionType === 'complete-workout';
+    action.textContent = actionType === 'view-results'
+      ? 'VIEW RESULTS'
+      : isLoggedWorkout
+        ? (isCompleted ? 'SAVE CHANGES' : 'COMPLETE WORKOUT')
+        : (isCompleted ? 'WORKOUT COMPLETE' : getActionCopy(workout));
+    action.disabled = actionType === 'view-results' ? false : isLoggedWorkout ? !readDetailWorkoutLog({ silent: true }) : isCompleted;
+    action.classList.toggle('completed', isCompleted && !isLoggedWorkout && actionType !== 'view-results');
     action.dataset.action = actionType;
     action.dataset.weekIndex = String(safeWeekIndex);
     action.dataset.workoutIndex = String(safeWorkoutIndex);
   }
   const clearBtn = document.getElementById('detail-clear-completion-btn');
   if (clearBtn) {
-    clearBtn.hidden = !(actionType === 'complete-workout' && completion);
+    clearBtn.hidden = !(baseActionType === 'complete-workout' && completion);
     clearBtn.dataset.weekIndex = String(safeWeekIndex);
     clearBtn.dataset.workoutIndex = String(safeWorkoutIndex);
   }
@@ -930,10 +1043,16 @@ function bindShellEvents() {
   document.getElementById('setup-back-btn')?.addEventListener('click', () => navigateTo('home'));
   document.getElementById('detail-back-btn')?.addEventListener('click', () => navigateTo('home'));
   document.querySelectorAll('#detail-log-card input').forEach((input) => input.addEventListener('input', handleDetailLogInput));
+  document.getElementById('detail-note-input')?.addEventListener('input', handleDetailNoteInput);
+  document.getElementById('detail-save-note-btn')?.addEventListener('click', saveWorkoutNoteFromDetail);
   document.getElementById('detail-total-minutes-input')?.addEventListener('blur', normalizeDetailDurationInput);
   document.getElementById('detail-clear-completion-btn')?.addEventListener('click', (event) => clearCompletionFromDetail(event.currentTarget.dataset.weekIndex, event.currentTarget.dataset.workoutIndex));
   document.getElementById('detail-action-btn')?.addEventListener('click', (event) => {
-    if (event.currentTarget.dataset.action === 'sprint') {
+    if (event.currentTarget.dataset.action === 'view-results') {
+      const completion = getWorkoutCompletion(event.currentTarget.dataset.weekIndex, event.currentTarget.dataset.workoutIndex);
+      if (completion) shellHooks?.showSavedWorkoutResult?.(completion);
+      setActiveNavigation('');
+    } else if (event.currentTarget.dataset.action === 'sprint') {
       const weekIndex = Number(event.currentTarget.dataset.weekIndex || activeWeekIndex);
       const workoutIndex = Number(event.currentTarget.dataset.workoutIndex || 0);
       const week = getWeek(weekIndex);
@@ -950,8 +1069,6 @@ function bindShellEvents() {
   document.getElementById('week-workouts')?.addEventListener('click', (event) => {
     const card = event.target.closest('.week-workout-card');
     if (!card) return;
-    const completion = getWorkoutCompletion(card.dataset.weekIndex, card.dataset.workoutIndex);
-    if (completion && hasSessionResults(completion)) { shellHooks?.showSavedWorkoutResult?.(completion); setActiveNavigation(''); return; }
     openWorkoutDetail(card.dataset.weekIndex, card.dataset.workoutIndex);
   });
   document.getElementById('drawer-week-list')?.addEventListener('click', (event) => { const btn = event.target.closest('.drawer-week-btn'); if (!btn) return; saveWeek(Number(btn.dataset.weekIndex)); scWeek = activeWeekIndex + 1; renderShell(); renderSCPage(); navigateTo('home'); });
@@ -976,7 +1093,11 @@ export async function initAthleteShell(hooks) {
   window.addEventListener('ringready:workout-completed', (event) => {
     renderShell();
     renderAthleteProfileDashboard();
-    if (event.detail) saveWorkoutCompletionToCloud(event.detail);
+    if (event.detail) {
+      const completedWithNote = attachStoredNoteToCompletion(event.detail);
+      const saved = saveWorkoutCompletion(completedWithNote) || completedWithNote;
+      saveWorkoutCompletionToCloud(saved);
+    }
   });
   window.addEventListener('ringready:workout-completion-cleared', (event) => {
     renderShell();
