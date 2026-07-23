@@ -15,9 +15,23 @@
 <body>
 <div id="app">
 
+  <!-- APP STARTUP SCREEN -->
+  <div id="boot" class="screen active boot-screen" role="status" aria-live="polite" aria-label="Ring Ready is loading">
+    <img
+      class="boot-logo"
+      src="./10-kicks-logo.jpg"
+      alt="10 Kicks logo"
+    >
+    <div class="boot-brand">10 Kicks</div>
+    <div class="boot-title">Ring Ready</div>
+    <div class="boot-copy">Loading your training camp...</div>
+    <div class="boot-spinner" aria-hidden="true"></div>
+  </div>
+
+
   
   <!-- AUTH -->
-  <div id="auth" class="screen active auth-screen">
+  <div id="auth" class="screen auth-screen">
     <div class="auth-card">
       <img class="auth-logo" src="./10-kicks-logo.jpg" alt="10 Kicks logo">
       <div class="logo-text">10 Kicks</div>
