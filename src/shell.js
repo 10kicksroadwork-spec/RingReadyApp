@@ -21,6 +21,7 @@ import {
   enqueueHRInfoForSync,
   enqueueMileTestForSync,
   enqueueProfileForSync,
+  enqueueWorkoutProofForSync,
   flushSyncQueue,
   getAthleteProfile,
   saveAthleteProfile,
@@ -45,6 +46,15 @@ import {
   signUpWithEmail,
 } from './auth.js';
 import { isSupabaseConfigured } from './supabase-client.js';
+import {
+  PROOF_POLICY_VERSION,
+  buildProgramProofKey,
+  ensureWorkoutProofUploaded,
+  hasPendingWorkoutProof,
+  hasWorkoutProof,
+  initWorkoutProof,
+  markWorkoutProofCleared,
+} from './proof.js';
 
 const WEEK_INDEX_KEY = 'ringReadyActiveWeekIndex';
 const PROFILE_FORM_COLLAPSED_KEY = 'ringReadyProfileFormCollapsed';
@@ -58,6 +68,7 @@ let scMode = localStorage.getItem(SC_MODE_STORAGE_KEY) || 'Gym Machines';
 let scWeek = Number(localStorage.getItem(SC_WEEK_STORAGE_KEY) || activeWeekIndex + 1);
 let shellHooks = null;
 let authMode = 'sign-in';
+let activeMileTestContext = { testKey: 'mile-test:baseline', workoutContext: null };
 
 function readJSON(key, fallback) {
   try { return JSON.parse(localStorage.getItem(key) || JSON.stringify(fallback)); }
@@ -582,7 +593,7 @@ function updateDetailCompletionState() {
   if (!action || action.dataset.action !== 'complete-workout') return;
   const completion = getWorkoutCompletion(action.dataset.weekIndex, action.dataset.workoutIndex);
   action.textContent = completion ? 'SAVE CHANGES' : 'COMPLETE WORKOUT';
-  action.disabled = !readDetailWorkoutLog({ silent: true });
+  action.disabled = !readDetailWorkoutLog({ silent: true }) || !hasWorkoutProof('detail');
   action.classList.toggle('completed', false);
   const clearBtn = document.getElementById('detail-clear-completion-btn');
   if (clearBtn) clearBtn.hidden = !completion;
@@ -627,6 +638,10 @@ function flushQueuedEvent(syncMessage) {
   });
 }
 async function completeWorkoutFromDetail(weekIndex, workoutIndex) {
+  if (!hasWorkoutProof('detail')) {
+    shellHooks?.showToast?.(navigator.onLine ? 'ADD WORKOUT PROOF' : 'INTERNET REQUIRED FOR WORKOUT PROOF');
+    return;
+  }
   const safeWeekIndex = Number(weekIndex);
   const safeWorkoutIndex = Number(workoutIndex);
   const week = getWeek(safeWeekIndex);
@@ -637,13 +652,27 @@ async function completeWorkoutFromDetail(weekIndex, workoutIndex) {
   const existing = getWorkoutCompletion(safeWeekIndex, safeWorkoutIndex);
   const record = buildBasicWorkoutCompletion(week, workout, safeWeekIndex, safeWorkoutIndex, workoutLog);
   if (existing?.id) record.id = existing.id;
+  const isNewProof = hasPendingWorkoutProof('detail');
+  try {
+    const attachment = await ensureWorkoutProofUploaded('detail', record.id);
+    if (attachment) {
+      record.proofPolicyVersion = PROOF_POLICY_VERSION;
+      record.attachment = attachment;
+      record.workoutLog = { ...record.workoutLog, proofPolicyVersion: PROOF_POLICY_VERSION, attachment };
+    }
+  } catch (error) {
+    console.warn('Workout proof upload failed', error);
+    shellHooks?.showToast?.(String(error?.message || error).toUpperCase());
+    return;
+  }
   const completed = saveWorkoutCompletion(record);
   let cloudSaved = false;
   if (completed) cloudSaved = await saveWorkoutCompletionToCloud(completed);
   if (completed && !existing) {
     enqueueDailyWorkoutForSync(workoutLog, record.workoutContext);
-    flushQueuedEvent('WORKOUT SYNCED');
   }
+  if (completed && isNewProof && record.attachment) enqueueWorkoutProofForSync(record.attachment, record.workoutContext, record.id);
+  if (completed) flushQueuedEvent('WORKOUT SYNCED');
   renderShell();
   renderAthleteProfileDashboard();
   openWorkoutDetail(safeWeekIndex, safeWorkoutIndex);
@@ -656,9 +685,11 @@ async function clearCompletionFromDetail(weekIndex, workoutIndex) {
   const safeWorkoutIndex = Number(workoutIndex);
   if (!Number.isFinite(safeWeekIndex) || !Number.isFinite(safeWorkoutIndex)) return;
   if (!window.confirm('Mark this workout incomplete on this device?')) return;
+  const existing = getWorkoutCompletion(safeWeekIndex, safeWorkoutIndex);
   const removed = removeWorkoutCompletion(safeWeekIndex, safeWorkoutIndex);
   if (!removed) { shellHooks?.showToast?.('NO COMPLETION TO CLEAR'); return; }
   await deleteWorkoutCompletionFromCloud(safeWeekIndex, safeWorkoutIndex);
+  markWorkoutProofCleared(existing?.attachment?.id, true).catch((error) => console.warn('Could not mark proof cleared', error));
   renderShell();
   renderAthleteProfileDashboard();
   openWorkoutDetail(safeWeekIndex, safeWorkoutIndex);
@@ -891,6 +922,18 @@ function renderSCPage() {
   const sessions = SC_SESSIONS.filter((session) => session.week === scWeek && session.modality === scMode);
   list.innerHTML = sessions.length ? sessions.map((session) => `<article class="page-panel sc-session-card"><div class="sc-card-head"><div><div class="info-kicker">${escapeHTML(session.day)}</div><h3>${escapeHTML(session.sessionType)}</h3></div><span class="workout-tag">${escapeHTML(session.modality)}</span></div><ul class="exercise-list">${session.exercises.split('|').map((exercise) => `<li>${escapeHTML(exercise.trim())}</li>`).join('')}</ul><div class="sc-metrics"><div><span>Sets x Reps</span><strong>${escapeHTML(session.setsReps)}</strong></div><div><span>Intensity</span><strong>${escapeHTML(session.intensity)}</strong></div><div><span>Rest</span><strong>${escapeHTML(session.rest)}</strong></div></div><p>${escapeHTML(session.notes)}</p></article>`).join('') : '<article class="page-panel"><p>No S&C sessions listed for this week.</p></article>';
 }
+function getActiveMileProofContext() {
+  const profile = getAthleteProfile();
+  const workoutContext = activeMileTestContext.workoutContext;
+  return {
+    testKey: activeMileTestContext.testKey || 'mile-test:baseline',
+    campLength: Number(profile.campLength) || 7,
+    weekIndex: workoutContext?.weekIndex,
+    workoutIndex: workoutContext?.workoutIndex,
+    workoutType: workoutContext?.workoutType || MILE_TEST_INFO.workout,
+    dayOfWeek: workoutContext?.dayOfWeek || MILE_TEST_INFO.day,
+  };
+}
 function renderMileTestPage() {
   setText('mile-test-title', MILE_TEST_INFO.workout);
   setText('mile-test-desc', MILE_TEST_INFO.description);
@@ -899,6 +942,14 @@ function renderMileTestPage() {
   const link = document.getElementById('mile-warmup-link');
   if (link) link.href = MILE_TEST_INFO.warmupLink;
   const result = getMileTestResult();
+  const proofContext = getActiveMileProofContext();
+  const matchesActiveTest = result && String(result.testKey || 'mile-test:baseline') === proofContext.testKey;
+  initWorkoutProof('mile', {
+    proofKey: proofContext.testKey,
+    context: proofContext,
+    existingAttachment: matchesActiveTest ? result.attachment : null,
+    legacy: !!(matchesActiveTest && !result.proofPolicyVersion),
+  });
   if (result) {
     setInputValue('mile-distance-input', result.distance);
     setInputValue('mile-time-input', result.totalMinutes);
@@ -909,18 +960,41 @@ function renderMileTestPage() {
   if (last) last.textContent = result ? `Last saved: ${formatDistance(result.distance)} mi / ${formatWholeNumber(result.totalMinutes)} min / ${formatWholeNumber(result.maxBpm)} max bpm / ${formatDashboardDate(result.savedAt)}` : 'No Mile Test saved yet.';
   const locations = document.getElementById('mile-location-list');
   if (locations) locations.innerHTML = MILE_TEST_INFO.locations.map((location) => `<div>${escapeHTML(location)}</div>`).join('');
+  updateMileCompletionState();
+}
+function updateMileCompletionState() {
+  const button = document.getElementById('save-mile-test-btn');
+  if (!button) return;
+  const values = [
+    parseNumberInput('mile-distance-input', NaN),
+    parseNumberInput('mile-time-input', NaN),
+    parseNumberInput('mile-avg-bpm-input', NaN),
+    parseNumberInput('mile-max-bpm-input', NaN),
+  ];
+  const [distance, totalMinutes, avgBpm, maxBpm] = values;
+  const fieldsValid = values.every((value) => Number.isFinite(value) && value > 0)
+    && distance > 0 && totalMinutes > 0 && avgBpm <= 999 && maxBpm <= 999 && maxBpm >= avgBpm;
+  button.disabled = !fieldsValid || !hasWorkoutProof('mile');
 }
 async function saveMileTestResult() {
   const distance = parseNumberInput('mile-distance-input', NaN);
   const totalMinutes = parseNumberInput('mile-time-input', NaN);
   const avgBpm = parseNumberInput('mile-avg-bpm-input', 0);
   const maxBpm = parseNumberInput('mile-max-bpm-input', 0);
-  if (![distance, totalMinutes].every((value) => Number.isFinite(value) && value > 0)) { shellHooks?.showToast?.('ENTER DISTANCE AND TIME'); return; }
+  if (![distance, totalMinutes, avgBpm, maxBpm].every((value) => Number.isFinite(value) && value > 0)) { shellHooks?.showToast?.('FILL OUT MILE TEST RESULTS'); return; }
   if (avgBpm > 999 || maxBpm > 999) { shellHooks?.showToast?.('HR MUST BE 3 DIGITS OR LESS'); return; }
-  const result = { distance, totalMinutes, totalSeconds: Math.round(totalMinutes * 60), avgBpm, maxBpm, paceMinPerMile: distance > 0 ? totalMinutes / distance : '', savedAt: new Date().toISOString() };
+  if (maxBpm < avgBpm) { shellHooks?.showToast?.('MAX HR SHOULD BE AVG OR HIGHER'); return; }
+  const proofContext = getActiveMileProofContext();
+  const result = { id: makeWorkoutCompletionId(), testKey: proofContext.testKey, distance, totalMinutes, totalSeconds: Math.round(totalMinutes * 60), avgBpm, maxBpm, paceMinPerMile: distance > 0 ? totalMinutes / distance : '', savedAt: new Date().toISOString() };
+  const isNewProof = hasPendingWorkoutProof('mile');
+  try {
+    result.attachment = await ensureWorkoutProofUploaded('mile', result.id);
+    if (result.attachment) result.proofPolicyVersion = PROOF_POLICY_VERSION;
+  }
+  catch (error) { console.warn('Mile Test proof upload failed', error); shellHooks?.showToast?.(String(error?.message || error).toUpperCase()); return; }
   writeJSON(MILE_TEST_STORAGE_KEY, result);
   if (maxBpm > 0) saveHRInfo({ ...getHRInfo(), maxHr: maxBpm });
-  const testContext = { weekTab: 'Mile Test', workoutType: MILE_TEST_INFO.workout, dayOfWeek: MILE_TEST_INFO.day, description: MILE_TEST_INFO.description, warmup: MILE_TEST_INFO.warmup };
+  const testContext = { ...proofContext, weekTab: proofContext.weekIndex == null ? 'Mile Test' : `Week ${Number(proofContext.weekIndex) + 1}`, workoutType: proofContext.workoutType, dayOfWeek: proofContext.dayOfWeek, description: activeMileTestContext.workoutContext?.description || MILE_TEST_INFO.description, warmup: activeMileTestContext.workoutContext?.warmup || MILE_TEST_INFO.warmup };
   let cloudSaved = false;
   if (isSupabaseConfigured && getCurrentUser()) {
     try {
@@ -933,6 +1007,7 @@ async function saveMileTestResult() {
   }
   if (getAthleteProfile().athleteName) {
     enqueueMileTestForSync(result, getHRInfo(), testContext);
+    if (isNewProof && result.attachment) enqueueWorkoutProofForSync(result.attachment, testContext, result.id);
     flushQueuedEvent('MILE TEST SYNCED');
   }
   renderMileTestPage();
@@ -1004,6 +1079,15 @@ function openWorkoutDetail(weekIndex, workoutIndex) {
   const baseActionType = ['sprint', 'mile-test'].includes(workout.action) ? workout.action : 'complete-workout';
   const actionType = completion && hasSessionResults(completion) ? 'view-results' : baseActionType;
   setDetailWorkoutLog(baseActionType === 'complete-workout', completion, workout);
+  if (baseActionType === 'complete-workout') {
+    const proofContext = { ...buildWorkoutContext(week, workout, safeWeekIndex, safeWorkoutIndex), campLength: Number(getAthleteProfile().campLength) || 7 };
+    initWorkoutProof('detail', {
+      proofKey: buildProgramProofKey(proofContext.campLength, safeWeekIndex, safeWorkoutIndex),
+      context: proofContext,
+      existingAttachment: completion?.attachment || null,
+      legacy: !!(completion && !completion.proofPolicyVersion),
+    });
+  }
   setDetailWorkoutNote(completion, safeWeekIndex, safeWorkoutIndex);
   const action = document.getElementById('detail-action-btn');
   if (action) {
@@ -1014,7 +1098,7 @@ function openWorkoutDetail(weekIndex, workoutIndex) {
       : isLoggedWorkout
         ? (isCompleted ? 'SAVE CHANGES' : 'COMPLETE WORKOUT')
         : (isCompleted ? 'WORKOUT COMPLETE' : getActionCopy(workout));
-    action.disabled = actionType === 'view-results' ? false : isLoggedWorkout ? !readDetailWorkoutLog({ silent: true }) : isCompleted;
+    action.disabled = actionType === 'view-results' ? false : isLoggedWorkout ? (!readDetailWorkoutLog({ silent: true }) || !hasWorkoutProof('detail')) : isCompleted;
     action.classList.toggle('completed', isCompleted && !isLoggedWorkout && actionType !== 'view-results');
     action.dataset.action = actionType;
     action.dataset.weekIndex = String(safeWeekIndex);
@@ -1035,7 +1119,13 @@ function bindShellEvents() {
   document.getElementById('logout-btn')?.addEventListener('click', handleLogout);
   document.getElementById('week-prev-btn')?.addEventListener('click', () => { saveWeek(activeWeekIndex - 1); scWeek = activeWeekIndex + 1; renderShell(); renderSCPage(); });
   document.getElementById('week-next-btn')?.addEventListener('click', () => { saveWeek(activeWeekIndex + 1); scWeek = activeWeekIndex + 1; renderShell(); renderSCPage(); });
-  document.addEventListener('click', (event) => { const pageBtn = event.target.closest('[data-page-target]'); if (!pageBtn) return; event.preventDefault(); navigateTo(pageBtn.dataset.pageTarget); });
+  document.addEventListener('click', (event) => {
+    const pageBtn = event.target.closest('[data-page-target]');
+    if (!pageBtn) return;
+    event.preventDefault();
+    if (pageBtn.dataset.pageTarget === 'mile-test-page') activeMileTestContext = { testKey: 'mile-test:baseline', workoutContext: null };
+    navigateTo(pageBtn.dataset.pageTarget);
+  });
   document.querySelectorAll('[data-open-menu]').forEach((btn) => btn.addEventListener('click', openWeekDrawer));
   document.getElementById('close-week-menu-btn')?.addEventListener('click', closeWeekDrawer);
   document.getElementById('week-drawer-backdrop')?.addEventListener('click', closeWeekDrawer);
@@ -1043,6 +1133,10 @@ function bindShellEvents() {
   document.getElementById('setup-back-btn')?.addEventListener('click', () => navigateTo('home'));
   document.getElementById('detail-back-btn')?.addEventListener('click', () => navigateTo('home'));
   document.querySelectorAll('#detail-log-card input').forEach((input) => input.addEventListener('input', handleDetailLogInput));
+  window.addEventListener('ringready:proof-state-changed', (event) => {
+    if (event.detail?.surface === 'detail') updateDetailCompletionState();
+    if (event.detail?.surface === 'mile') updateMileCompletionState();
+  });
   document.getElementById('detail-note-input')?.addEventListener('input', handleDetailNoteInput);
   document.getElementById('detail-save-note-btn')?.addEventListener('click', saveWorkoutNoteFromDetail);
   document.getElementById('detail-total-minutes-input')?.addEventListener('blur', normalizeDetailDurationInput);
@@ -1061,6 +1155,12 @@ function bindShellEvents() {
       shellHooks?.showScreen('setup');
       setActiveNavigation('');
     } else if (event.currentTarget.dataset.action === 'mile-test') {
+      const weekIndex = Number(event.currentTarget.dataset.weekIndex || activeWeekIndex);
+      const workoutIndex = Number(event.currentTarget.dataset.workoutIndex || 0);
+      const week = getWeek(weekIndex);
+      const workout = week.workouts[workoutIndex] || week.workouts[0];
+      const context = buildWorkoutContext(week, workout, weekIndex, workoutIndex);
+      activeMileTestContext = { testKey: buildProgramProofKey(getAthleteProfile().campLength, weekIndex, workoutIndex), workoutContext: context };
       navigateTo('mile-test-page');
     } else if (event.currentTarget.dataset.action === 'complete-workout') {
       completeWorkoutFromDetail(event.currentTarget.dataset.weekIndex, event.currentTarget.dataset.workoutIndex);
@@ -1071,6 +1171,7 @@ function bindShellEvents() {
     if (!card) return;
     openWorkoutDetail(card.dataset.weekIndex, card.dataset.workoutIndex);
   });
+  document.querySelectorAll('#mile-test-page input').forEach((input) => input.addEventListener('input', updateMileCompletionState));
   document.getElementById('drawer-week-list')?.addEventListener('click', (event) => { const btn = event.target.closest('.drawer-week-btn'); if (!btn) return; saveWeek(Number(btn.dataset.weekIndex)); scWeek = activeWeekIndex + 1; renderShell(); renderSCPage(); navigateTo('home'); });
   document.getElementById('save-athlete-profile-btn')?.addEventListener('click', saveAthleteProfileFromInputs);
   document.getElementById('clear-test-data-btn')?.addEventListener('click', clearLocalTestData);
@@ -1097,6 +1198,7 @@ export async function initAthleteShell(hooks) {
       const completedWithNote = attachStoredNoteToCompletion(event.detail);
       const saved = saveWorkoutCompletion(completedWithNote) || completedWithNote;
       saveWorkoutCompletionToCloud(saved);
+      if (Array.isArray(saved.data) && saved.data.length) saveSprintSessionToCloud(saved);
     }
   });
   window.addEventListener('ringready:workout-completion-cleared', (event) => {

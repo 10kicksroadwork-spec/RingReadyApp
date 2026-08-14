@@ -85,3 +85,44 @@ scripts/supabase-workout-data.sql
 ```
 
 It adds the workout completion, sprint session, and Mile Test columns used by the app, plus the indexes and RLS policies needed for each athlete to only read and write their own rows.
+## 5. Private workout proof
+
+Run this second migration in Supabase SQL Editor:
+
+```text
+scripts/supabase-workout-proof.sql
+```
+
+It creates the private staging bucket, attachment records and RLS policies, then adds proof fields to workout, sprint and Mile Test records. Do not make the bucket public.
+
+Add `scripts/RingReadyWorkoutProof.gs` as a new file in the existing master-sheet Apps Script project. Keep the existing receiver and legacy extraction functions. In the current `doPost` dispatcher, pass proof events to the add-on:
+
+```js
+if (payload.eventType === 'workout_proof') {
+  rrHandleWorkoutProofEvent(payload);
+}
+```
+
+In Apps Script Project Settings, create these Script Properties:
+
+```text
+RING_READY_SUPABASE_URL
+RING_READY_SUPABASE_SERVICE_ROLE_KEY
+RING_READY_DRIVE_ROOT_FOLDER_ID
+```
+
+The URL is the Supabase project URL. The service-role key belongs only in Apps Script Properties; never put it in GitHub, Vercel or a `VITE_` variable. Create a private Drive folder named `Ring Ready Workout Proof` and use the folder ID from its URL.
+
+Run this once from Apps Script and approve its permissions:
+
+```js
+rrSetupWorkoutProofs()
+```
+
+That creates the audit tab, adds coach-facing proof columns and installs the 15-minute retry trigger. Redeploy the existing Apps Script web app afterward so the new `workout_proof` handler is live.
+
+To retry missed transfers manually:
+
+```js
+rrSyncPendingWorkoutProofs()
+```

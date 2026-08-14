@@ -298,6 +298,31 @@ export function enqueueDailyWorkoutForSync(workoutLog, workoutContext) {
   return enqueuePayloadForSync(buildDailyWorkoutPayload(workoutLog, workoutContext));
 }
 
+export function buildWorkoutProofPayload(attachment, workoutContext = {}, linkedRecordId = '') {
+  return {
+    ...buildBasePayload('workout_proof'),
+    proofPolicyVersion: 1,
+    proofKey: attachment.proofKey,
+    linkedRecordId: String(linkedRecordId || ''),
+    workoutContext: Object.keys(workoutContext).length ? workoutContext : null,
+    attachment: {
+      id: attachment.id,
+      storageBucket: 'workout-proof-staging',
+      storagePath: attachment.storagePath,
+      originalFilename: attachment.originalFilename,
+      mimeType: attachment.mimeType,
+      fileSize: attachment.fileSize,
+      width: attachment.width,
+      height: attachment.height,
+      uploadedAt: attachment.uploadedAt,
+    },
+  };
+}
+
+export function enqueueWorkoutProofForSync(attachment, workoutContext, linkedRecordId) {
+  return enqueuePayloadForSync(buildWorkoutProofPayload(attachment, workoutContext, linkedRecordId));
+}
+
 async function postSubmission(endpoint, item) {
   const body = JSON.stringify(item.payload);
 

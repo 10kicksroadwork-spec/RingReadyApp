@@ -13,6 +13,7 @@ import {
 import { removeWorkoutCompletion, saveSessionToHistory, saveWorkoutCompletion } from './storage.js';
 import {
   enqueueSessionForSync,
+  enqueueWorkoutProofForSync,
   flushSyncQueue,
   getAthleteProfile,
   saveAthleteProfile,
@@ -23,6 +24,15 @@ import {
   hasFreshHRSample,
   clearHRBufferForInterval,
 } from './hr-service.js';
+import {
+  PROOF_POLICY_VERSION,
+  buildProgramProofKey,
+  ensureWorkoutProofUploaded,
+  hasPendingWorkoutProof,
+  hasWorkoutProof,
+  initWorkoutProof,
+  markWorkoutProofCleared,
+} from './proof.js';
 import {
   showScreen,
   setStatus,
@@ -500,9 +510,10 @@ function updateCompleteWorkoutButton(record) {
   if (!canComplete) return;
 
   const isCompleted = !!record?.completedAt;
-  btn.disabled = isCompleted;
+  const canReplace = hasPendingWorkoutProof('sprint');
+  btn.disabled = !hasWorkoutProof('sprint') || (isCompleted && !canReplace);
   btn.classList.toggle('completed', isCompleted);
-  btn.textContent = isCompleted ? 'WORKOUT COMPLETE' : 'COMPLETE WORKOUT';
+  btn.textContent = isCompleted ? (canReplace ? 'SAVE REPLACEMENT PROOF' : 'WORKOUT COMPLETE') : 'COMPLETE WORKOUT';
   btn.setAttribute(
     'aria-label',
     isCompleted ? 'Workout already complete' : 'Mark workout complete'
@@ -517,6 +528,19 @@ export function buildResults(record = activeResultRecord) {
   body.innerHTML = '';
 
   document.getElementById('results-date').textContent = formatResultDate(resultRecord);
+  if (isProgramWorkoutRecord(resultRecord)) {
+    const context = getRecordContext(resultRecord);
+    const campLength = Number(getAthleteProfile().campLength) || 7;
+    initWorkoutProof('sprint', {
+      proofKey: buildProgramProofKey(campLength, context.weekIndex, context.workoutIndex),
+      context: { ...context, campLength },
+      existingAttachment: resultRecord.attachment || null,
+      legacy: !!(resultRecord.completedAt && !resultRecord.proofPolicyVersion),
+    });
+  } else {
+    const proofHost = document.querySelector('[data-proof-host="sprint"]');
+    if (proofHost) proofHost.innerHTML = '';
+  }
 
   const avgDrop = Number.isFinite(Number(resultRecord.avgDrop))
     ? Number(resultRecord.avgDrop)
@@ -587,9 +611,25 @@ export function buildResultsText(record = activeResultRecord) {
   return text;
 }
 
-export function completeWorkout() {
+export async function completeWorkout() {
   if (!activeResultRecord || !Array.isArray(activeResultRecord.data)) {
     showToast('NO SESSION RESULTS TO SAVE');
+    return;
+  }
+  if (!hasWorkoutProof('sprint')) {
+    showToast(navigator.onLine ? 'ADD WORKOUT PROOF' : 'INTERNET REQUIRED FOR WORKOUT PROOF');
+    return;
+  }
+  const isNewProof = hasPendingWorkoutProof('sprint');
+  try {
+    const attachment = await ensureWorkoutProofUploaded('sprint', activeResultRecord.id);
+    if (attachment) {
+      activeResultRecord = { ...activeResultRecord, proofPolicyVersion: PROOF_POLICY_VERSION, attachment };
+      if (isNewProof) enqueueWorkoutProofForSync(attachment, { ...getRecordContext(activeResultRecord), campLength: Number(getAthleteProfile().campLength) || 7 }, activeResultRecord.id);
+    }
+  } catch (error) {
+    console.warn('Sprint proof upload failed', error);
+    showToast(String(error?.message || error).toUpperCase());
     return;
   }
 
@@ -602,6 +642,7 @@ export function completeWorkout() {
   activeResultRecord = completed;
   updateCompleteWorkoutButton(completed);
   window.dispatchEvent(new CustomEvent('ringready:workout-completed', { detail: completed }));
+  flushSyncQueue().catch((error) => console.warn('Workout proof sync failed', error));
   showToast('WORKOUT COMPLETE');
 }
 
@@ -614,6 +655,7 @@ export function clearResultWorkoutCompletion() {
 
   if (!window.confirm('Mark this workout incomplete on this device?')) return;
 
+  const attachmentId = activeResultRecord?.attachment?.id;
   const removed = removeWorkoutCompletion(context.weekIndex, context.workoutIndex);
   if (!removed) {
     showToast('NO COMPLETION TO CLEAR');
@@ -623,10 +665,14 @@ export function clearResultWorkoutCompletion() {
   activeResultRecord = { ...activeResultRecord };
   delete activeResultRecord.completedAt;
   delete activeResultRecord.completionKey;
+  markWorkoutProofCleared(attachmentId, true).catch((error) => console.warn('Could not mark sprint proof cleared', error));
   updateCompleteWorkoutButton(activeResultRecord);
   window.dispatchEvent(new CustomEvent('ringready:workout-completion-cleared', { detail: { weekIndex: context.weekIndex, workoutIndex: context.workoutIndex } }));
   showToast('WORKOUT MARKED INCOMPLETE');
 }
+window.addEventListener('ringready:proof-state-changed', (event) => {
+  if (event.detail?.surface === 'sprint' && activeResultRecord) updateCompleteWorkoutButton(activeResultRecord);
+});
 
 export function showSavedWorkoutResult(record) {
   if (!record) return;

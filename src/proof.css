@@ -1,0 +1,116 @@
+.workout-proof-card {
+  margin: 16px 0;
+  padding: 16px;
+  border: 1px solid #5c4b11;
+  border-radius: 8px;
+  background: #191919;
+  color: #fff;
+}
+
+.workout-proof-card.ready { border-color: #2fbf71; }
+.workout-proof-card.error { border-color: #ef4444; }
+.workout-proof-card.uploading { opacity: 0.78; }
+
+.proof-head,
+.proof-file-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.proof-head p {
+  margin: 5px 0 0;
+  color: #c8c8c8;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.proof-required {
+  flex: 0 0 auto;
+  color: #f5c842;
+  font: 700 9px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  letter-spacing: 1.4px;
+}
+
+.proof-preview {
+  display: block;
+  width: 100%;
+  max-height: 280px;
+  margin: 14px 0;
+  object-fit: contain;
+  border: 1px solid #333;
+  border-radius: 6px;
+  background: #0b0b0b;
+}
+
+.proof-file-row { margin-top: 14px; }
+
+.proof-file-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.proof-file-copy strong {
+  overflow: hidden;
+  color: #fff;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.proof-file-copy span {
+  color: #a8a8a8;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.workout-proof-card.error .proof-file-copy span { color: #ff8585; }
+.workout-proof-card.ready .proof-file-copy span { color: #64dc99; }
+
+.proof-picker-btn {
+  flex: 0 0 auto;
+  min-height: 42px;
+  padding: 0 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #a88616;
+  border-radius: 6px;
+  color: #f5c842;
+  cursor: pointer;
+  font: 700 10px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  letter-spacing: 1px;
+}
+
+.proof-picker-btn input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  opacity: 0;
+}
+
+.results-proof {
+  padding: 0 24px;
+}
+
+.results-proof:empty { display: none; }
+
+.page-panel [data-proof-host="mile"] .workout-proof-card {
+  background: #111;
+}
+
+@media (max-width: 560px) {
+  .proof-head,
+  .proof-file-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .proof-picker-btn { width: 100%; }
+  .proof-file-copy { width: 100%; }
+  .proof-preview { max-height: 220px; }
+}

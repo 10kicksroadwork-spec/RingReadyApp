@@ -166,6 +166,8 @@ function toCloudWorkoutCompletion(record, userId) {
     max_bpm: workoutLog ? integerOrNull(workoutLog.maxBpm) : null,
     distance: workoutLog ? numberOrNull(workoutLog.distance) : null,
     completed_at: normalizeISODate(record.completedAt || workoutLog?.completedAt || record.date),
+    proof_policy_version: integerOrNull(record.proofPolicyVersion),
+    attachment_id: record.attachment?.id || null,
     record_json: record,
     updated_at: new Date().toISOString(),
   };
@@ -202,6 +204,8 @@ function toCloudSprintSession(record, userId) {
     intervals_completed: data.length,
     avg_drop: numberOrNull(record.avgDrop),
     peak_hr: integerOrNull(record.peakHR),
+    proof_policy_version: integerOrNull(record.proofPolicyVersion),
+    attachment_id: record.attachment?.id || null,
     session_json: record,
     updated_at: new Date().toISOString(),
   };
@@ -212,6 +216,7 @@ function mapCloudMileTest(row) {
   const result = safeJSON(row.result_json, {});
   return {
     ...result,
+    testKey: row.test_key || result.testKey || 'mile-test:baseline',
     distance: row.distance ?? result.distance,
     totalMinutes: row.total_minutes ?? result.totalMinutes,
     totalSeconds: row.total_seconds ?? result.totalSeconds,
@@ -223,8 +228,11 @@ function mapCloudMileTest(row) {
 }
 
 function toCloudMileTest(result, hrInfo, testContext, userId) {
+  const testKey = String(testContext?.testKey || result.testKey || 'mile-test:baseline');
+  const resultWithContext = { ...result, testKey };
   return {
     user_id: userId,
+    test_key: testKey,
     saved_at: normalizeISODate(result.savedAt),
     distance: numberOrNull(result.distance),
     total_minutes: numberOrNull(result.totalMinutes),
@@ -232,7 +240,9 @@ function toCloudMileTest(result, hrInfo, testContext, userId) {
     pace_min_per_mile: numberOrNull(result.paceMinPerMile),
     avg_bpm: integerOrNull(result.avgBpm),
     max_bpm: integerOrNull(result.maxBpm),
-    result_json: result,
+    proof_policy_version: integerOrNull(result.proofPolicyVersion),
+    attachment_id: result.attachment?.id || null,
+    result_json: resultWithContext,
     hr_info_json: hrInfo || null,
     test_context_json: testContext || null,
     updated_at: new Date().toISOString(),
@@ -436,7 +446,7 @@ export async function saveCloudMileTest(result, hrInfo, testContext) {
 
   const { error } = await supabase
     .from('mile_tests')
-    .upsert(toCloudMileTest(result, hrInfo, testContext, user.id), { onConflict: 'user_id' });
+    .upsert(toCloudMileTest(result, hrInfo, testContext, user.id), { onConflict: 'user_id,test_key' });
 
   if (error) throw error;
   return result;

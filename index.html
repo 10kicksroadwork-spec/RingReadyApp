@@ -29,7 +29,7 @@
   </div>
 
 
-  
+
   <!-- AUTH -->
   <div id="auth" class="screen auth-screen">
     <div class="auth-card">
@@ -359,6 +359,7 @@
             <input type="number" id="mile-max-bpm-input" inputmode="numeric">
           </label>
         </div>
+        <div data-proof-host="mile"></div>
         <button type="button" class="start-btn page-save-btn" id="save-mile-test-btn">SAVE MILE TEST</button>
         <div class="last-result" id="mile-last-result"></div>
       </section>
@@ -481,6 +482,8 @@
         </div>
       </section>
 
+      <div data-proof-host="detail"></div>
+
       <section class="detail-card workout-note-card" id="detail-note-card">
         <div class="detail-note-head">
           <div class="field-label">Workout Notes</div>
@@ -566,6 +569,7 @@
       <div class="results-sub" id="results-date"></div>
     </div>
     <div class="results-body" id="results-body"></div>
+    <div class="results-proof" data-proof-host="sprint"></div>
     <div class="results-actions">
       <button type="button" class="complete-workout-btn" id="complete-workout-btn" aria-label="Mark workout complete">COMPLETE WORKOUT</button>
       <button type="button" class="secondary-danger-btn" id="clear-result-completion-btn" hidden>MARK WORKOUT INCOMPLETE</button>
