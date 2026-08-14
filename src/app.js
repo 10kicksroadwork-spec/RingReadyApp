@@ -64,6 +64,9 @@ export const state = {
 };
 
 let activeResultRecord = null;
+const STRIDES_VIDEO_URL = 'https://www.youtube.com/watch?v=1i2ZPpXtuOk';
+const SKIPS_VIDEO_URL = 'https://www.youtube.com/watch?v=A7r6yCpmSrA';
+
 
 export function clearSessionTimer() {
   if (state.timer) {
@@ -88,8 +91,40 @@ function syncConfigControls() {
   if (targetPct && Number.isFinite(Number(cfg.targetPct))) targetPct.value = String(cfg.targetPct);
 }
 
+function renderSprintWarmup(context) {
+  const group = document.getElementById('sprint-warmup-group');
+  const copy = document.getElementById('sprint-warmup-copy');
+  const warmup = String(context?.warmup || '').trim();
+
+  if (!group || !copy) return;
+  group.hidden = !warmup;
+  copy.replaceChildren();
+  if (!warmup) return;
+
+  const exercisePattern = /(strides?|A[- ]?skips?|B[- ]?skips?)/gi;
+  let cursor = 0;
+
+  for (const match of warmup.matchAll(exercisePattern)) {
+    const index = match.index ?? 0;
+    if (index > cursor) copy.append(document.createTextNode(warmup.slice(cursor, index)));
+
+    const exercise = match[0];
+    const link = document.createElement('a');
+    link.className = 'sprint-warmup-link';
+    link.href = /^strides?$/i.test(exercise) ? STRIDES_VIDEO_URL : SKIPS_VIDEO_URL;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = exercise;
+    copy.append(link);
+    cursor = index + exercise.length;
+  }
+
+  if (cursor < warmup.length) copy.append(document.createTextNode(warmup.slice(cursor)));
+}
+
 export function setWorkoutContext(context = null) {
   cfg.workoutContext = context ? { ...context } : null;
+  renderSprintWarmup(cfg.workoutContext);
 
   if (context && Number.isFinite(Number(context.reps))) {
     cfg.reps = Math.max(1, Math.min(20, Number(context.reps)));

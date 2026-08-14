@@ -242,6 +242,27 @@
   }
 
   .field-sublabel { font-size: 12px; color: var(--light-grey); margin-top: -6px; }
+
+  .sprint-warmup-copy {
+    background: var(--dark2);
+    border: 1px solid var(--grey);
+    border-radius: 12px;
+    color: var(--white);
+    font-size: 15px;
+    line-height: 1.6;
+    padding: 16px;
+  }
+
+  .sprint-warmup-link {
+    color: #4da3ff;
+    font-weight: 700;
+    text-decoration: underline;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 2px;
+  }
+
+  .sprint-warmup-link:visited { color: #4da3ff; }
+
   .profile-input {
     width: 100%;
     background: var(--dark2);
