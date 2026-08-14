@@ -64,7 +64,7 @@ export const state = {
 };
 
 let activeResultRecord = null;
-const STRIDES_VIDEO_URL = 'https://www.youtube.com/watch?v=1i2ZPpXtuOk';
+const STRIDES_VIDEO_URL = 'https://www.youtube.com/watch?v=YA_u3F5aCdU';
 const SKIPS_VIDEO_URL = 'https://www.youtube.com/watch?v=A7r6yCpmSrA';
 
 
