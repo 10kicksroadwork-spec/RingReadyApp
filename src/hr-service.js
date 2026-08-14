@@ -144,9 +144,9 @@ export function applyPlatformBLEMode() {
     return;
   }
 
-  if (info.isIOS && !info.isCapacitor) {
+  if (info.isIOS && !info.isCapacitor && !info.supportsWebBLE) {
     name.textContent = 'Manual Mode';
-    status.textContent = 'iPhone/iPad Safari uses manual HR entry';
+    status.textContent = 'For BLE on iPhone/iPad, open Ring Ready in Bluefy';
     btn.textContent = 'MANUAL';
     btn.disabled = true;
     btn.style.opacity = '0.55';
@@ -179,8 +179,8 @@ export async function connectHR() {
     return connectNative();
   }
 
-  if (info.isIOS && !info.isCapacitor) {
-    uiHooks?.showToast('IPHONE SAFARI USES MANUAL HR');
+  if (info.isIOS && !info.isCapacitor && !info.supportsWebBLE) {
+    uiHooks?.showToast('USE BLUEFY FOR BLE ON IPHONE/IPAD');
     return;
   }
 

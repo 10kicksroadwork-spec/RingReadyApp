@@ -19,11 +19,7 @@ export function initWebBLE({ onHR }) {
 }
 
 export function webBLESupported() {
-  const ua = navigator.userAgent || '';
-  const isIOS =
-    /iPad|iPhone|iPod/.test(ua) ||
-    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-  return !!navigator.bluetooth && !isIOS;
+  return !!navigator.bluetooth;
 }
 
 export async function connectWebHR() {

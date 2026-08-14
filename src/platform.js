@@ -23,7 +23,7 @@ export function getPlatformInfo() {
     isCapacitor,
     capacitorPlatform,
     hasWebBluetooth,
-    supportsWebBLE: hasWebBluetooth && !isIOS && !isCapacitor,
+    supportsWebBLE: hasWebBluetooth && !isCapacitor,
     supportsNativeBLE: isCapacitor && ['ios', 'android'].includes(capacitorPlatform),
     isNativeApp: isCapacitor && ['ios', 'android'].includes(capacitorPlatform),
   };
@@ -34,5 +34,5 @@ export function getHRMonitorSetupCopy() {
   if (info.isNativeApp) {
     return 'Optional. Works with most BLE chest straps. ANT+ is not supported. Manual HR entry is always available.';
   }
-  return 'Optional. Works with most BLE chest straps on compatible Android/Desktop browsers. ANT+ is not supported. iPhone/iPad Safari uses manual HR entry.';
+  return 'Optional. Works with most BLE chest straps. ANT+ is not supported. On iPhone/iPad, use the Bluefy browser for BLE support; manual HR entry is always available.';
 }
