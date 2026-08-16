@@ -113,3 +113,22 @@ export const MILE_TEST_INFO = {
     'Cosby High School - 14300 Fox Club Parkway, Midlothian, VA 23112',
   ],
 };
+
+/** Half-width (bpm) around expected session average for on-track feedback. */
+export const SESSION_AVG_RANGE_BPM = 5;
+
+export const THRESHOLD_GUIDANCE = [
+  'Target BPM is only for the hard 4 minute intervals (hit 84–88%).',
+  'Easy jogs stay easy — don’t chase Target BPM on recoveries. You want to be in Zone 2 (60–70%) during the recovery jogs.',
+  'Log Total Time and Average HR for the whole workout (the hard intervals + recoveries).',
+  'The total workout session average will look lower because it’s averaging your hard work and rests together.',
+  'The app will figure out the math (good old fashioned algebra). Coaches can also check your workout screenshot to triple-check if needed.',
+];
+
+export const FIGHT_PACE_GUIDANCE = [
+  'Target BPM is only for the hard intervals — don’t chase it on the easy jogs.',
+  'Easy jogs stay easy. Stay in Zone 2 (60–70%) on recoveries.',
+  'Log Total Time and Average HR for the whole workout (hard intervals + recoveries).',
+  'Your session average will look lower because it blends hard work and rest.',
+  'The app will figure out the math. Coaches can also check your workout screenshot to triple-check if needed.',
+];

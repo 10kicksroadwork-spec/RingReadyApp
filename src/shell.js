@@ -15,6 +15,9 @@ import {
   SC_SESSIONS,
   SC_WEEK_STORAGE_KEY,
   WELCOME_SECTIONS,
+  SESSION_AVG_RANGE_BPM,
+  THRESHOLD_GUIDANCE,
+  FIGHT_PACE_GUIDANCE,
 } from './app-content.js';
 import {
   enqueueDailyWorkoutForSync,
@@ -411,6 +414,108 @@ function getWorkoutTargetBPM(workout, hrInfo = getHRInfo()) {
   const pct = getWorkoutTargetPct(workout);
   return Number.isFinite(pct) ? calculateZoneBPM({ pct }, hrInfo) : Number(workout.targetBPM) || null;
 }
+/** Zone 2 midpoint (60–70%) used for recovery jogs in session-average math. */
+function getZone2BPM(hrInfo = getHRInfo()) {
+  return calculateZoneBPM({ pct: 65 }, hrInfo);
+}
+function getIntervalPlan(workout) {
+  const plan = workout?.intervalPlan;
+  if (!plan) return null;
+  const reps = Number(plan.reps);
+  const workMinutes = Number(plan.workMinutes);
+  const restMinutes = Number(plan.restMinutes);
+  if (![reps, workMinutes, restMinutes].every((value) => Number.isFinite(value) && value > 0)) return null;
+  const workTotal = reps * workMinutes;
+  const restTotal = Math.max(0, reps - 1) * restMinutes;
+  return { reps, workMinutes, restMinutes, workTotal, restTotal, totalMinutes: workTotal + restTotal };
+}
+function getExpectedSessionAvg(workout, hrInfo = getHRInfo()) {
+  const plan = getIntervalPlan(workout);
+  const targetBPM = getWorkoutTargetBPM(workout, hrInfo);
+  const easyBPM = getZone2BPM(hrInfo);
+  if (!plan || !Number.isFinite(targetBPM) || plan.totalMinutes <= 0) return null;
+  const expectedAvg = Math.round(((plan.workTotal * targetBPM) + (plan.restTotal * easyBPM)) / plan.totalMinutes);
+  const range = SESSION_AVG_RANGE_BPM;
+  return {
+    expectedAvg,
+    low: expectedAvg - range,
+    high: expectedAvg + range,
+    targetBPM,
+    easyBPM,
+    plan,
+  };
+}
+function getWorkoutGuidance(workout) {
+  const type = String(workout?.type || '');
+  if (/threshold/i.test(type)) return THRESHOLD_GUIDANCE;
+  if (/fight-?pace/i.test(type)) return FIGHT_PACE_GUIDANCE;
+  return null;
+}
+function compareSessionAvg(avgBpm, expected) {
+  if (!expected || !Number.isFinite(avgBpm)) return null;
+  if (avgBpm >= expected.low && avgBpm <= expected.high) {
+    return { tone: 'on-track', label: 'On track', detail: `Within expected session average (${expected.low}–${expected.high}).` };
+  }
+  if (avgBpm > expected.high) {
+    return { tone: 'high', label: 'A bit high', detail: `Above expected session average (${expected.low}–${expected.high}).` };
+  }
+  return { tone: 'low', label: 'A bit low', detail: `Below expected session average (${expected.low}–${expected.high}).` };
+}
+let detailExpectedSessionAvg = null;
+function renderDetailGuidance(workout) {
+  const card = document.getElementById('detail-guidance-card');
+  const list = document.getElementById('detail-guidance-list');
+  if (!card || !list) return;
+  const bullets = getWorkoutGuidance(workout);
+  if (!bullets?.length) {
+    card.hidden = true;
+    list.innerHTML = '';
+    return;
+  }
+  card.hidden = false;
+  list.innerHTML = bullets.map((line) => `<li>${escapeHTML(line)}</li>`).join('');
+}
+function renderDetailExpectedAvg(workout) {
+  const card = document.getElementById('detail-expected-avg-card');
+  const bpmNote = document.getElementById('detail-bpm-note');
+  const status = document.getElementById('detail-expected-status');
+  detailExpectedSessionAvg = getExpectedSessionAvg(workout);
+  if (!card) return;
+  if (!detailExpectedSessionAvg) {
+    card.hidden = true;
+    if (bpmNote) bpmNote.hidden = true;
+    if (status) { status.hidden = true; status.textContent = ''; status.className = 'detail-expected-status'; }
+    setText('detail-expected-avg', '--');
+    setText('detail-expected-meta', 'Read-only · hard work + recoveries');
+    return;
+  }
+  card.hidden = false;
+  if (bpmNote) bpmNote.hidden = false;
+  setText('detail-expected-avg', String(detailExpectedSessionAvg.expectedAvg));
+  setText('detail-expected-meta', `Aim ~${detailExpectedSessionAvg.low}–${detailExpectedSessionAvg.high} · read-only`);
+  updateDetailExpectedStatus();
+}
+function updateDetailExpectedStatus() {
+  const status = document.getElementById('detail-expected-status');
+  if (!status) return;
+  if (!detailExpectedSessionAvg) {
+    status.hidden = true;
+    status.textContent = '';
+    status.className = 'detail-expected-status';
+    return;
+  }
+  const avgBpm = parseThreeDigitHR('detail-avg-bpm-input');
+  const comparison = compareSessionAvg(avgBpm, detailExpectedSessionAvg);
+  if (!comparison) {
+    status.hidden = true;
+    status.textContent = '';
+    status.className = 'detail-expected-status';
+    return;
+  }
+  status.hidden = false;
+  status.className = `detail-expected-status is-${comparison.tone}`;
+  status.textContent = `${comparison.label} — ${comparison.detail}`;
+}
 function syncSetupHRInputs(hrInfo = getHRInfo()) { const maxInput = document.getElementById('max-hr'); if (maxInput) maxInput.value = String(Math.round(hrInfo.maxHr)); }
 function getSprintSetupFromWorkout(workout) {
   const text = `${workout.type || ''} ${workout.description || ''}`;
@@ -616,6 +721,7 @@ function handleDetailLogInput(event) {
     const next = sanitizeThreeDigitInput(input.value);
     if (input.value !== next) input.value = next;
   }
+  if (input.id === 'detail-avg-bpm-input') updateDetailExpectedStatus();
   updateDetailCompletionState();
 }
 function setDetailWorkoutLog(isVisible, completion = null, workout = null) {
@@ -630,6 +736,7 @@ function setDetailWorkoutLog(isVisible, completion = null, workout = null) {
   setInputValue('detail-max-bpm-input', log.maxBpm ?? '');
   setInputValue('detail-distance-input', log.distance ?? '');
   card.querySelectorAll('input').forEach((input) => { input.disabled = false; });
+  updateDetailExpectedStatus();
 }
 function flushQueuedEvent(syncMessage) {
   flushSyncQueue().then((result) => {
@@ -1073,9 +1180,11 @@ function openWorkoutDetail(weekIndex, workoutIndex) {
   setText('detail-title', workout.type);
   setText('detail-desc', workout.description);
   renderWarmupCard(workout);
+  renderDetailGuidance(workout);
   setText('detail-zone', workout.targetZone || '--');
   const targetBPM = getWorkoutTargetBPM(workout);
   setText('detail-bpm', targetBPM ? String(targetBPM) : '--');
+  renderDetailExpectedAvg(workout);
   const baseActionType = ['sprint', 'mile-test'].includes(workout.action) ? workout.action : 'complete-workout';
   const actionType = completion && hasSessionResults(completion) ? 'view-results' : baseActionType;
   setDetailWorkoutLog(baseActionType === 'complete-workout', completion, workout);
