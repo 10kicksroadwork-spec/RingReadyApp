@@ -4,6 +4,7 @@ import {
   REST_CAPTURE_SEC,
 } from './constants.js';
 import {
+  validateRestHR,
   validateSprintHR,
   calculateAvgDrop,
   calculatePeakHR,
@@ -303,6 +304,7 @@ export function openManualSprintHRModal() {
   const restInput = document.getElementById('modal-rest-hr');
   const wrapSprint = document.getElementById('wrap-sprint-hr');
   const wrapRest = document.getElementById('wrap-rest-hr');
+  const restLabel = document.querySelector('label[for="modal-rest-hr"]');
 
   document.getElementById('modal-title').textContent =
     `Interval ${state.currentRep} -- Sprint HR Needed`;
@@ -319,6 +321,7 @@ export function openManualSprintHRModal() {
   restInput.disabled = true;
   wrapRest.style.opacity = '0.25';
   wrapRest.classList.remove('auto-filled');
+  if (restLabel) restLabel.textContent = 'Recovery HR';
 
   setStatus('rest');
   setMainBtn('disabled', 'HR NEEDED');
@@ -328,19 +331,33 @@ export function openManualSprintHRModal() {
 }
 
 export function startAutoRest() {
-  clearSessionTimer();
-
   const totalRest = getRestDuration(cfg);
   const restCaptureAt = Math.min(REST_CAPTURE_SEC, totalRest);
+  runAutoRestCountdown(totalRest, restCaptureAt, 0);
+}
 
-  let elapsed = 0;
+function resumeAutoRest() {
+  const totalRest = getRestDuration(cfg);
+  const restCaptureAt = Math.min(REST_CAPTURE_SEC, totalRest);
+  const elapsed = Math.max(0, totalRest - state.seconds);
+  runAutoRestCountdown(totalRest, restCaptureAt, elapsed);
+}
+
+function runAutoRestCountdown(totalRest, restCaptureAt, initialElapsed) {
+  clearSessionTimer();
+
+  let elapsed = Math.max(0, Math.min(totalRest, initialElapsed));
   state.phase = 'resting';
-  state.seconds = totalRest;
+  state.seconds = Math.max(0, totalRest - elapsed);
 
   setStatus('rest');
   setMainBtn('disabled', 'RECOVERING...');
-  setTimerDisplay('REST', String(state.seconds), getRestCaptureCopy(totalRest, restCaptureAt, false));
-  setRing(1, false);
+  setTimerDisplay(
+    'REST',
+    String(state.seconds),
+    getRestCaptureCopy(totalRest, restCaptureAt, state.pendingRep?.restHR !== null)
+  );
+  setRing(state.seconds / totalRest, false);
 
   state.timer = setInterval(() => {
     elapsed++;
@@ -359,15 +376,15 @@ export function startAutoRest() {
     if (state.seconds <= 10) digits.classList.add('urgent');
     else digits.classList.remove('urgent');
 
-    if (elapsed === restCaptureAt) {
-      autoCaptureRestHR(restCaptureAt);
+    if (elapsed === restCaptureAt && !autoCaptureRestHR(restCaptureAt)) {
+      return;
     }
 
     if (state.seconds <= 0) {
       clearSessionTimer();
 
-      if (state.pendingRep && state.pendingRep.restHR === null) {
-        autoCaptureRestHR(restCaptureAt);
+      if (state.pendingRep && state.pendingRep.restHR === null && !autoCaptureRestHR(restCaptureAt)) {
+        return;
       }
 
       completeRestAndAdvance();
@@ -376,24 +393,62 @@ export function startAutoRest() {
 }
 
 export function autoCaptureRestHR(captureAt) {
-  if (!state.pendingRep) return;
-  if (state.pendingRep.restHR !== null) return;
+  if (!state.pendingRep) return false;
+  if (state.pendingRep.restHR !== null) return true;
 
   const restHR = getAutoCapturedHR();
 
   if (!restHR) {
     state.pendingRep.needsManualRest = true;
-    showToast(`REST HR NOT CAPTURED @ ${captureAt}s`);
-    return;
+    openManualRestHRModal(captureAt);
+    return false;
   }
 
   state.pendingRep.restHR = restHR;
+  state.pendingRep.needsManualRest = false;
   state.capturedRestHR = restHR;
 
   document.getElementById('chip-rest').textContent = restHR;
   document.getElementById('chip-rest').classList.add('has-val');
 
   showToast(`REST HR CAPTURED: ${restHR}`);
+  return true;
+}
+
+export function openManualRestHRModal(captureAt) {
+  clearSessionTimer();
+  state.awaitingModal = true;
+  state.phase = 'manual-entry';
+
+  const sprintInput = document.getElementById('modal-sprint-hr');
+  const restInput = document.getElementById('modal-rest-hr');
+  const wrapSprint = document.getElementById('wrap-sprint-hr');
+  const wrapRest = document.getElementById('wrap-rest-hr');
+  const restLabel = document.querySelector('label[for="modal-rest-hr"]');
+
+  document.getElementById('modal-title').textContent =
+    `Interval ${state.currentRep} -- Recovery HR Needed`;
+  document.getElementById('modal-sub').textContent = isHRConnected()
+    ? 'No fresh recovery reading was available. Enter your heart rate to continue.'
+    : 'Enter your heart rate at the recovery checkpoint to continue.';
+
+  sprintInput.value = state.pendingRep?.sprintHR || '';
+  sprintInput.disabled = true;
+  wrapSprint.style.opacity = '0.35';
+  wrapSprint.classList.remove('auto-filled');
+
+  restInput.value = '';
+  restInput.disabled = false;
+  wrapRest.style.opacity = '1';
+  wrapRest.classList.remove('auto-filled');
+  if (restLabel) restLabel.textContent = `Recovery HR @ ${captureAt}s`;
+
+  setStatus('rest');
+  setMainBtn('disabled', 'HR NEEDED');
+  document.getElementById('hr-modal').classList.add('open');
+  showToast('ENTER RECOVERY HR TO CONTINUE');
+
+  setTimeout(() => restInput.focus(), 200);
 }
 
 export function completeRestAndAdvance() {
@@ -473,6 +528,34 @@ export function confirmHR() {
     showToast('NO ACTIVE REP TO UPDATE');
     return;
   }
+  if (state.pendingRep.needsManualRest && state.pendingRep.restHR === null) {
+    const restCheck = validateRestHR(document.getElementById('modal-rest-hr').value);
+
+    if (!restCheck.valid) {
+      showToast('ENTER A VALID RECOVERY HR');
+      return;
+    }
+
+    state.pendingRep.restHR = restCheck.value;
+    state.pendingRep.needsManualRest = false;
+    state.capturedRestHR = restCheck.value;
+
+    document.getElementById('chip-rest').textContent = restCheck.value;
+    document.getElementById('chip-rest').classList.add('has-val');
+
+    document.getElementById('hr-modal').classList.remove('open');
+    document.getElementById('wrap-sprint-hr').classList.remove('auto-filled');
+    document.getElementById('wrap-rest-hr').classList.remove('auto-filled');
+
+    state.awaitingModal = false;
+    state.phase = 'resting';
+    showToast(`RECOVERY HR SAVED: ${restCheck.value}`);
+
+    if (state.seconds <= 0) completeRestAndAdvance();
+    else resumeAutoRest();
+    return;
+  }
+
 
   const sprintCheck = validateSprintHR(document.getElementById('modal-sprint-hr').value);
 
