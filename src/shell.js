@@ -55,6 +55,13 @@ import {
   initWorkoutProof,
   markWorkoutProofCleared,
 } from './proof.js';
+import {
+  closeOverlay,
+  initNavigation,
+  navigate,
+  openOverlay,
+  replaceRoute,
+} from './navigation.js';
 
 const WEEK_INDEX_KEY = 'ringReadyActiveWeekIndex';
 const PROFILE_FORM_COLLAPSED_KEY = 'ringReadyProfileFormCollapsed';
@@ -242,14 +249,13 @@ function renderAllPages() {
 }
 function enterAppHome() {
   renderAllPages();
-  shellHooks?.showScreen('home');
-  setActiveNavigation('home');
+  replaceRoute('home');
   maybeShowOnboarding();
 }
 function showAuthScreen(message = '') {
   renderAuthUI();
   setAuthStatus(message);
-  shellHooks?.showScreen('auth');
+  replaceRoute('auth');
   setActiveNavigation('');
 }
 async function hydrateCloudData() {
@@ -1029,8 +1035,8 @@ function setWeekDrawerOpen(isOpen) {
   backdrop?.classList.toggle('open', isOpen);
   drawer?.setAttribute('aria-hidden', String(!isOpen));
 }
-function openWeekDrawer() { renderDrawerWeeks(); setWeekDrawerOpen(true); }
-function closeWeekDrawer() { setWeekDrawerOpen(false); }
+function openWeekDrawer() { renderDrawerWeeks(); openOverlay('drawer'); }
+function closeWeekDrawer() { closeOverlay('drawer'); }
 function renderPage(screenId) {
   if (screenId === 'home') renderShell();
   if (screenId === 'athlete-profile') renderAthleteProfilePage();
@@ -1057,11 +1063,48 @@ function maybeShowOnboarding() {
   modal.hidden = hasProfile || dismissed;
   modal.setAttribute('aria-hidden', String(hasProfile || dismissed));
 }
-function navigateTo(screenId) {
-  closeWeekDrawer();
+function renderNavigationRoute(route) {
+  setWeekDrawerOpen(route?.overlay === 'drawer');
+  if (route?.overlay) return;
+
+  const screenId = route?.screenId || 'home';
+  const payload = route?.payload || {};
+  if (isSupabaseConfigured && !getCurrentUser() && !['auth', 'boot'].includes(screenId)) {
+    replaceRoute('auth');
+    return;
+  }
+
+
+  if (screenId === 'workout-detail') {
+    openWorkoutDetail(payload.weekIndex, payload.workoutIndex);
+    return;
+  }
+
+  if (screenId === 'setup') {
+    shellHooks?.setWorkoutContext?.(payload.workoutContext || null);
+    shellHooks?.showScreen('setup');
+    setActiveNavigation('');
+    return;
+  }
+
+  if (screenId === 'mile-test-page') {
+    activeMileTestContext = {
+      testKey: payload.testKey || 'mile-test:baseline',
+      workoutContext: payload.workoutContext || null,
+    };
+  }
+
+  if (shellHooks?.renderRoute?.(route)) {
+    setActiveNavigation('');
+    return;
+  }
+
   renderPage(screenId);
   shellHooks?.showScreen(screenId);
   setActiveNavigation(screenId);
+}
+function navigateTo(screenId, payload = {}) {
+  navigate(screenId, payload);
 }
 function openWorkoutDetail(weekIndex, workoutIndex) {
   const safeWeekIndex = Number(weekIndex);
@@ -1123,13 +1166,15 @@ function bindShellEvents() {
     const pageBtn = event.target.closest('[data-page-target]');
     if (!pageBtn) return;
     event.preventDefault();
-    if (pageBtn.dataset.pageTarget === 'mile-test-page') activeMileTestContext = { testKey: 'mile-test:baseline', workoutContext: null };
-    navigateTo(pageBtn.dataset.pageTarget);
+    const payload = pageBtn.dataset.pageTarget === 'mile-test-page'
+      ? { testKey: 'mile-test:baseline', workoutContext: null }
+      : {};
+    navigateTo(pageBtn.dataset.pageTarget, payload);
   });
   document.querySelectorAll('[data-open-menu]').forEach((btn) => btn.addEventListener('click', openWeekDrawer));
   document.getElementById('close-week-menu-btn')?.addEventListener('click', closeWeekDrawer);
   document.getElementById('week-drawer-backdrop')?.addEventListener('click', closeWeekDrawer);
-  document.getElementById('open-sprint-setup-btn')?.addEventListener('click', () => { shellHooks?.setWorkoutContext?.(null); shellHooks?.showScreen('setup'); setActiveNavigation(''); });
+  document.getElementById('open-sprint-setup-btn')?.addEventListener('click', () => navigateTo('setup', { workoutContext: null }));
   document.getElementById('setup-back-btn')?.addEventListener('click', () => navigateTo('home'));
   document.getElementById('detail-back-btn')?.addEventListener('click', () => navigateTo('home'));
   document.querySelectorAll('#detail-log-card input').forEach((input) => input.addEventListener('input', handleDetailLogInput));
@@ -1151,17 +1196,17 @@ function bindShellEvents() {
       const workoutIndex = Number(event.currentTarget.dataset.workoutIndex || 0);
       const week = getWeek(weekIndex);
       const workout = week.workouts[workoutIndex] || week.workouts[0];
-      shellHooks?.setWorkoutContext?.(buildWorkoutContext(week, workout, weekIndex, workoutIndex));
-      shellHooks?.showScreen('setup');
-      setActiveNavigation('');
+      navigateTo('setup', { workoutContext: buildWorkoutContext(week, workout, weekIndex, workoutIndex) });
     } else if (event.currentTarget.dataset.action === 'mile-test') {
       const weekIndex = Number(event.currentTarget.dataset.weekIndex || activeWeekIndex);
       const workoutIndex = Number(event.currentTarget.dataset.workoutIndex || 0);
       const week = getWeek(weekIndex);
       const workout = week.workouts[workoutIndex] || week.workouts[0];
       const context = buildWorkoutContext(week, workout, weekIndex, workoutIndex);
-      activeMileTestContext = { testKey: buildProgramProofKey(getAthleteProfile().campLength, weekIndex, workoutIndex), workoutContext: context };
-      navigateTo('mile-test-page');
+      navigateTo('mile-test-page', {
+        testKey: buildProgramProofKey(getAthleteProfile().campLength, weekIndex, workoutIndex),
+        workoutContext: context,
+      });
     } else if (event.currentTarget.dataset.action === 'complete-workout') {
       completeWorkoutFromDetail(event.currentTarget.dataset.weekIndex, event.currentTarget.dataset.workoutIndex);
     }
@@ -1169,7 +1214,10 @@ function bindShellEvents() {
   document.getElementById('week-workouts')?.addEventListener('click', (event) => {
     const card = event.target.closest('.week-workout-card');
     if (!card) return;
-    openWorkoutDetail(card.dataset.weekIndex, card.dataset.workoutIndex);
+    navigateTo('workout-detail', {
+      weekIndex: Number(card.dataset.weekIndex),
+      workoutIndex: Number(card.dataset.workoutIndex),
+    });
   });
   document.querySelectorAll('#mile-test-page input').forEach((input) => input.addEventListener('input', updateMileCompletionState));
   document.getElementById('drawer-week-list')?.addEventListener('click', (event) => { const btn = event.target.closest('.drawer-week-btn'); if (!btn) return; saveWeek(Number(btn.dataset.weekIndex)); scWeek = activeWeekIndex + 1; renderShell(); renderSCPage(); navigateTo('home'); });
@@ -1188,6 +1236,11 @@ function bindShellEvents() {
 }
 export async function initAthleteShell(hooks) {
   shellHooks = hooks;
+  initNavigation({
+    initialScreen: 'boot',
+    onRender: renderNavigationRoute,
+    shouldLockBack: (currentRoute, nextRoute) => shellHooks?.isBackLocked?.(currentRoute, nextRoute) === true,
+  });
   saveWeek(activeWeekIndex);
   scWeek = clampSCWeek(scWeek);
   bindShellEvents();

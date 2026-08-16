@@ -26,6 +26,8 @@ import {
   clearResultWorkoutCompletion,
   newSession,
   showSavedWorkoutResult,
+  isSprintBackLocked,
+  renderSprintRoute,
 } from './app.js';
 
 const READABILITY_STYLES = `
@@ -298,7 +300,14 @@ async function init() {
   initPWAInstall();
   initSyncControls({ showToast });
   installSignupNameCapture();
-  await initAthleteShell({ showToast, showScreen, setWorkoutContext, showSavedWorkoutResult });
+  await initAthleteShell({
+    showToast,
+    showScreen,
+    setWorkoutContext,
+    showSavedWorkoutResult,
+    isBackLocked: isSprintBackLocked,
+    renderRoute: renderSprintRoute,
+  });
 
   initReadabilityEnhancements();
   await enforceAthleteOnboarding({ showScreen });

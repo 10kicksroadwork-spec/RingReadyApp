@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "node node_modules/vite/bin/vite.js",
+    "test:navigation": "node scripts/navigation-smoke.mjs",
     "build": "node node_modules/vite/bin/vite.js build",
     "preview": "node node_modules/vite/bin/vite.js preview",
     "extract-css": "node scripts/extract-css.mjs",

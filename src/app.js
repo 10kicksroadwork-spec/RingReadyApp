@@ -48,6 +48,7 @@ import {
   unlockAudio,
   restCompleteAlert,
 } from './ui.js';
+import { navigate, replaceRoute } from './navigation.js';
 
 export const cfg = { reps: 8, rest: 90, maxHR: 183, targetPct: 90, workoutContext: null };
 
@@ -66,6 +67,30 @@ export const state = {
 let activeResultRecord = null;
 const STRIDES_VIDEO_URL = 'https://www.youtube.com/watch?v=1i2ZPpXtuOk';
 const SKIPS_VIDEO_URL = 'https://www.youtube.com/watch?v=A7r6yCpmSrA';
+export function isSprintBackLocked(route) {
+  return route?.screenId === 'session'
+    && (state.awaitingModal || ['sprinting', 'resting', 'manual-entry'].includes(state.phase));
+}
+
+export function renderSprintRoute(route) {
+  if (route?.screenId === 'session') {
+    showScreen('session');
+    return true;
+  }
+
+  if (route?.screenId === 'results') {
+    const record = route.payload?.record || activeResultRecord;
+    if (record) {
+      activeResultRecord = record;
+      buildResults(record);
+    }
+    showScreen('results');
+    return true;
+  }
+
+  return false;
+}
+
 
 
 export function clearSessionTimer() {
@@ -145,7 +170,7 @@ function runStartSession() {
   const athleteName = String(profile.athleteName || '').trim();
 
   if (!athleteName) {
-    showScreen('athlete-profile');
+    navigate('athlete-profile');
     showToast('ENTER ATHLETE NAME');
     const profileInput = document.getElementById('profile-athlete-name');
     if (profileInput) setTimeout(() => profileInput.focus(), 100);
@@ -192,7 +217,7 @@ function runStartSession() {
   setMainBtn('go', 'GO');
   resetChips();
   setRing(1, false);
-  showScreen('session');
+  navigate('session', { workoutContext: cfg.workoutContext });
 }
 
 export function startSession() {
@@ -490,7 +515,7 @@ export function cancelSession() {
     capturedRestHR: null,
   });
 
-  showScreen('home');
+  replaceRoute('home');
   showToast('SESSION CANCELLED');
 }
 
@@ -510,7 +535,7 @@ export function finishSession() {
     else if (result.status === 'offline') showToast('OFFLINE - SAVED LOCALLY');
   });
   setTimeout(() => buildResults(activeResultRecord), 600);
-  setTimeout(() => showScreen('results'), 1000);
+  setTimeout(() => replaceRoute('results', { record: activeResultRecord }), 1000);
 }
 
 function getRecordContext(record) {
@@ -712,8 +737,7 @@ window.addEventListener('ringready:proof-state-changed', (event) => {
 export function showSavedWorkoutResult(record) {
   if (!record) return;
   activeResultRecord = record;
-  buildResults(record);
-  showScreen('results');
+  navigate('results', { record });
 }
 
 export async function copyResults() {
@@ -793,5 +817,5 @@ export function newSession() {
     capturedRestHR: null,
   });
 
-  showScreen('home');
+  navigate('home');
 }
