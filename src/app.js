@@ -322,6 +322,9 @@ function runAutoRestCountdown(totalRest, restCaptureAt, initialElapsed) {
   clearSessionTimer();
 
   let elapsed = Math.max(0, Math.min(totalRest, initialElapsed));
+  let captureAttempted = !!(state.pendingRep && state.pendingRep.restHR !== null);
+  const startedAt = Date.now() - elapsed * 1000;
+
   state.phase = 'resting';
   state.seconds = Math.max(0, totalRest - elapsed);
 
@@ -330,19 +333,16 @@ function runAutoRestCountdown(totalRest, restCaptureAt, initialElapsed) {
   setTimerDisplay(
     'REST',
     String(state.seconds),
-    getRestCaptureCopy(totalRest, restCaptureAt, state.pendingRep?.restHR !== null)
+    getRestCaptureCopy(totalRest, restCaptureAt, captureAttempted)
   );
   setRing(state.seconds / totalRest, false);
 
-  state.timer = setInterval(() => {
-    elapsed++;
+  const tick = () => {
+    elapsed = Math.min(totalRest, Math.floor((Date.now() - startedAt) / 1000));
     state.seconds = Math.max(0, totalRest - elapsed);
 
-    const subText = getRestCaptureCopy(
-      totalRest,
-      restCaptureAt,
-      !!(state.pendingRep && state.pendingRep.restHR !== null)
-    );
+    const alreadyCaptured = !!(state.pendingRep && state.pendingRep.restHR !== null);
+    const subText = getRestCaptureCopy(totalRest, restCaptureAt, alreadyCaptured || captureAttempted);
 
     setTimerDisplay('REST', String(state.seconds), subText);
     setRing(state.seconds / totalRest, false);
@@ -351,8 +351,13 @@ function runAutoRestCountdown(totalRest, restCaptureAt, initialElapsed) {
     if (state.seconds <= 10) digits.classList.add('urgent');
     else digits.classList.remove('urgent');
 
-    if (elapsed === restCaptureAt && !autoCaptureRestHR(restCaptureAt)) {
-      return;
+    // Fire at/after the checkpoint (60s into rest = 30s left on a 90s timer).
+    // Use >= so a delayed/throttled tick cannot skip the exact second.
+    if (!captureAttempted && elapsed >= restCaptureAt) {
+      captureAttempted = true;
+      if (!autoCaptureRestHR(restCaptureAt)) {
+        return;
+      }
     }
 
     if (state.seconds <= 0) {
@@ -364,7 +369,10 @@ function runAutoRestCountdown(totalRest, restCaptureAt, initialElapsed) {
 
       completeRestAndAdvance();
     }
-  }, 1000);
+  };
+
+  state.timer = setInterval(tick, 250);
+  tick();
 }
 
 export function autoCaptureRestHR(captureAt) {
