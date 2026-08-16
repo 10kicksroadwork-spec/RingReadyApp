@@ -451,6 +451,10 @@
         <div class="field-label">Daily Workout</div>
         <p id="detail-desc"></p>
       </div>
+      <section class="detail-card detail-guidance-card" id="detail-guidance-card" hidden>
+        <div class="field-label">How to nail this</div>
+        <ul class="detail-guidance-list" id="detail-guidance-list"></ul>
+      </section>
       <div class="detail-grid">
         <div class="detail-card" id="detail-warmup-card">
           <div class="summary-label">Warmup</div>
@@ -463,6 +467,13 @@
         <div class="detail-card">
           <div class="summary-label">Target BPM</div>
           <div class="detail-value big" id="detail-bpm"></div>
+          <div class="detail-value-note" id="detail-bpm-note" hidden>Hard intervals only</div>
+        </div>
+        <div class="detail-card detail-expected-card" id="detail-expected-avg-card" hidden>
+          <div class="summary-label">Expected Session Avg</div>
+          <div class="detail-value big" id="detail-expected-avg" aria-live="polite">--</div>
+          <div class="detail-value-note" id="detail-expected-meta">Read-only · hard work + recoveries</div>
+          <div class="detail-expected-status" id="detail-expected-status" hidden></div>
         </div>
       </div>
       <section class="detail-card detail-log-card" id="detail-log-card" hidden>
