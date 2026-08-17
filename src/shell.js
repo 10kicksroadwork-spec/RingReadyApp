@@ -39,6 +39,15 @@ import {
 import { getWorkoutCompletion, removeWorkoutCompletion, saveWorkoutCompletion } from './storage.js';
 import { sanitizeDurationInput } from './workout.js';
 import {
+  initCoachPreview,
+  isCoachScreen,
+  isLocalCoachPreviewHost,
+  openCoachPreviewIfRequested,
+  renderCoachPage,
+  setSelectedCoachAthlete,
+  syncCoachPreviewChrome,
+} from './coach-preview.js';
+import {
   deleteCloudWorkoutCompletion,
   getCurrentUser,
   initSupabaseAuth,
@@ -261,9 +270,11 @@ function renderAllPages() {
   renderHRInfoPage();
   renderSCPage();
   renderMileTestPage();
+  syncCoachPreviewChrome();
 }
 function enterAppHome() {
   renderAllPages();
+  if (openCoachPreviewIfRequested()) return;
   shellHooks?.showScreen('home');
   setActiveNavigation('home');
   maybeShowOnboarding();
@@ -339,6 +350,7 @@ async function handleAuthSubmit(event) {
   event.preventDefault();
   if (!isSupabaseConfigured) {
     enterAppHome();
+    openCoachPreviewIfRequested();
     return;
   }
   const email = readInputValue('auth-email-input');
@@ -1365,6 +1377,10 @@ function renderPage(screenId) {
   if (screenId === 'hr-info') renderHRInfoPage();
   if (screenId === 'sc-page') renderSCPage();
   if (screenId === 'mile-test-page') renderMileTestPage();
+  if (isCoachScreen(screenId)) {
+    if (!isLocalCoachPreviewHost()) return;
+    renderCoachPage(screenId);
+  }
 }
 function setActiveNavigation(screenId) {
   document.querySelectorAll('[data-page-target]').forEach((btn) => btn.classList.toggle('active', btn.dataset.pageTarget === screenId));
@@ -1386,6 +1402,7 @@ function maybeShowOnboarding() {
 }
 function navigateTo(screenId) {
   closeWeekDrawer();
+  if (isCoachScreen(screenId) && !isLocalCoachPreviewHost()) screenId = 'home';
   renderPage(screenId);
   shellHooks?.showScreen(screenId);
   setActiveNavigation(screenId);
@@ -1450,6 +1467,8 @@ function bindShellEvents() {
   document.getElementById('week-prev-btn')?.addEventListener('click', () => { saveWeek(activeWeekIndex - 1); scWeek = activeWeekIndex + 1; renderShell(); renderSCPage(); });
   document.getElementById('week-next-btn')?.addEventListener('click', () => { saveWeek(activeWeekIndex + 1); scWeek = activeWeekIndex + 1; renderShell(); renderSCPage(); });
   document.addEventListener('click', (event) => {
+    const athleteBtn = event.target.closest('[data-coach-athlete]');
+    if (athleteBtn) setSelectedCoachAthlete(athleteBtn.dataset.coachAthlete);
     const pageBtn = event.target.closest('[data-page-target]');
     if (!pageBtn) return;
     event.preventDefault();
@@ -1521,6 +1540,10 @@ export async function initAthleteShell(hooks) {
   saveWeek(activeWeekIndex);
   scWeek = clampSCWeek(scWeek);
   bindShellEvents();
+  initCoachPreview({
+    navigateTo,
+    showToast: (message) => shellHooks?.showToast?.(message),
+  });
   window.addEventListener('ringready:workout-completed', (event) => {
     renderShell();
     renderAthleteProfileDashboard();
@@ -1545,6 +1568,7 @@ export async function initAthleteShell(hooks) {
 
   if (!isSupabaseConfigured) {
     enterAppHome();
+    openCoachPreviewIfRequested();
     return;
   }
 
@@ -1552,12 +1576,15 @@ export async function initAthleteShell(hooks) {
     const session = await initSupabaseAuth(handleAuthStateChange);
     if (!session) {
       showAuthScreen();
+      openCoachPreviewIfRequested();
       return;
     }
     await hydrateCloudData();
     enterAppHome();
+    openCoachPreviewIfRequested();
   } catch (error) {
     console.warn('Supabase auth init failed', error);
     showAuthScreen('Could not connect to accounts. Try refreshing in a moment.');
+    openCoachPreviewIfRequested();
   }
 }

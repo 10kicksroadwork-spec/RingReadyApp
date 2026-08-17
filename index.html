@@ -49,6 +49,7 @@
         <button type="submit" class="start-btn auth-submit-btn" id="auth-submit-btn">SIGN IN</button>
       </form>
       <button type="button" class="auth-switch-btn" id="auth-mode-toggle-btn">Create an account instead</button>
+      <button type="button" class="auth-switch-btn" id="coach-preview-auth-btn" data-coach-preview data-page-target="coach-dashboard" hidden>Preview coach dashboard</button>
       <div class="auth-status" id="auth-status" role="status"></div>
     </div>
   </div>
@@ -121,6 +122,10 @@
         <button type="button" class="app-nav-card" data-page-target="sc-page">
           <span>Strength</span>
           <strong>S&amp;C</strong>
+        </button>
+        <button type="button" class="app-nav-card" data-coach-preview data-page-target="coach-dashboard" hidden>
+          <span>Local Preview</span>
+          <strong>Coach</strong>
         </button>
       </section>
       <section class="week-panel">
@@ -377,6 +382,105 @@
       </section>
     </div>
   </div>
+
+  <!-- COACH DASHBOARD (local preview only) -->
+  <div id="coach-dashboard" class="screen app-page">
+    <div class="page-header">
+      <div class="page-actions">
+        <button type="button" class="header-action" data-page-target="home" aria-label="Back to athlete home">ATHLETE APP</button>
+        <button type="button" class="header-action" data-open-menu aria-label="Open app menu">MENU</button>
+      </div>
+      <div>
+        <div class="logo-text">10 Kicks</div>
+        <div class="page-title">Coach</div>
+      </div>
+    </div>
+    <div class="page-body">
+      <section class="page-hero coach-hero">
+        <div class="field-label">Local Preview</div>
+        <h2>Camp roster.</h2>
+        <p>Mock fighters only. This screen stays on localhost so you can shape the coach view before it ever goes live.</p>
+      </section>
+      <section class="dash-stat-grid coach-summary-grid">
+        <article class="dash-card dash-stat-card"><span>Roster</span><strong id="coach-roster-count">0</strong><em>fighters in preview</em></article>
+        <article class="dash-card dash-stat-card"><span>Needs a look</span><strong id="coach-attention-count">0</strong><em>behind, HR, or proof</em></article>
+        <article class="dash-card dash-stat-card"><span>On track</span><strong id="coach-ontrack-count">0</strong><em>current work</em></article>
+        <article class="dash-card dash-stat-card"><span>Missing</span><strong id="coach-missing-count">0</strong><em>sessions across camp</em></article>
+      </section>
+      <section class="page-panel">
+        <div class="info-kicker">Filter</div>
+        <div class="segmented-row" aria-label="Roster filter">
+          <button type="button" class="segmented-btn active" data-coach-filter="all">ALL</button>
+          <button type="button" class="segmented-btn" data-coach-filter="attention">NEEDS A LOOK</button>
+          <button type="button" class="segmented-btn" data-coach-filter="on-track">ON TRACK</button>
+        </div>
+        <label class="app-input-wrap coach-search-wrap" for="coach-roster-search">
+          <span>Search</span>
+          <input type="search" id="coach-roster-search" placeholder="Fighter name">
+        </label>
+      </section>
+      <section class="coach-roster-list" id="coach-roster-list" aria-label="Athlete roster"></section>
+      <p class="empty-state" id="coach-roster-empty" hidden>No fighters match that filter.</p>
+    </div>
+  </div>
+
+  <!-- COACH ATHLETE DETAIL (local preview only) -->
+  <div id="coach-athlete" class="screen app-page">
+    <div class="page-header">
+      <div class="page-actions">
+        <button type="button" class="header-action" data-page-target="coach-dashboard" aria-label="Back to coach roster">ROSTER</button>
+        <button type="button" class="header-action" data-open-menu aria-label="Open app menu">MENU</button>
+      </div>
+      <div>
+        <div class="logo-text">10 Kicks</div>
+        <div class="page-title">Athlete</div>
+      </div>
+    </div>
+    <div class="page-body">
+      <section class="page-hero coach-hero">
+        <div class="coach-athlete-head">
+          <div>
+            <div class="field-label" id="coach-athlete-kicker">Week</div>
+            <h2 id="coach-athlete-name">Athlete</h2>
+            <p id="coach-athlete-sub"></p>
+          </div>
+          <span class="coach-status-chip" id="coach-athlete-status">On track</span>
+        </div>
+      </section>
+      <section class="dash-stat-grid" id="coach-athlete-stats"></section>
+      <section class="page-panel coach-attention-panel" id="coach-athlete-attention" hidden></section>
+      <section class="dash-card dash-chart-card">
+        <div class="dash-card-head">
+          <div>
+            <span>Weekly Completion</span>
+            <strong>Camp work by week</strong>
+          </div>
+        </div>
+        <div class="week-bar-list" id="coach-athlete-weeks"></div>
+      </section>
+      <section class="page-panel">
+        <div class="info-kicker">This Week</div>
+        <div class="coach-session-list" id="coach-athlete-current-week"></div>
+      </section>
+      <section class="page-panel">
+        <div class="info-kicker">Recent Sessions</div>
+        <div class="coach-session-list" id="coach-athlete-recent"></div>
+      </section>
+      <section class="page-panel">
+        <div class="info-kicker">Mile Tests</div>
+        <div class="instruction-stack" id="coach-athlete-miles"></div>
+      </section>
+      <section class="page-panel">
+        <div class="info-kicker">Coach Note</div>
+        <p class="coach-note-copy">Stays on this device for the preview. Later this becomes a cloud note on the athlete record.</p>
+        <label class="app-input-wrap" for="coach-athlete-note">
+          <span>Note</span>
+          <textarea id="coach-athlete-note" rows="4" maxlength="400" placeholder="What should the next session look like?"></textarea>
+        </label>
+        <button type="button" class="start-btn page-save-btn" id="coach-note-save-btn">SAVE NOTE</button>
+      </section>
+    </div>
+  </div>
   <!-- SETUP -->
   <div id="setup" class="screen">
     <div class="setup-header with-action">
@@ -605,6 +709,7 @@
       <button type="button" class="drawer-page-btn" data-page-target="hr-info">HR Info</button>
       <button type="button" class="drawer-page-btn" data-page-target="sc-page">S&amp;C</button>
       <button type="button" class="drawer-page-btn" data-page-target="mile-test-page">Mile Test</button>
+      <button type="button" class="drawer-page-btn" data-coach-preview data-page-target="coach-dashboard" hidden>Coach Preview</button>
     </div>
     <div class="drawer-section-label">Training Weeks</div>
     <div class="drawer-week-list" id="drawer-week-list"></div>

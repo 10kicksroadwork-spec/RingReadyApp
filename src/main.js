@@ -2,6 +2,7 @@ import './style.css';
 import { initPWAInstall, registerServiceWorker } from './pwa.js';
 import { initAthleteShell } from './shell.js';
 import { enforceAthleteOnboarding, installSignupNameCapture } from './onboarding.js';
+import { openCoachPreviewIfRequested } from './coach-preview.js';
 import { MILE_TEST_STORAGE_KEY } from './app-content.js';
 import { sanitizeDurationInput } from './workout.js';
 import { getHRMonitorSetupCopy } from './platform.js';
@@ -304,7 +305,8 @@ async function init() {
   await initAthleteShell({ showToast, showScreen, setWorkoutContext, showSavedWorkoutResult });
 
   initReadabilityEnhancements();
-  await enforceAthleteOnboarding({ showScreen });
+  const openedCoachPreview = openCoachPreviewIfRequested();
+  if (!openedCoachPreview) await enforceAthleteOnboarding({ showScreen });
   registerMainHandlers({ handleMainBtn, handleSprintDone });
 
   initHRService({

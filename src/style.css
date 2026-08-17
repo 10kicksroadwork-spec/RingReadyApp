@@ -2434,3 +2434,253 @@
       width: 100%;
     }
   }
+
+
+  /* COACH PREVIEW (localhost only) */
+  .coach-hero .coach-athlete-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .coach-status-chip {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 28px;
+    padding: 0 10px;
+    border-radius: 999px;
+    border: 1px solid rgba(62, 207, 110, 0.45);
+    background: rgba(62, 207, 110, 0.14);
+    color: #9be29f;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 9px;
+    letter-spacing: 1.4px;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .coach-status-chip.is-behind,
+  .coach-roster-card.is-behind .coach-status-chip {
+    border-color: rgba(232, 64, 64, 0.5);
+    background: rgba(232, 64, 64, 0.14);
+    color: #ff9b9b;
+  }
+
+  .coach-status-chip.is-watch,
+  .coach-roster-card.is-watch .coach-status-chip {
+    border-color: rgba(240, 138, 42, 0.55);
+    background: rgba(240, 138, 42, 0.16);
+    color: #ffd19a;
+  }
+
+  .coach-status-chip.is-proof,
+  .coach-roster-card.is-proof .coach-status-chip {
+    border-color: rgba(245, 200, 66, 0.55);
+    background: rgba(245, 200, 66, 0.14);
+    color: var(--gold);
+  }
+
+  .coach-roster-list {
+    display: grid;
+    gap: 10px;
+  }
+
+  .coach-roster-card {
+    text-align: left;
+    background: var(--dark2);
+    border: 1px solid var(--grey);
+    border-radius: 12px;
+    padding: 16px;
+    color: var(--white);
+    cursor: pointer;
+  }
+
+  .coach-roster-card.is-behind {
+    border-color: rgba(232, 64, 64, 0.45);
+  }
+
+  .coach-roster-card.is-watch {
+    border-color: rgba(240, 138, 42, 0.5);
+  }
+
+  .coach-roster-card.is-proof {
+    border-color: rgba(245, 200, 66, 0.45);
+  }
+
+  .coach-roster-card-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .coach-roster-card strong {
+    display: block;
+    margin-top: 6px;
+    font-family: Impact, Haettenschweiler, 'Arial Narrow Bold', sans-serif;
+    font-size: 28px;
+    line-height: 0.95;
+  }
+
+  .coach-roster-card p {
+    margin: 10px 0 12px;
+    color: #cfcfcf;
+    font-size: 13px;
+    line-height: 1.4;
+  }
+
+  .coach-roster-meta span:not(:last-child)::after {
+    content: ' ·';
+  }
+
+  .coach-roster-open {
+    color: var(--gold);
+    margin-left: auto;
+  }
+
+  .coach-roster-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 10px;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    color: var(--light-grey);
+  }
+
+  #coach-dashboard .segmented-row {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    margin: 10px 0 12px;
+  }
+
+  #coach-dashboard .segmented-btn {
+    font-size: 9px;
+    letter-spacing: 1px;
+    padding: 0 6px;
+  }
+
+  .coach-search-wrap {
+    margin-top: 4px;
+  }
+
+  .coach-search-wrap input {
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-size: 20px;
+    line-height: 1.2;
+  }
+
+  .coach-attention-panel {
+    border-color: rgba(240, 138, 42, 0.5);
+    background: rgba(240, 138, 42, 0.1);
+  }
+
+  .coach-attention-panel p {
+    color: #ffd19a;
+    font-size: 14px;
+    line-height: 1.4;
+  }
+
+  .coach-session-list {
+    display: grid;
+    gap: 8px;
+    margin-top: 10px;
+  }
+
+  .coach-session-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
+    align-items: start;
+    background: var(--dark);
+    border: 1px solid var(--grey);
+    border-radius: 10px;
+    padding: 12px;
+  }
+
+  .coach-session-row span,
+  .coach-session-row em {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 10px;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    color: var(--gold);
+    font-style: normal;
+  }
+
+  .coach-session-row strong {
+    display: block;
+    margin-top: 4px;
+    color: var(--white);
+    font-size: 16px;
+    line-height: 1.2;
+  }
+
+  .coach-session-row p {
+    margin-top: 6px;
+    color: #c9c9c9;
+    font-size: 13px;
+    line-height: 1.4;
+  }
+
+  .coach-session-row em {
+    color: #9be29f;
+  }
+
+  .coach-session-row.is-missing {
+    border-color: rgba(232, 64, 64, 0.4);
+  }
+
+  .coach-session-row.is-missing em {
+    color: #ff9b9b;
+  }
+
+  .coach-session-row.is-upcoming em {
+    color: var(--light-grey);
+  }
+
+  .coach-session-row.has-flag {
+    border-color: rgba(240, 138, 42, 0.5);
+  }
+
+  .coach-session-row.has-flag em,
+  .coach-session-row.has-proof-gap em {
+    color: #ffd19a;
+  }
+
+  .coach-session-row.has-proof-gap {
+    border-color: rgba(245, 200, 66, 0.45);
+  }
+
+  .coach-note-copy {
+    margin: 0 0 12px;
+    color: #c9c9c9;
+    font-size: 13px;
+    line-height: 1.45;
+  }
+
+  #coach-athlete-note {
+    width: 100%;
+    min-height: 108px;
+    margin-top: 8px;
+    background: transparent;
+    border: none;
+    color: var(--white);
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-size: 16px;
+    line-height: 1.4;
+    resize: vertical;
+    outline: none;
+  }
+
+  @media (max-width: 430px) {
+    .coach-roster-card strong {
+      font-size: 24px;
+    }
+
+    #coach-dashboard .segmented-row {
+      grid-template-columns: 1fr;
+    }
+  }
