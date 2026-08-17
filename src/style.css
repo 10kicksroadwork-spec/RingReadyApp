@@ -1151,6 +1151,11 @@
     line-height: 1.4;
   }
 
+  #mile-test-page .detail-guidance-list {
+    margin-top: 4px;
+    gap: 10px;
+  }
+
   .detail-guidance-list li::marker {
     color: var(--gold);
   }
