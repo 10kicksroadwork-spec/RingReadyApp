@@ -1382,7 +1382,6 @@ function bindShellEvents() {
   document.querySelectorAll('[data-open-menu]').forEach((btn) => btn.addEventListener('click', openWeekDrawer));
   document.getElementById('close-week-menu-btn')?.addEventListener('click', closeWeekDrawer);
   document.getElementById('week-drawer-backdrop')?.addEventListener('click', closeWeekDrawer);
-  document.getElementById('open-sprint-setup-btn')?.addEventListener('click', () => { shellHooks?.setWorkoutContext?.(null); shellHooks?.showScreen('setup'); setActiveNavigation(''); });
   document.getElementById('setup-back-btn')?.addEventListener('click', () => navigateTo('home'));
   document.getElementById('detail-back-btn')?.addEventListener('click', () => navigateTo('home'));
   document.querySelectorAll('#detail-log-card input').forEach((input) => input.addEventListener('input', handleDetailLogInput));
