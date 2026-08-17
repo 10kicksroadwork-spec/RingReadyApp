@@ -19,7 +19,7 @@ export const PROGRAM = [
     title: 'Foundation',
     focus: 'Set baselines, learn the rhythm, keep recovery honest.',
     workouts: [
-      { day: 'Monday', type: 'Sprint Intervals', description: '5x150 m Sprints (90 Second rest). Focus on fast but controlled reps. Record HR after 60 seconds rest', warmup: '5 min easy jog; 2x60 m strides; 2x60 m A-skips; followed by 5 minute run at 85% MaxHR / 5 minute walk', targetZone: '90-95%', targetBPM: 172, action: 'sprint' },
+      { day: 'Monday', type: 'Sprint Intervals', description: '5x150 m Sprints (90 Second rest). Focus on fast but controlled reps. Record HR after 60 seconds rest', warmup: '5 min easy jog; 2x60 m strides; 2x60 m A-skips; 5 min run at 85% MaxHR.\n\nTake a couple minutes of rest before the sprints.\n\nCooldown (after the sprints): 5 min walk', targetZone: '90-95%', targetBPM: 172, action: 'sprint' },
       { day: 'Tuesday', type: 'Benchmark Run', description: "30 min conversational jog (Don't worry about speed, only your HR), HR and Time stay the same, goal is more distance", warmup: 'Dynamic Stretches (Video)', targetZone: '60-70%', targetBPM: 137, action: 'log' },
       { day: 'Wednesday', type: 'Threshold Run', description: '3x4min at 84%-88% HRmax (2 min easy jog recovery between rounds). Total time in Minutes to be recorded is 16', warmup: '10 min easy jog; 2x100 m strides / 5 minute walk', targetZone: '84-88%', targetBPM: 163, action: 'log', intervalPlan: { reps: 3, workMinutes: 4, restMinutes: 2 } },
       { day: 'Thursday', type: 'Easy Run', description: '20 min easy jog (recovery).', warmup: 'Dynamic Stretches (Video)', targetZone: '60-70%', targetBPM: 137, action: 'log' },
@@ -32,7 +32,7 @@ export const PROGRAM = [
     title: 'Introducing High Intensity',
     focus: 'Keep the baseline work, raise quality slightly.',
     workouts: [
-      { day: 'Monday', type: 'Sprint Intervals', description: '6x150 m sprints (90s rest). Record HR after 60 seconds rest', warmup: '5 min easy jog; 2x80 m strides; 2x40 m A skips; 1x40 m B skips, 5 minute run at 85% / 5 minute walk', targetZone: '90-95%', targetBPM: 172, action: 'sprint' },
+      { day: 'Monday', type: 'Sprint Intervals', description: '6x150 m sprints (90s rest). Record HR after 60 seconds rest', warmup: '5 min easy jog; 2x80 m strides; 2x40 m A skips; 1x40 m B skips; 5 min run at 85%.\n\nTake a couple minutes of rest before the sprints.\n\nCooldown (after the sprints): 5 min walk', targetZone: '90-95%', targetBPM: 172, action: 'sprint' },
       { day: 'Tuesday', type: 'Benchmark Run', description: '30 min conversational jog, HR and Time stay the same, goal is more distance', warmup: 'Dynamic Stretches (Video)', targetZone: '60-70%', targetBPM: 137, action: 'log' },
       { day: 'Wednesday', type: 'Threshold Run', description: '4x4min at 84%-88% HRmax (2 min easy jog recovery between rounds). Total time in Minutes to be recorded is 22', warmup: '10 min easy jog; 2x20 m strides; 1x60 m acceleration / 5 minute walk', targetZone: '84-88%', targetBPM: 163, action: 'log', intervalPlan: { reps: 4, workMinutes: 4, restMinutes: 2 } },
       { day: 'Thursday', type: 'Easy Run', description: '20 min easy jog (recovery).', warmup: 'Dynamic Stretches (Video)', targetZone: '60-70%', targetBPM: 137, action: 'log' },
@@ -45,7 +45,7 @@ export const PROGRAM = [
     title: 'Ramp-Up',
     focus: 'Build volume while keeping easy days easy.',
     workouts: [
-      { day: 'Monday', type: 'Sprint Intervals', description: '8x150 m sprints (90s rest). Record HR after 60 seconds rest', warmup: '5 min easy jog; 2x80 m strides; 2x40 m A skips; 1x40 m B skips, 5 minute run at 85% / 5 minute walk', targetZone: '90-95%', targetBPM: 172, action: 'sprint' },
+      { day: 'Monday', type: 'Sprint Intervals', description: '8x150 m sprints (90s rest). Record HR after 60 seconds rest', warmup: '5 min easy jog; 2x80 m strides; 2x40 m A skips; 1x40 m B skips; 5 min run at 85%.\n\nTake a couple minutes of rest before the sprints.\n\nCooldown (after the sprints): 5 min walk', targetZone: '90-95%', targetBPM: 172, action: 'sprint' },
       { day: 'Tuesday', type: 'Benchmark Run', description: '30 min conversational jog, HR and Time stay the same, goal is more distance', warmup: 'Dynamic Stretches (Video)', targetZone: '60-70%', targetBPM: 137, action: 'log' },
       { day: 'Wednesday', type: 'Threshold Run', description: '5x4min at 84%-88% HRmax (2 min easy jog recovery between rounds). Total time in Minutes to be recorded is 28', warmup: '10 min easy jog; 2x100 m strides / 5 minute walk', targetZone: '84-88%', targetBPM: 163, action: 'log', intervalPlan: { reps: 5, workMinutes: 4, restMinutes: 2 } },
       { day: 'Thursday', type: 'Easy Run', description: '30 min easy jog (recovery).', warmup: 'Dynamic Stretches (Video)', targetZone: '60-70%', targetBPM: 137, action: 'log' },
@@ -58,7 +58,7 @@ export const PROGRAM = [
     title: 'Deload',
     focus: 'Recover without losing rhythm.',
     workouts: [
-      { day: 'Monday', type: 'Sprint Intervals', description: '5x150 m Sprints (90s rest). Record HR after 60 seconds rest', warmup: '5 min easy jog; 2x80 m strides; 2x40 m A skips; 1x40 m B skips, 5 minute run at 85% / 5 minute walk', targetZone: '90-95%', targetBPM: 172, action: 'sprint' },
+      { day: 'Monday', type: 'Sprint Intervals', description: '5x150 m Sprints (90s rest). Record HR after 60 seconds rest', warmup: '5 min easy jog; 2x80 m strides; 2x40 m A skips; 1x40 m B skips; 5 min run at 85%.\n\nTake a couple minutes of rest before the sprints.\n\nCooldown (after the sprints): 5 min walk', targetZone: '90-95%', targetBPM: 172, action: 'sprint' },
       { day: 'Tuesday', type: 'Benchmark Run', description: '30 min conversational jog, HR and Time stay the same, goal is more distance', warmup: 'Dynamic Stretches (Video)', targetZone: '60-70%', targetBPM: 137, action: 'log' },
       { day: 'Wednesday', type: 'Tempo Run', description: '20 min comfortably-hard pace (with 5 min cooldown, stop workout on app before the cooldown). Total time in Minutes to be recorded is 20', warmup: '10 min easy jog; 2x100 m strides / 5 minute walk', targetZone: '75-80%', targetBPM: 153, action: 'log' },
       { day: 'Thursday', type: 'Easy Jog', description: '15 min super-easy jog (skip if fatigued).', warmup: 'Dynamic Stretches (Video)', targetZone: '60-70%', targetBPM: 137, action: 'log' },
@@ -71,7 +71,7 @@ export const PROGRAM = [
     title: 'Peak Intensity',
     focus: 'Highest quality week. Watch recovery closely.',
     workouts: [
-      { day: 'Monday', type: 'Sprint Intervals', description: '10x150 m (90s rest). Record HR after 60 seconds rest', warmup: '5 min easy jog; 2x80 m strides; 2x40 m A skips; 1x40 m B skips, 5 minute run at 85% / 5 minute walk', targetZone: '90-95%', targetBPM: 172, action: 'sprint' },
+      { day: 'Monday', type: 'Sprint Intervals', description: '10x150 m (90s rest). Record HR after 60 seconds rest', warmup: '5 min easy jog; 2x80 m strides; 2x40 m A skips; 1x40 m B skips; 5 min run at 85%.\n\nTake a couple minutes of rest before the sprints.\n\nCooldown (after the sprints): 5 min walk', targetZone: '90-95%', targetBPM: 172, action: 'sprint' },
       { day: 'Tuesday', type: 'Benchmark Run', description: '30 min conversational jog, HR and Time stay the same, goal is more distance', warmup: 'Dynamic Stretches (Video)', targetZone: '60-70%', targetBPM: 137, action: 'log' },
       { day: 'Wednesday', type: 'Threshold Run', description: '6x4min at 84%-88% HRmax (2 min easy jog recovery between rounds). Total time in Minutes to be recorded is 34', warmup: '10 min easy jog; 2x20 m strides; 1x60 m acceleration', targetZone: '84-88%', targetBPM: 163, action: 'log', intervalPlan: { reps: 6, workMinutes: 4, restMinutes: 2 } },
       { day: 'Thursday', type: 'Easy Run', description: '20 min easy jog (recovery).', warmup: 'Dynamic Stretches (Video)', targetZone: '60-70%', targetBPM: 137, action: 'log' },
@@ -84,7 +84,7 @@ export const PROGRAM = [
     title: 'Taper Begins',
     focus: 'Stay sharp while lowering total strain.',
     workouts: [
-      { day: 'Monday', type: 'Sprint Intervals', description: '5x150m sprints (90 seconds rest). Record HR after 60 seconds rest', warmup: '5 min easy jog; 2x80 m strides; 2x40 m A skips; 1x40 m B skips, 5 minute run at 85% / 5 minute walk', targetZone: '90-95%', targetBPM: 172, action: 'sprint' },
+      { day: 'Monday', type: 'Sprint Intervals', description: '5x150m sprints (90 seconds rest). Record HR after 60 seconds rest', warmup: '5 min easy jog; 2x80 m strides; 2x40 m A skips; 1x40 m B skips; 5 min run at 85%.\n\nTake a couple minutes of rest before the sprints.\n\nCooldown (after the sprints): 5 min walk', targetZone: '90-95%', targetBPM: 172, action: 'sprint' },
       { day: 'Tuesday', type: 'Benchmark Run', description: '30 min conversational jog, HR and Time stay the same, goal is more distance', warmup: 'Dynamic Stretches (Video)', targetZone: '60-70%', targetBPM: 137, action: 'log' },
       { day: 'Thursday', type: 'Shake-Out Run', description: '20 min very easy run.', warmup: 'Dynamic Stretches (Video)', targetZone: '60-65%', targetBPM: 134, action: 'log' },
       { day: 'Saturday/Sunday', type: 'Mile Re-Test', description: 'Same as the original Mile test (4 laps around a track) for time, all out effort', warmup: '10 min easy jog; mobility; 3x30 m strides / 5 minute walk', targetZone: '95-100%', targetBPM: 178, action: 'mile-test' },

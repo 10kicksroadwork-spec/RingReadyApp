@@ -1096,6 +1096,7 @@
   .detail-grid.is-sprint #detail-warmup {
     font-size: 17px;
     line-height: 1.5;
+    white-space: pre-line;
   }
 
   .detail-value.is-copy {
