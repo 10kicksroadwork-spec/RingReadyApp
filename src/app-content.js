@@ -125,6 +125,7 @@ export const THRESHOLD_GUIDANCE = [
   'Log Total Time and Average HR for the whole workout (the hard intervals + recoveries).',
   'The total workout session average will look lower because it’s averaging your hard work and rests together.',
   'The app will figure out the math (good old fashioned algebra). Coaches can also check your workout screenshot to triple-check if needed.',
+  'Cooldown after the last interval is a 5 min walk. Do not include that walk in Total Time.',
 ];
 
 export const FIGHT_PACE_GUIDANCE = [
