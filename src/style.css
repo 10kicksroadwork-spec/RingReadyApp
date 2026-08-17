@@ -327,22 +327,6 @@
   .stepper-val { font-family: Impact, Haettenschweiler, 'Arial Narrow Bold', sans-serif; font-size: 42px; color: var(--white); line-height: 1; }
   .stepper-unit { font-size: 12px; color: var(--light-grey); display: block; }
 
-  .hr-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-
-  .hr-input-wrap {
-    background: var(--dark2); border: 1px solid var(--grey);
-    border-radius: 12px; padding: 16px;
-    display: flex; flex-direction: column; gap: 6px;
-  }
-  .hr-input-wrap label {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 9px;
-    letter-spacing: 2px; color: var(--light-grey); text-transform: uppercase;
-  }
-  .hr-input-wrap input {
-    background: none; border: none; color: var(--white);
-    font-family: Impact, Haettenschweiler, 'Arial Narrow Bold', sans-serif; font-size: 36px;
-    width: 100%; outline: none; line-height: 1;
-  }
   input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
 
   /* BLE */
@@ -426,9 +410,6 @@
   }
   .live-badge-val { font-family: Impact, Haettenschweiler, 'Arial Narrow Bold', sans-serif; font-size: 24px; color: var(--green); line-height: 1; }
   .live-badge-label { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 9px; color: var(--light-grey); letter-spacing: 1px; }
-
-  .target-block { text-align: right; }
-  .target-val { font-family: Impact, Haettenschweiler, 'Arial Narrow Bold', sans-serif; font-size: 28px; color: var(--gold); }
 
   .dots-row { display: flex; gap: 6px; justify-content: center; padding: 12px 0 0; }
   .dot { width: 8px; height: 8px; border-radius: 99px; background: var(--grey); transition: all 0.3s; }
@@ -2174,7 +2155,6 @@
 */
 .summary-label,
 .app-input-wrap > span,
-.hr-input-wrap label,
 .modal-input-wrap label,
 .hr-chip-label,
 .live-badge-label,
@@ -2224,7 +2204,6 @@
 */
 .summary-label,
 .app-input-wrap > span,
-.hr-input-wrap label,
 .modal-input-wrap label,
 .hr-chip-label,
 .sc-metrics span,

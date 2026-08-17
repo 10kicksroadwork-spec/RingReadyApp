@@ -641,7 +641,6 @@ function updateDetailExpectedStatus() {
   status.className = `detail-expected-status is-${comparison.tone}`;
   status.textContent = `${comparison.label} — ${comparison.detail}`;
 }
-function syncSetupHRInputs(hrInfo = getHRInfo()) { const maxInput = document.getElementById('max-hr'); if (maxInput) maxInput.value = String(Math.round(hrInfo.maxHr)); }
 function getSprintSetupFromWorkout(workout) {
   const text = `${workout.type || ''} ${workout.description || ''}`;
   const repMatch = text.match(/(\d+)\s*x\s*(\d+(?:\.\d+)?)\s*m/i);
@@ -654,7 +653,7 @@ function buildWorkoutContext(week, workout, weekIndex, workoutIndex) {
   return {
     weekIndex, workoutIndex, weekLabel: week.label, weekTitle: week.title, weekTab: week.title ? `${week.label} (${week.title})` : week.label,
     dayOfWeek: workout.day, workoutType: workout.type, description: workout.description, warmup: workout.warmup || '', targetZone: workout.targetZone || '',
-    targetBPM: getWorkoutTargetBPM(workout), targetPct, reps: sprintSetup.reps, restSeconds: sprintSetup.restSeconds, distanceMeters: sprintSetup.distanceMeters,
+    targetBPM: getWorkoutTargetBPM(workout), targetPct, maxHr: getHRInfo().maxHr, reps: sprintSetup.reps, restSeconds: sprintSetup.restSeconds, distanceMeters: sprintSetup.distanceMeters,
   };
 }
 function makeWorkoutCompletionId() { return window.crypto && typeof window.crypto.randomUUID === 'function' ? window.crypto.randomUUID() : `workout-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`; }
@@ -1133,7 +1132,6 @@ function renderHRInfoPage() {
   setInputValue('hr-resting-input', Math.round(hrInfo.restingHr));
   const root = document.getElementById('hr-zone-list');
   if (root) root.innerHTML = HR_ZONES.map((zone, index) => `<div class="zone-row zone-row-${index}"><div><span>${escapeHTML(zone.label)}</span><strong>${calculateZoneBPM(zone, hrInfo)} bpm</strong></div><em>${escapeHTML(zone.uses.join(' / '))}</em></div>`).join('');
-  syncSetupHRInputs(hrInfo);
 }
 async function saveHRInfoFromInputs() {
   let hrInfo = saveHRInfo({
