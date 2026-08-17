@@ -1083,9 +1083,28 @@
     display: none;
   }
 
-  .detail-grid.is-zone-swap #detail-warmup-card { order: 1; }
-  .detail-grid.is-zone-swap #detail-expected-avg-card { order: 2; }
-  .detail-grid.is-zone-swap #detail-bpm-card { order: 3; }
+  .detail-grid.is-sprint #detail-zone-card {
+    display: none;
+  }
+
+  .detail-grid.is-sprint #detail-warmup-card,
+  .detail-grid.is-sprint #detail-bpm-card {
+    min-height: 148px;
+    padding: 18px 16px;
+  }
+
+  .detail-grid.is-sprint #detail-warmup {
+    font-size: 17px;
+    line-height: 1.5;
+  }
+
+  .detail-value.is-copy {
+    margin-top: 10px;
+    font-size: 22px;
+    font-weight: 800;
+    line-height: 1.3;
+    color: var(--gold);
+  }
 
   .detail-guidance-list {
     margin: 10px 0 0;
@@ -1149,6 +1168,7 @@
   @media (min-width: 720px) {
     .home-body, .detail-body { max-width: 720px; width: 100%; margin: 0 auto; }
     .detail-grid { grid-template-columns: 1fr 1fr 0.8fr; }
+    .detail-grid.is-sprint { grid-template-columns: 1fr 1fr; }
   }
 
   .home-actions {

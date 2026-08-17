@@ -496,6 +496,9 @@ function getZoneHrFeedback(workout, hrInfo = getHRInfo()) {
 function getHrFeedback(workout, hrInfo = getHRInfo()) {
   return getExpectedSessionAvg(workout, hrInfo) || getZoneHrFeedback(workout, hrInfo);
 }
+function isSprintWorkout(workout) {
+  return workout?.action === 'sprint' || /sprint/i.test(String(workout?.type || ''));
+}
 function getWorkoutGuidance(workout) {
   const type = String(workout?.type || '');
   if (/threshold/i.test(type)) return THRESHOLD_GUIDANCE;
@@ -550,6 +553,35 @@ function setDetailZoneCardVisible(visible) {
   const grid = document.querySelector('#workout-detail .detail-grid');
   if (zoneCard) zoneCard.hidden = !visible;
   grid?.classList.toggle('is-zone-swap', !visible);
+}
+function syncDetailSprintLayout(workout) {
+  const isSprint = isSprintWorkout(workout);
+  const grid = document.querySelector('#workout-detail .detail-grid');
+  const zoneCard = document.getElementById('detail-zone-card');
+  const bpmLabel = document.querySelector('#detail-bpm-card .summary-label');
+  const bpmValue = document.getElementById('detail-bpm');
+  const bpmNote = document.getElementById('detail-bpm-note');
+  grid?.classList.toggle('is-sprint', isSprint);
+  if (isSprint) {
+    if (zoneCard) zoneCard.hidden = true;
+    if (bpmLabel) bpmLabel.textContent = 'Sprint Effort';
+    if (bpmValue) {
+      bpmValue.classList.remove('big', 'is-range');
+      bpmValue.classList.add('is-copy');
+    }
+    setText('detail-bpm', 'Go all out during each sprint rep.');
+    if (bpmNote) {
+      bpmNote.hidden = false;
+      bpmNote.textContent = 'Recover strong in the rest.';
+    }
+    return;
+  }
+  if (bpmLabel) bpmLabel.textContent = 'Target BPM';
+  if (bpmValue) {
+    bpmValue.classList.add('big');
+    bpmValue.classList.remove('is-copy');
+  }
+  if (zoneCard && !grid?.classList.contains('is-zone-swap')) zoneCard.hidden = false;
 }
 function hideDetailHrFeedback() {
   const card = document.getElementById('detail-expected-avg-card');
@@ -1083,7 +1115,8 @@ function renderShell() {
   root.innerHTML = week.workouts.map((workout, index) => {
     const completion = getWorkoutCompletion(activeWeekIndex, index);
     const targetBPM = getWorkoutTargetBPM(workout);
-    return `<button type="button" class="week-workout-card ${completion ? 'completed' : ''}" data-week-index="${activeWeekIndex}" data-workout-index="${index}"><div><div class="field-label week-card-day">${escapeHTML(workout.day)}</div><div class="week-card-title">${escapeHTML(workout.type)}</div><div class="week-card-desc">${escapeHTML(workout.description)}</div></div><div class="week-card-side"><div class="workout-tag">${escapeHTML(completion ? 'Done' : workoutTag(workout))}</div><div class="workout-target">${targetBPM ? `${targetBPM} bpm` : '--'}</div><div class="workout-action">${escapeHTML(getActionCopy(workout, completion))}</div></div></button>`;
+    const targetCopy = isSprintWorkout(workout) ? 'All out' : (targetBPM ? `${targetBPM} bpm` : '--');
+    return `<button type="button" class="week-workout-card ${completion ? 'completed' : ''}" data-week-index="${activeWeekIndex}" data-workout-index="${index}"><div><div class="field-label week-card-day">${escapeHTML(workout.day)}</div><div class="week-card-title">${escapeHTML(workout.type)}</div><div class="week-card-desc">${escapeHTML(workout.description)}</div></div><div class="week-card-side"><div class="workout-tag">${escapeHTML(completion ? 'Done' : workoutTag(workout))}</div><div class="workout-target">${targetCopy}</div><div class="workout-action">${escapeHTML(getActionCopy(workout, completion))}</div></div></button>`;
   }).join('');
   renderDrawerWeeks();
 }
@@ -1297,6 +1330,7 @@ function openWorkoutDetail(weekIndex, workoutIndex) {
   const targetBPM = getWorkoutTargetBPM(workout);
   setText('detail-bpm', targetBPM ? String(targetBPM) : '--');
   renderDetailExpectedAvg(workout);
+  syncDetailSprintLayout(workout);
   const baseActionType = ['sprint', 'mile-test'].includes(workout.action) ? workout.action : 'complete-workout';
   const actionType = completion && hasSessionResults(completion) ? 'view-results' : baseActionType;
   setDetailWorkoutLog(baseActionType === 'complete-workout', completion, workout);

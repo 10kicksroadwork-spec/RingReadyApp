@@ -156,10 +156,10 @@ export const TEMPO_GUIDANCE = [
 export const BREATHING_VIDEO_URL = 'https://www.youtube.com/watch?v=oWfEcpmz8X8';
 
 export const SPRINT_GUIDANCE = [
-  'The 85% piece in Warmup is warmup only — not the sprints.',
-  'Target Zone (90–95%) is for the sprint reps. Fast but controlled.',
-  'After each sprint, rest as prescribed. Record HR after 60 seconds of rest — the timer will prompt you.',
-  'Do not treat warmup heart rate as the session target.',
+  'Go all out on every sprint rep.',
+  'Recover strong in the rest — that is the quality that matters.',
+  'Record HR after 60 seconds of rest. The timer will prompt you.',
+  'The 85% piece in Warmup is warmup only, not the sprints.',
 ];
 
 export const SHADOWBOXING_GUIDANCE = [
