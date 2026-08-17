@@ -18,6 +18,10 @@ import {
   SESSION_AVG_RANGE_BPM,
   THRESHOLD_GUIDANCE,
   FIGHT_PACE_GUIDANCE,
+  ZONE2_GUIDANCE,
+  BENCHMARK_GUIDANCE,
+  TEMPO_GUIDANCE,
+  BREATHING_VIDEO_URL,
 } from './app-content.js';
 import {
   enqueueDailyWorkoutForSync,
@@ -61,6 +65,7 @@ import {
 
 const WEEK_INDEX_KEY = 'ringReadyActiveWeekIndex';
 const PROFILE_FORM_COLLAPSED_KEY = 'ringReadyProfileFormCollapsed';
+const PROGRAM_GUIDE_COLLAPSED_KEY = 'ringReadyProgramGuideCollapsed';
 const ONBOARDING_DISMISSED_KEY = 'ringReadyOnboardingDismissed';
 const AUTH_USER_STORAGE_KEY = 'ringReadyAuthUserId';
 const WORKOUT_NOTES_STORAGE_KEY = 'ringReadyWorkoutNotes';
@@ -155,7 +160,7 @@ function getCloudTimestamp(record) {
   return Number.isNaN(date.getTime()) ? 0 : date.getTime();
 }
 function clearAccountLocalData() {
-  [PROFILE_STORAGE_KEY, STORAGE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY, HR_INFO_STORAGE_KEY, MILE_TEST_STORAGE_KEY, PROFILE_FORM_COLLAPSED_KEY, WORKOUT_NOTES_STORAGE_KEY].forEach((key) => localStorage.removeItem(key));
+  [PROFILE_STORAGE_KEY, STORAGE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY, HR_INFO_STORAGE_KEY, MILE_TEST_STORAGE_KEY, PROFILE_FORM_COLLAPSED_KEY, PROGRAM_GUIDE_COLLAPSED_KEY, WORKOUT_NOTES_STORAGE_KEY].forEach((key) => localStorage.removeItem(key));
 }
 function mergeWorkoutCompletions(localCompletions = {}, cloudCompletions = {}) {
   const merged = { ...localCompletions };
@@ -404,11 +409,23 @@ function saveHRInfo(info) {
   return next;
 }
 function calculateZoneBPM(zone, hrInfo) { const reserve = Math.max(0, hrInfo.maxHr - hrInfo.restingHr); return Math.round((reserve * zone.pct) / 100 + hrInfo.restingHr); }
-function getWorkoutTargetPct(workout) {
+function getWorkoutTargetPcts(workout) {
   const matches = String(workout.targetZone || '').match(/\d+(?:\.\d+)?/g);
-  if (!matches || matches.length === 0) return null;
-  const values = matches.map(Number).filter(Number.isFinite);
+  if (!matches || matches.length === 0) return [];
+  return matches.map(Number).filter(Number.isFinite);
+}
+function getWorkoutTargetPct(workout) {
+  const values = getWorkoutTargetPcts(workout);
   return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+}
+function getWorkoutZoneBounds(workout, hrInfo = getHRInfo()) {
+  const values = getWorkoutTargetPcts(workout);
+  if (!values.length) return null;
+  const lowPct = Math.min(...values);
+  const highPct = Math.max(...values);
+  const low = calculateZoneBPM({ pct: lowPct }, hrInfo);
+  const high = calculateZoneBPM({ pct: highPct }, hrInfo);
+  return { low, high, lowPct, highPct };
 }
 function getWorkoutTargetBPM(workout, hrInfo = getHRInfo()) {
   const pct = getWorkoutTargetPct(workout);
@@ -437,31 +454,75 @@ function getExpectedSessionAvg(workout, hrInfo = getHRInfo()) {
   const expectedAvg = Math.round(((plan.workTotal * targetBPM) + (plan.restTotal * easyBPM)) / plan.totalMinutes);
   const range = SESSION_AVG_RANGE_BPM;
   return {
+    mode: 'session-avg',
     expectedAvg,
     low: expectedAvg - range,
     high: expectedAvg + range,
     targetBPM,
     easyBPM,
     plan,
+    label: 'Expected Session Avg',
+    displayValue: String(expectedAvg),
+    meta: `Aim ~${expectedAvg - range}–${expectedAvg + range} · read-only`,
+    bpmNote: 'Hard intervals only',
   };
+}
+function isZoneCheckWorkout(workout) {
+  const type = String(workout?.type || '');
+  if (/sprint|mile|shadowbox|fight-?pace|threshold/i.test(type)) return false;
+  if (/stride/i.test(type)) return false;
+  const bounds = getWorkoutZoneBounds(workout);
+  if (!bounds) return false;
+  const isZone2 = bounds.lowPct >= 60 && bounds.highPct <= 70;
+  const isTempo = bounds.lowPct >= 75 && bounds.highPct <= 80;
+  return isZone2 || isTempo || /tempo|benchmark|easy|long run|shake-out|fight-day/i.test(type);
+}
+function getZoneHrFeedback(workout, hrInfo = getHRInfo()) {
+  const bounds = getWorkoutZoneBounds(workout, hrInfo);
+  if (!bounds || !isZoneCheckWorkout(workout)) return null;
+  return {
+    mode: 'zone',
+    expectedAvg: null,
+    low: bounds.low,
+    high: bounds.high,
+    label: 'Target Zone BPM',
+    displayValue: bounds.low === bounds.high ? String(bounds.low) : `${bounds.low}–${bounds.high}`,
+    meta: 'Stay in this range · read-only',
+    bpmNote: '',
+  };
+}
+function getHrFeedback(workout, hrInfo = getHRInfo()) {
+  return getExpectedSessionAvg(workout, hrInfo) || getZoneHrFeedback(workout, hrInfo);
 }
 function getWorkoutGuidance(workout) {
   const type = String(workout?.type || '');
   if (/threshold/i.test(type)) return THRESHOLD_GUIDANCE;
   if (/fight-?pace/i.test(type)) return FIGHT_PACE_GUIDANCE;
+  if (/tempo/i.test(type)) return TEMPO_GUIDANCE;
+  if (/benchmark/i.test(type)) return BENCHMARK_GUIDANCE;
+  if (isZoneCheckWorkout(workout)) {
+    const zone = workout.targetZone || '60-70%';
+    return [
+      `Stay conversational. Average HR should land in Zone 2 (${zone}).`,
+      ...ZONE2_GUIDANCE.slice(1),
+    ];
+  }
   return null;
 }
-function compareSessionAvg(avgBpm, expected) {
-  if (!expected || !Number.isFinite(avgBpm)) return null;
-  if (avgBpm >= expected.low && avgBpm <= expected.high) {
-    return { tone: 'on-track', label: 'On track', detail: `Within expected session average (${expected.low}–${expected.high}).` };
+function compareHrFeedback(avgBpm, feedback) {
+  if (!feedback || !Number.isFinite(avgBpm)) return null;
+  const rangeLabel = feedback.mode === 'zone'
+    ? `target zone (${feedback.low}–${feedback.high} bpm)`
+    : `expected session average (${feedback.low}–${feedback.high})`;
+  if (avgBpm >= feedback.low && avgBpm <= feedback.high) {
+    return { tone: 'on-track', label: 'On track', detail: `Within ${rangeLabel}.` };
   }
-  if (avgBpm > expected.high) {
-    return { tone: 'high', label: 'A bit high', detail: `Above expected session average (${expected.low}–${expected.high}).` };
+  if (avgBpm > feedback.high) {
+    return { tone: 'high', label: 'A bit high', detail: `Above ${rangeLabel}.` };
   }
-  return { tone: 'low', label: 'A bit low', detail: `Below expected session average (${expected.low}–${expected.high}).` };
+  return { tone: 'low', label: 'A bit low', detail: `Below ${rangeLabel}.` };
 }
-let detailExpectedSessionAvg = null;
+let detailHrFeedback = null;
 function renderDetailGuidance(workout) {
   const card = document.getElementById('detail-guidance-card');
   const list = document.getElementById('detail-guidance-list');
@@ -473,39 +534,66 @@ function renderDetailGuidance(workout) {
     return;
   }
   card.hidden = false;
-  list.innerHTML = bullets.map((line) => `<li>${escapeHTML(line)}</li>`).join('');
+  const breathingLine = `Remember to <a class="guidance-video-link" href="${escapeHTML(BREATHING_VIDEO_URL)}" target="_blank" rel="noopener noreferrer">breath properly</a> during your run.`;
+  list.innerHTML = [
+    ...bullets.map((line) => `<li>${escapeHTML(line)}</li>`),
+    `<li>${breathingLine}</li>`,
+  ].join('');
+}
+function setDetailZoneCardVisible(visible) {
+  const zoneCard = document.getElementById('detail-zone-card');
+  const grid = document.querySelector('#workout-detail .detail-grid');
+  if (zoneCard) zoneCard.hidden = !visible;
+  grid?.classList.toggle('is-zone-swap', !visible);
+}
+function hideDetailHrFeedback() {
+  const card = document.getElementById('detail-expected-avg-card');
+  const bpmNote = document.getElementById('detail-bpm-note');
+  const status = document.getElementById('detail-expected-status');
+  const valueEl = document.getElementById('detail-expected-avg');
+  detailHrFeedback = null;
+  if (card) card.hidden = true;
+  if (bpmNote) bpmNote.hidden = true;
+  if (status) { status.hidden = true; status.textContent = ''; status.className = 'detail-expected-status'; }
+  if (valueEl) valueEl.classList.remove('is-range');
+  setDetailZoneCardVisible(true);
+  setText('detail-expected-avg', '--');
+  setText('detail-expected-label', 'Expected Session Avg');
+  setText('detail-expected-meta', 'Read-only · hard work + recoveries');
 }
 function renderDetailExpectedAvg(workout) {
   const card = document.getElementById('detail-expected-avg-card');
   const bpmNote = document.getElementById('detail-bpm-note');
-  const status = document.getElementById('detail-expected-status');
-  detailExpectedSessionAvg = getExpectedSessionAvg(workout);
+  const valueEl = document.getElementById('detail-expected-avg');
+  detailHrFeedback = getHrFeedback(workout);
   if (!card) return;
-  if (!detailExpectedSessionAvg) {
-    card.hidden = true;
-    if (bpmNote) bpmNote.hidden = true;
-    if (status) { status.hidden = true; status.textContent = ''; status.className = 'detail-expected-status'; }
-    setText('detail-expected-avg', '--');
-    setText('detail-expected-meta', 'Read-only · hard work + recoveries');
+  if (!detailHrFeedback) {
+    hideDetailHrFeedback();
     return;
   }
   card.hidden = false;
-  if (bpmNote) bpmNote.hidden = false;
-  setText('detail-expected-avg', String(detailExpectedSessionAvg.expectedAvg));
-  setText('detail-expected-meta', `Aim ~${detailExpectedSessionAvg.low}–${detailExpectedSessionAvg.high} · read-only`);
+  setDetailZoneCardVisible(detailHrFeedback.mode !== 'zone');
+  if (bpmNote) {
+    bpmNote.hidden = !detailHrFeedback.bpmNote;
+    bpmNote.textContent = detailHrFeedback.bpmNote || '';
+  }
+  if (valueEl) valueEl.classList.toggle('is-range', detailHrFeedback.mode === 'zone');
+  setText('detail-expected-label', detailHrFeedback.label);
+  setText('detail-expected-avg', detailHrFeedback.displayValue);
+  setText('detail-expected-meta', detailHrFeedback.meta);
   updateDetailExpectedStatus();
 }
 function updateDetailExpectedStatus() {
   const status = document.getElementById('detail-expected-status');
   if (!status) return;
-  if (!detailExpectedSessionAvg) {
+  if (!detailHrFeedback) {
     status.hidden = true;
     status.textContent = '';
     status.className = 'detail-expected-status';
     return;
   }
   const avgBpm = parseThreeDigitHR('detail-avg-bpm-input');
-  const comparison = compareSessionAvg(avgBpm, detailExpectedSessionAvg);
+  const comparison = compareHrFeedback(avgBpm, detailHrFeedback);
   if (!comparison) {
     status.hidden = true;
     status.textContent = '';
@@ -889,7 +977,7 @@ function renderAthleteProfilePage() {
 }
 function clearLocalTestData() {
   if (!window.confirm('Clear local test data on this device? This resets profile, HR info, mile test, completed workouts, sprint history, pending sync, and onboarding.')) return;
-  [PROFILE_STORAGE_KEY, STORAGE_KEY, SYNC_QUEUE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY, HR_INFO_STORAGE_KEY, MILE_TEST_STORAGE_KEY, AUTH_USER_STORAGE_KEY, SC_MODE_STORAGE_KEY, SC_WEEK_STORAGE_KEY, WEEK_INDEX_KEY, PROFILE_FORM_COLLAPSED_KEY, ONBOARDING_DISMISSED_KEY].forEach((key) => localStorage.removeItem(key));
+  [PROFILE_STORAGE_KEY, STORAGE_KEY, SYNC_QUEUE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY, HR_INFO_STORAGE_KEY, MILE_TEST_STORAGE_KEY, AUTH_USER_STORAGE_KEY, SC_MODE_STORAGE_KEY, SC_WEEK_STORAGE_KEY, WEEK_INDEX_KEY, PROFILE_FORM_COLLAPSED_KEY, PROGRAM_GUIDE_COLLAPSED_KEY, ONBOARDING_DISMISSED_KEY].forEach((key) => localStorage.removeItem(key));
   activeWeekIndex = 0;
   scMode = 'Gym Machines';
   scWeek = 1;
@@ -956,12 +1044,31 @@ function getActionCopy(workout, completion = null) {
   if (workout.action === 'mile-test') return 'OPEN MILE TEST';
   return 'VIEW';
 }
+function isProgramGuideCollapsed() {
+  return localStorage.getItem(PROGRAM_GUIDE_COLLAPSED_KEY) === '1';
+}
+function setProgramGuideCollapsed(isCollapsed) {
+  localStorage.setItem(PROGRAM_GUIDE_COLLAPSED_KEY, isCollapsed ? '1' : '0');
+  syncProgramGuideCollapse();
+}
+function syncProgramGuideCollapse() {
+  const card = document.getElementById('program-guide-card');
+  const content = document.getElementById('program-guide-content');
+  const btn = document.getElementById('program-guide-toggle-btn');
+  if (!content || !btn) return;
+  const isCollapsed = isProgramGuideCollapsed();
+  content.hidden = isCollapsed;
+  card?.classList.toggle('collapsed', isCollapsed);
+  btn.textContent = isCollapsed ? 'SHOW' : 'HIDE';
+  btn.setAttribute('aria-expanded', String(!isCollapsed));
+}
 function renderShell() {
   activeWeekIndex = clampWeek(activeWeekIndex);
   const week = getWeek(activeWeekIndex);
   setText('current-week-label', `${week.label}: ${week.title}`);
   setText('current-week-focus', week.focus || '');
   renderHeaderProfile();
+  syncProgramGuideCollapse();
   const prevBtn = document.getElementById('week-prev-btn');
   const nextBtn = document.getElementById('week-next-btn');
   if (prevBtn) prevBtn.disabled = activeWeekIndex === 0;
@@ -1285,6 +1392,7 @@ function bindShellEvents() {
   document.getElementById('save-athlete-profile-btn')?.addEventListener('click', saveAthleteProfileFromInputs);
   document.getElementById('clear-test-data-btn')?.addEventListener('click', clearLocalTestData);
   document.getElementById('profile-form-toggle-btn')?.addEventListener('click', () => setProfileFormCollapsed(!isProfileFormCollapsed()));
+  document.getElementById('program-guide-toggle-btn')?.addEventListener('click', () => setProgramGuideCollapsed(!isProgramGuideCollapsed()));
   document.getElementById('save-hr-info-btn')?.addEventListener('click', saveHRInfoFromInputs);
   document.querySelectorAll('[data-sc-mode]').forEach((btn) => btn.addEventListener('click', () => { scMode = btn.dataset.scMode; renderSCPage(); }));
   document.getElementById('sc-week-tabs')?.addEventListener('click', (event) => { const btn = event.target.closest('[data-sc-week]'); if (!btn) return; scWeek = clampSCWeek(btn.dataset.scWeek); renderSCPage(); });
