@@ -478,6 +478,7 @@ function getExpectedSessionAvg(workout, hrInfo = getHRInfo()) {
     displayValue: String(expectedAvg),
     meta: `Aim ~${expectedAvg - range}–${expectedAvg + range}`,
     bpmNote: 'Hard intervals only',
+    kind: 'session-avg',
   };
 }
 function isZoneCheckWorkout(workout) {
@@ -502,6 +503,7 @@ function getZoneHrFeedback(workout, hrInfo = getHRInfo()) {
     displayValue: bounds.low === bounds.high ? String(bounds.low) : `${bounds.low}–${bounds.high}`,
     meta: 'Stay in this range',
     bpmNote: '',
+    kind: bounds.lowPct >= 75 && bounds.highPct <= 80 ? 'tempo' : 'zone2',
   };
 }
 function getHrFeedback(workout, hrInfo = getHRInfo()) {
@@ -527,18 +529,74 @@ function getWorkoutGuidance(workout) {
   }
   return null;
 }
+const HR_FEEDBACK_MILD_MAX = 8;
+const HR_FEEDBACK_HARD_MAX = 18;
+
+function getHrMissSeverity(deltaBpm) {
+  if (deltaBpm <= HR_FEEDBACK_MILD_MAX) return 'mild';
+  if (deltaBpm <= HR_FEEDBACK_HARD_MAX) return 'hard';
+  return 'way';
+}
+
 function compareHrFeedback(avgBpm, feedback) {
   if (!feedback || !Number.isFinite(avgBpm)) return null;
-  const rangeLabel = feedback.mode === 'zone'
-    ? `target zone (${feedback.low}–${feedback.high} bpm)`
-    : `expected session average (${feedback.low}–${feedback.high})`;
-  if (avgBpm >= feedback.low && avgBpm <= feedback.high) {
-    return { tone: 'on-track', label: 'On track', detail: `Within ${rangeLabel}.` };
+  const low = Number(feedback.low);
+  const high = Number(feedback.high);
+  const range = `${low}–${high} bpm`;
+  const kind = feedback.kind || (feedback.mode === 'zone' ? 'zone2' : 'session-avg');
+
+  if (avgBpm >= low && avgBpm <= high) {
+    const detail = kind === 'session-avg'
+      ? `Within expected session average (${range}).`
+      : kind === 'tempo'
+        ? `Within Tempo range (${range}).`
+        : `Within Zone 2 (${range}).`;
+    return { tone: 'on-track', severity: 'ok', label: 'On track', detail };
   }
-  if (avgBpm > feedback.high) {
-    return { tone: 'high', label: 'A bit high', detail: `Above ${rangeLabel}.` };
+
+  const isHigh = avgBpm > high;
+  const delta = isHigh ? avgBpm - high : low - avgBpm;
+  const severity = getHrMissSeverity(delta);
+  const copy = getHrMissCopy(kind, isHigh ? 'high' : 'low', severity, range);
+  return {
+    tone: isHigh ? 'high' : 'low',
+    severity,
+    label: copy.label,
+    detail: copy.detail,
+  };
+}
+
+function getHrMissCopy(kind, direction, severity, range) {
+  if (kind === 'tempo') {
+    if (direction === 'high') {
+      if (severity === 'mild') return { label: 'A bit high', detail: `Above the Tempo range (${range}). Don’t turn this into Threshold.` };
+      if (severity === 'hard') return { label: 'Too hard', detail: 'This was closer to Threshold than Tempo. Back off the pace.' };
+      return { label: 'Way too hard', detail: 'This wasn’t Tempo. Save that effort for Threshold / Fight-Pace.' };
+    }
+    if (severity === 'mild') return { label: 'A bit low', detail: `Below Tempo (${range}). It should feel comfortably hard.` };
+    if (severity === 'hard') return { label: 'Too easy', detail: 'This sat in Zone 2. Push a bit so it actually counts as Tempo.' };
+    return { label: 'Way too easy', detail: `This wasn’t a Tempo run. Average HR needs to land in ${range}.` };
   }
-  return { tone: 'low', label: 'A bit low', detail: `Below ${rangeLabel}.` };
+
+  if (kind === 'session-avg') {
+    if (direction === 'high') {
+      if (severity === 'mild') return { label: 'A bit high', detail: `Above expected session average (${range}). Recoveries were probably a bit hard, or the intervals ran hot.` };
+      if (severity === 'hard') return { label: 'Session average is high', detail: `Well above expected (${range}). Keep recoveries in Zone 2.` };
+      return { label: 'Session average is way high', detail: 'This session average is far above expected. Recoveries likely weren’t easy enough.' };
+    }
+    if (severity === 'mild') return { label: 'A bit low', detail: `Below expected session average (${range}). Intervals may have been under target.` };
+    if (severity === 'hard') return { label: 'Session average is low', detail: `Well below expected (${range}). The hard work likely sat under target.` };
+    return { label: 'Session average is way low', detail: 'This session average is far below expected. Check that the intervals actually hit the zone.' };
+  }
+
+  if (direction === 'high') {
+    if (severity === 'mild') return { label: 'A bit high', detail: `Above Zone 2 (${range}). Keep the next one conversational.` };
+    if (severity === 'hard') return { label: 'Too hard', detail: 'This was more Tempo than Zone 2. Slow down so easy days stay easy.' };
+    return { label: 'Way too hard', detail: 'This wasn’t a Zone 2 run. Recovery days can’t live up here.' };
+  }
+  if (severity === 'mild') return { label: 'A bit low', detail: `Below Zone 2 (${range}). Fine if you needed it; otherwise pick the jog up a little.` };
+  if (severity === 'hard') return { label: 'Too easy', detail: 'Well under Zone 2. It should still be easy jogging, not a stroll.' };
+  return { label: 'Way too easy', detail: 'This looks more like a walk. Get Average HR back into the zone.' };
 }
 let detailHrFeedback = null;
 function renderDetailGuidance(workout) {
@@ -649,7 +707,7 @@ function updateDetailExpectedStatus() {
     return;
   }
   status.hidden = false;
-  status.className = `detail-expected-status is-${comparison.tone}`;
+  status.className = `detail-expected-status is-${comparison.tone} is-${comparison.severity}`;
   status.textContent = `${comparison.label} — ${comparison.detail}`;
 }
 function getSprintSetupFromWorkout(workout) {
