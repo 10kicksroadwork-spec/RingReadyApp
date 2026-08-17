@@ -597,7 +597,7 @@ function installNavigationGuard() {
     (event) => {
       if (!gateLocked) return;
       const blocked = event.target.closest(
-        '[data-page-target], [data-open-menu], #open-sprint-setup-btn, #detail-action-btn'
+        '[data-page-target], [data-open-menu], #detail-action-btn'
       );
       if (!blocked) return;
       event.preventDefault();
