@@ -821,26 +821,44 @@ function renderRoster() {
   `).join('');
 }
 
-function sparkHeights(values) {
+function sparkRange(values) {
   const nums = values.filter((value) => Number.isFinite(value));
-  if (!nums.length) return values.map(() => 0);
-  const min = Math.min(0, ...nums);
-  const max = Math.max(0, ...nums);
-  const span = Math.max(max - min, 1);
-  return values.map((value) => {
-    if (!Number.isFinite(value)) return 0;
-    return Math.round(((value - min) / span) * 100);
-  });
+  if (!nums.length) return { min: 0, max: 1 };
+  let min = Math.min(...nums);
+  let max = Math.max(...nums);
+  if (min === max) {
+    min -= 1;
+    max += 1;
+  }
+  const pad = (max - min) * 0.18;
+  return { min: min - pad, max: max + pad };
 }
 
 function renderSpark(points, valueKey, labelFn) {
   if (!points.length) return '<p class="coach-trend-empty">No trend yet.</p>';
-  const heights = sparkHeights(points.map((row) => Number(row[valueKey])));
-  return `<div class="coach-spark" aria-hidden="true">${points.map((row, index) => `
-    <div class="coach-spark-col">
-      <i style="height:${Math.max(8, heights[index])}%"></i>
-      <span>${escapeHTML(labelFn(row))}</span>
-    </div>`).join('')}</div>`;
+  const values = points.map((row) => Number(row[valueKey]));
+  const { min, max } = sparkRange(values);
+  const span = Math.max(max - min, 0.001);
+  const width = 100;
+  const height = 36;
+  const coords = values.map((value, index) => {
+    const x = values.length === 1 ? width / 2 : (index / (values.length - 1)) * width;
+    const y = height - ((value - min) / span) * height;
+    return { x: Number(x.toFixed(2)), y: Number(y.toFixed(2)), ok: Number.isFinite(value) };
+  });
+  const line = coords.filter((point) => point.ok).map((point) => `${point.x},${point.y}`).join(' ');
+  const dots = coords.filter((point) => point.ok).map((point) =>
+    `<circle cx="${point.x}" cy="${point.y}" r="2.2"></circle>`
+  ).join('');
+  const polyline = coords.filter((point) => point.ok).length > 1
+    ? `<polyline points="${line}"></polyline>`
+    : '';
+  return `<div class="coach-spark" aria-hidden="true">
+    <svg class="coach-spark-line" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">${polyline}${dots}</svg>
+    <div class="coach-spark-labels">${points.map((row) =>
+      `<span>${escapeHTML(labelFn(row))}</span>`
+    ).join('')}</div>
+  </div>`;
 }
 
 function renderMetricCard(id, title, signal, clickable) {

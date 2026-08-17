@@ -2807,32 +2807,39 @@
   }
 
   .coach-spark {
-    display: flex;
-    align-items: flex-end;
-    gap: 8px;
-    height: 72px;
-    margin-top: 10px;
+    margin-top: 12px;
   }
 
-  .coach-spark-col {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: flex-end;
-    height: 100%;
-    gap: 6px;
-  }
-
-  .coach-spark-col i {
+  .coach-spark-line {
     display: block;
     width: 100%;
-    max-width: 28px;
-    border-radius: 4px 4px 0 0;
-    background: var(--gold);
+    height: 56px;
+    overflow: visible;
   }
 
-  .coach-spark-col span {
+  .coach-spark-line polyline {
+    fill: none;
+    stroke: var(--gold);
+    stroke-width: 2.4;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    vector-effect: non-scaling-stroke;
+  }
+
+  .coach-spark-line circle {
+    fill: var(--black);
+    stroke: var(--gold);
+    stroke-width: 2;
+    vector-effect: non-scaling-stroke;
+  }
+
+  .coach-spark-labels {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 6px;
+  }
+
+  .coach-spark-labels span {
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 9px;
     letter-spacing: 0.8px;
