@@ -13,11 +13,13 @@ export const HR_INFO_DEFAULTS = {
 export const HR_ZONES = [
   { label: 'Max HR', pct: 100, uses: ['Sprints'] },
   { label: '95% HR', pct: 95, uses: ['Sprints'] },
-  { label: '90% HR', pct: 90, uses: ['Sprints'] },
-  { label: '80% HR', pct: 80, uses: ['Tempo Run', 'Threshold Run', 'Circuits'] },
-  { label: '75% HR', pct: 75, uses: ['Tempo Run', 'Threshold Run', 'Circuits'] },
-  { label: '70% HR', pct: 70, uses: ['Easy Runs', 'Long Runs'] },
-  { label: '60% HR', pct: 60, uses: ['Easy Runs', 'Long Runs'] },
+  { label: '90% HR', pct: 90, uses: ['Sprints', 'Fight-Pace'] },
+  { label: '88% HR', pct: 88, uses: ['Threshold Run'] },
+  { label: '84% HR', pct: 84, uses: ['Threshold Run'] },
+  { label: '80% HR', pct: 80, uses: ['Tempo Run', 'Circuits'] },
+  { label: '75% HR', pct: 75, uses: ['Tempo Run', 'Circuits'] },
+  { label: '70% HR', pct: 70, uses: ['Easy Runs', 'Long Runs', 'Benchmark'] },
+  { label: '60% HR', pct: 60, uses: ['Easy Runs', 'Long Runs', 'Benchmark'] },
 ];
 
 export const WELCOME_SECTIONS = [
