@@ -16,3 +16,4 @@ export const REST_LOG_ALERT_INTERVAL_MS = 750;
 export const REST_COMPLETE_BEEP_HZ = 880;
 export const REST_COMPLETE_BEEP_MS = 300;
 export const CANCEL_HOLD_MS = 5000;
+export const SPRINT_DONE_HOLD_MS = 2000;

@@ -471,6 +471,7 @@
     touch-action: none;
   }
   .hold-cancel-btn.is-holding { color: var(--white); border-color: var(--red); }
+  .hold-action-fill,
   .cancel-session-fill {
     position: absolute;
     inset: 0 auto 0 0;
@@ -479,19 +480,32 @@
     pointer-events: none;
     z-index: 0;
   }
-  .hold-cancel-btn.is-holding .cancel-session-fill {
+  .hold-cancel-btn.is-holding .hold-action-fill,
+  .hold-cancel-btn.is-holding .cancel-session-fill,
+  .main-btn.is-holding .hold-action-fill {
     width: 100%;
-    transition: width calc(var(--cancel-hold-ms, 5000) * 1ms) linear;
+    transition: width calc(var(--hold-ms, 5000) * 1ms) linear;
   }
-  .cancel-session-label { position: relative; z-index: 1; }
+  .hold-action-label,
+  .cancel-session-label,
+  .main-btn-label { position: relative; z-index: 1; }
   .main-btn {
+    position: relative;
+    overflow: hidden;
+    isolation: isolate;
     width: 100%; border: none; border-radius: 20px;
     font-family: Impact, Haettenschweiler, 'Arial Narrow Bold', sans-serif; font-size: 32px;
     letter-spacing: 2px; padding: 26px; cursor: pointer;
     transition: transform 0.1s, background 0.3s, color 0.3s;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+    touch-action: none;
   }
   .main-btn:active { transform: scale(0.97); }
   .main-btn.btn-sprint   { background: var(--red); color: white; }
+  .main-btn.btn-sprint.is-holding { color: var(--black); }
+  .main-btn.btn-sprint .hold-action-fill { background: rgba(245, 200, 66, 0.9); }
   .main-btn.btn-go       { background: var(--gold); color: var(--black); }
   .main-btn.btn-disabled { background: var(--grey); color: var(--light-grey); pointer-events: none; }
 

@@ -255,7 +255,7 @@ export function beginSprint() {
   clearHRBufferForInterval();
   setStatus('sprint');
   setMainBtn('sprint', 'SPRINT DONE');
-  setTimerDisplay('SPRINTING', '--', 'hit done when finished');
+  setTimerDisplay('SPRINTING', '--', 'hold 2 seconds when finished');
   setRing(1, true);
   vibrate([100, 50, 100]);
   syncHoldToCancelLabels();

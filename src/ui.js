@@ -6,11 +6,12 @@
   REST_COMPLETE_BEEP_HZ,
   REST_COMPLETE_BEEP_MS,
   CANCEL_HOLD_MS,
+  SPRINT_DONE_HOLD_MS,
 } from './constants.js';
 
 let audioCtx = null;
 let restLogAlertTimer = null;
-const holdCancelSyncers = [];
+const holdActionSyncers = [];
 
 export function vibrate(p) {
   if (navigator.vibrate) navigator.vibrate(p);
@@ -79,18 +80,18 @@ export function stopRestLogAlert() {
   if (navigator.vibrate) navigator.vibrate(0);
 }
 
-function setHoldCancelLabel(el, text) {
-  const label = el.querySelector('.cancel-session-label');
+function setHoldActionLabel(el, text) {
+  const label = el.querySelector('.hold-action-label, .cancel-session-label, .main-btn-label');
   if (label) label.textContent = text;
   else el.textContent = text;
   el.setAttribute('aria-label', text);
 }
 
 /**
- * Require a 5-second hold to cancel once a sprint has started.
- * Before the first GO, a tap still cancels so they can leave the setup screen.
+ * Hold-to-confirm control. Use requiresHold() to gate when a press must be held.
+ * Optional onTap runs for a normal click when hold is not required.
  */
-export function bindHoldToCancel(el, onCancel, options = {}) {
+export function bindHoldAction(el, onComplete, options = {}) {
   if (!el) return;
 
   const holdMs = Number(options.holdMs) || CANCEL_HOLD_MS;
@@ -98,9 +99,19 @@ export function bindHoldToCancel(el, onCancel, options = {}) {
   const requiresHold = typeof options.requiresHold === 'function'
     ? options.requiresHold
     : () => true;
-  const idleLabel = options.idleLabel || 'CANCEL SESSION';
-  const holdLabel = options.holdLabel || `HOLD ${holdSeconds}S TO CANCEL`;
-  const hint = options.hint || `HOLD ${holdSeconds} SECONDS TO CANCEL`;
+  const getIdleLabel = typeof options.getIdleLabel === 'function'
+    ? options.getIdleLabel
+    : () => options.idleLabel || 'HOLD TO CONFIRM';
+  const getHoldLabel = typeof options.getHoldLabel === 'function'
+    ? options.getHoldLabel
+    : () => options.holdLabel || `HOLD ${holdSeconds}S`;
+  const getHoldingLabel = typeof options.getHoldingLabel === 'function'
+    ? options.getHoldingLabel
+    : (remaining) => options.holdingLabel
+      ? String(options.holdingLabel).replace('{n}', String(remaining))
+      : `KEEP HOLDING ${remaining}`;
+  const hint = options.hint || `HOLD ${holdSeconds} SECONDS`;
+  const onTap = typeof options.onTap === 'function' ? options.onTap : null;
 
   let holding = false;
   let holdTimer = null;
@@ -121,7 +132,7 @@ export function bindHoldToCancel(el, onCancel, options = {}) {
   };
 
   const syncIdleLabel = () => {
-    setHoldCancelLabel(el, requiresHold() ? holdLabel : idleLabel);
+    setHoldActionLabel(el, requiresHold() ? getHoldLabel() : getIdleLabel());
   };
 
   const stopHold = (showHint = false) => {
@@ -145,18 +156,18 @@ export function bindHoldToCancel(el, onCancel, options = {}) {
     ignoreNextClick = false;
     startedAt = Date.now();
     el.classList.add('is-holding');
-    el.style.setProperty('--cancel-hold-ms', String(holdMs));
+    el.style.setProperty('--hold-ms', String(holdMs));
 
     const remainingSeconds = () => Math.max(1, Math.ceil((holdMs - (Date.now() - startedAt)) / 1000));
-    setHoldCancelLabel(el, `KEEP HOLDING ${remainingSeconds()}`);
+    setHoldActionLabel(el, getHoldingLabel(remainingSeconds()));
     tickTimer = setInterval(() => {
-      setHoldCancelLabel(el, `KEEP HOLDING ${remainingSeconds()}`);
+      setHoldActionLabel(el, getHoldingLabel(remainingSeconds()));
     }, 200);
 
     holdTimer = setTimeout(() => {
       ignoreNextClick = true;
       stopHold(false);
-      onCancel();
+      onComplete();
       if (ignoreClickTimer) clearTimeout(ignoreClickTimer);
       ignoreClickTimer = setTimeout(() => {
         ignoreNextClick = false;
@@ -170,8 +181,8 @@ export function bindHoldToCancel(el, onCancel, options = {}) {
     event.preventDefault();
   };
 
-  el.style.setProperty('--cancel-hold-ms', String(holdMs));
-  holdCancelSyncers.push(syncIdleLabel);
+  el.style.setProperty('--hold-ms', String(holdMs));
+  holdActionSyncers.push(syncIdleLabel);
   syncIdleLabel();
 
   el.addEventListener('pointerdown', startHold, { passive: false });
@@ -183,14 +194,16 @@ export function bindHoldToCancel(el, onCancel, options = {}) {
       event.stopPropagation();
       return;
     }
-    onCancel();
+    if (onTap) onTap();
+    else onComplete();
   });
   el.addEventListener('keydown', (event) => {
     if (event.key !== ' ' && event.key !== 'Enter') return;
     if (event.repeat) return;
     event.preventDefault();
     if (!requiresHold()) {
-      onCancel();
+      if (onTap) onTap();
+      else onComplete();
       return;
     }
     startHold(event);
@@ -203,8 +216,37 @@ export function bindHoldToCancel(el, onCancel, options = {}) {
   el.addEventListener('contextmenu', (event) => event.preventDefault());
 }
 
+/**
+ * Require a 5-second hold to cancel once a sprint has started.
+ * Before the first GO, a tap still cancels so they can leave the setup screen.
+ */
+export function bindHoldToCancel(el, onCancel, options = {}) {
+  const holdMs = Number(options.holdMs) || CANCEL_HOLD_MS;
+  const holdSeconds = Math.max(1, Math.round(holdMs / 1000));
+  bindHoldAction(el, onCancel, {
+    ...options,
+    holdMs,
+    idleLabel: options.idleLabel || 'CANCEL SESSION',
+    holdLabel: options.holdLabel || `HOLD ${holdSeconds}S TO CANCEL`,
+    hint: options.hint || `HOLD ${holdSeconds} SECONDS TO CANCEL`,
+  });
+}
+
 export function syncHoldToCancelLabels() {
-  holdCancelSyncers.forEach((sync) => sync());
+  holdActionSyncers.forEach((sync) => sync());
+}
+
+function ensureMainBtnStructure(btn) {
+  if (!btn || btn.querySelector('.main-btn-label')) return btn;
+  const fill = document.createElement('span');
+  fill.className = 'hold-action-fill';
+  fill.setAttribute('aria-hidden', 'true');
+  const label = document.createElement('span');
+  label.className = 'main-btn-label hold-action-label';
+  label.textContent = btn.textContent || 'GO';
+  btn.textContent = '';
+  btn.append(fill, label);
+  return btn;
 }
 
 export function showScreen(id) {
@@ -235,28 +277,58 @@ let mainHandlers = {
   handleMainBtn: () => {},
   handleSprintDone: () => {},
 };
+let mainBtnHoldBound = false;
 
 export function registerMainHandlers(handlers) {
   mainHandlers = { ...mainHandlers, ...handlers };
+  ensureMainBtnHoldBinding();
+}
+
+function ensureMainBtnHoldBinding() {
+  const btn = document.getElementById('main-btn');
+  if (!btn || mainBtnHoldBound) return;
+  ensureMainBtnStructure(btn);
+  mainBtnHoldBound = true;
+
+  const holdSeconds = Math.max(1, Math.round(SPRINT_DONE_HOLD_MS / 1000));
+  bindHoldAction(btn, () => mainHandlers.handleSprintDone(), {
+    holdMs: SPRINT_DONE_HOLD_MS,
+    requiresHold: () => btn.classList.contains('btn-sprint'),
+    getIdleLabel: () => btn.dataset.idleLabel || 'GO',
+    getHoldLabel: () => btn.dataset.holdLabel || `HOLD ${holdSeconds}S`,
+    getHoldingLabel: (remaining) => `HOLD ${remaining}`,
+    hint: `HOLD ${holdSeconds} SECONDS TO FINISH`,
+    onTap: () => mainHandlers.handleMainBtn(),
+  });
 }
 
 export function setMainBtn(type, label) {
-  const btn = document.getElementById('main-btn');
+  const btn = ensureMainBtnStructure(document.getElementById('main-btn'));
+  ensureMainBtnHoldBinding();
   btn.className = 'main-btn';
+  btn.classList.remove('is-holding');
+
   if (type === 'sprint') {
+    const holdSeconds = Math.max(1, Math.round(SPRINT_DONE_HOLD_MS / 1000));
     btn.classList.add('btn-sprint');
-    btn.onclick = mainHandlers.handleSprintDone;
-    btn.setAttribute('aria-label', 'Mark sprint done');
+    btn.dataset.idleLabel = label || 'SPRINT DONE';
+    btn.dataset.holdLabel = `HOLD ${holdSeconds}S`;
+    btn.style.setProperty('--hold-ms', String(SPRINT_DONE_HOLD_MS));
+    btn.setAttribute('aria-label', `Hold ${holdSeconds} seconds to mark sprint done`);
   } else if (type === 'go') {
     btn.classList.add('btn-go');
-    btn.onclick = mainHandlers.handleMainBtn;
+    btn.dataset.idleLabel = label || 'GO';
+    btn.dataset.holdLabel = label || 'GO';
     btn.setAttribute('aria-label', 'Start sprint or go');
   } else {
     btn.classList.add('btn-disabled');
-    btn.onclick = null;
+    btn.dataset.idleLabel = label || '';
+    btn.dataset.holdLabel = label || '';
     btn.removeAttribute('aria-label');
   }
-  btn.textContent = label;
+
+  setHoldActionLabel(btn, type === 'sprint' ? btn.dataset.holdLabel : btn.dataset.idleLabel);
+  syncHoldToCancelLabels();
 }
 
 export function resetChips() {
