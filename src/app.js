@@ -3,6 +3,7 @@ import {
   AUTO_START_DELAY_MS,
   REST_CAPTURE_SEC,
 } from './constants.js';
+import { HR_INFO_DEFAULTS, HR_INFO_STORAGE_KEY } from './app-content.js';
 import {
   validateSprintHR,
   validateRestHR,
@@ -82,14 +83,35 @@ export function adjust(key, delta) {
   syncConfigControls();
 }
 
+function readAthleteMaxHR() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(HR_INFO_STORAGE_KEY) || '{}');
+    const maxHr = Number(saved.maxHr);
+    if (Number.isFinite(maxHr) && maxHr > 0) return Math.round(maxHr);
+  } catch (err) {
+    console.warn('Could not read stored max HR', err);
+  }
+  return Math.round(Number(HR_INFO_DEFAULTS.maxHr) || 181);
+}
+
+/** Coach sync still stores maxHR/targetPct. Athletes no longer set or see them in the timer. */
+function applySessionHRConfig() {
+  const contextMaxHR = Number(cfg.workoutContext?.maxHr);
+  const contextTargetPct = Number(cfg.workoutContext?.targetPct);
+  cfg.maxHR = Number.isFinite(contextMaxHR) && contextMaxHR > 0
+    ? Math.round(contextMaxHR)
+    : readAthleteMaxHR();
+  if (Number.isFinite(contextTargetPct) && contextTargetPct > 0) {
+    cfg.targetPct = contextTargetPct;
+  }
+}
+
 function syncConfigControls() {
   const repsVal = document.getElementById('reps-val');
   const restVal = document.getElementById('rest-val');
-  const targetPct = document.getElementById('target-pct');
 
   if (repsVal) repsVal.textContent = cfg.reps;
   if (restVal) restVal.textContent = cfg.rest;
-  if (targetPct && Number.isFinite(Number(cfg.targetPct))) targetPct.value = String(cfg.targetPct);
 }
 
 function renderSprintWarmup(context) {
@@ -135,10 +157,7 @@ export function setWorkoutContext(context = null) {
     cfg.rest = Math.max(30, Math.min(300, Number(context.restSeconds)));
   }
 
-  if (context && Number.isFinite(Number(context.targetPct))) {
-    cfg.targetPct = Number(context.targetPct);
-  }
-
+  applySessionHRConfig();
   syncConfigControls();
 }
 function runStartSession() {
@@ -157,8 +176,7 @@ function runStartSession() {
   activeResultRecord = null;
   clearSessionTimer();
 
-  cfg.maxHR = parseInt(document.getElementById('max-hr').value, 10) || 183;
-  cfg.targetPct = Number.parseFloat(document.getElementById('target-pct').value) || 90;
+  applySessionHRConfig();
 
   Object.assign(state, {
     phase: 'idle',
@@ -183,9 +201,6 @@ function runStartSession() {
 
   document.getElementById('curr-interval').textContent = 1;
   document.getElementById('total-intervals').textContent = `of ${cfg.reps}`;
-  document.getElementById('target-bpm-display').textContent = Math.round(
-    (cfg.maxHR * cfg.targetPct) / 100
-  );
   document.getElementById('live-badge').style.display = hasFreshHRSample() ? 'flex' : 'none';
 
   setStatus('ready');
