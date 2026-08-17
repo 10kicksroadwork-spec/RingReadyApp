@@ -169,3 +169,11 @@ export const SHADOWBOXING_GUIDANCE = [
   'Keep Average HR in Zone 2 (60–70%). Anywhere in that range is success.',
   'Don’t chase a hard pace. If it starts feeling like cardio, slow the work down.',
 ];
+
+export const MILE_TEST_GUIDANCE = [
+  'Warm up fully. Cold legs won’t give you a real time or a real Max HR.',
+  'Even laps. Lap 1 controlled. Lap 2 match lap 1. Lap 3 hold the pace. Lap 4 all out to the line.',
+  'Don’t go out like a 400. If you’re cooked at 600 m, the time and the Max HR both die.',
+  'Empty it in the last 150–200 m. Max HR usually shows up at the end, not the start.',
+  'Don’t watch HR while you run. Check Max BPM after you finish, then walk the cooldown.',
+];

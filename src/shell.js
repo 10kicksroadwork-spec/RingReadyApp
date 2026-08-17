@@ -23,6 +23,7 @@ import {
   TEMPO_GUIDANCE,
   SPRINT_GUIDANCE,
   SHADOWBOXING_GUIDANCE,
+  MILE_TEST_GUIDANCE,
   BREATHING_VIDEO_URL,
 } from './app-content.js';
 import {
@@ -514,6 +515,7 @@ function isSprintWorkout(workout) {
 }
 function getWorkoutGuidance(workout) {
   const type = String(workout?.type || '');
+  if (workout?.action === 'mile-test' || /mile/i.test(type)) return MILE_TEST_GUIDANCE;
   if (/threshold/i.test(type)) return THRESHOLD_GUIDANCE;
   if (/fight-?pace/i.test(type)) return FIGHT_PACE_GUIDANCE;
   if (/tempo/i.test(type)) return TEMPO_GUIDANCE;
@@ -599,6 +601,13 @@ function getHrMissCopy(kind, direction, severity, range) {
   return { label: 'Way too easy', detail: 'This looks more like a walk. Get Average HR back into the zone.' };
 }
 let detailHrFeedback = null;
+function buildGuidanceListHTML(bullets, { includeBreathing = true } = {}) {
+  const breathingLine = `Remember to <a class="guidance-video-link" href="${escapeHTML(BREATHING_VIDEO_URL)}" target="_blank" rel="noopener noreferrer">breath properly</a> during your run.`;
+  return [
+    ...bullets.map((line) => `<li>${escapeHTML(line)}</li>`),
+    ...(includeBreathing ? [`<li>${breathingLine}</li>`] : []),
+  ].join('');
+}
 function renderDetailGuidance(workout) {
   const card = document.getElementById('detail-guidance-card');
   const list = document.getElementById('detail-guidance-list');
@@ -611,11 +620,7 @@ function renderDetailGuidance(workout) {
   }
   card.hidden = false;
   const isShadowboxing = /shadowbox/i.test(workout?.type || '');
-  const breathingLine = `Remember to <a class="guidance-video-link" href="${escapeHTML(BREATHING_VIDEO_URL)}" target="_blank" rel="noopener noreferrer">breath properly</a> during your run.`;
-  list.innerHTML = [
-    ...bullets.map((line) => `<li>${escapeHTML(line)}</li>`),
-    ...(isShadowboxing ? [] : [`<li>${breathingLine}</li>`]),
-  ].join('');
+  list.innerHTML = buildGuidanceListHTML(bullets, { includeBreathing: !isShadowboxing });
 }
 function setDetailZoneCardVisible(visible) {
   const zoneCard = document.getElementById('detail-zone-card');
@@ -1280,6 +1285,8 @@ function renderMileTestPage() {
   if (last) last.textContent = result ? `Last saved: ${formatDistance(result.distance)} mi / ${formatWholeNumber(result.totalMinutes)} min / ${formatWholeNumber(result.maxBpm)} max bpm / ${formatDashboardDate(result.savedAt)}` : 'No Mile Test saved yet.';
   const locations = document.getElementById('mile-location-list');
   if (locations) locations.innerHTML = MILE_TEST_INFO.locations.map((location) => `<div>${escapeHTML(location)}</div>`).join('');
+  const guidanceList = document.getElementById('mile-test-guidance-list');
+  if (guidanceList) guidanceList.innerHTML = buildGuidanceListHTML(MILE_TEST_GUIDANCE);
   updateMileCompletionState();
 }
 function updateMileCompletionState() {
