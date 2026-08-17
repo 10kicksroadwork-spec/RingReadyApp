@@ -135,20 +135,20 @@ export const FIGHT_PACE_GUIDANCE = [
 
 export const ZONE2_GUIDANCE = [
   'Stay conversational. Average HR should land in Zone 2.',
-  'Don’t chase Target BPM — that’s the middle of the zone, not a setpoint.',
+  'Don’t chase the exact Target BPM. Aim near it, but anywhere in the Zone 2 range is a successful run. Don’t speed up or slow down just to hit that one number.',
 ];
 
 export const BENCHMARK_GUIDANCE = [
   'Stay conversational. Average HR should land in Zone 2 (60–70%).',
   'Time and HR stay the same; more distance is the goal.',
   'Use the same exact route every week so the numbers stay comparable.',
-  'Don’t chase Target BPM — that’s the middle of the zone, not a setpoint.',
+  'Don’t chase the exact Target BPM. Aim near it, but anywhere in the Zone 2 range is a successful run. Don’t speed up or slow down just to hit that one number.',
 ];
 
 export const TEMPO_GUIDANCE = [
   'Comfortably hard. Average HR should land in 75–80%.',
   'Stop the watch before the 5 min cooldown so the average isn’t pulled down.',
-  'Don’t chase Target BPM — that’s the middle of the zone, not a setpoint.',
+  'Don’t chase the exact Target BPM. Aim near it, but anywhere in the 75–80% range is a successful run. Don’t speed up or slow down just to hit that one number.',
 ];
 
 export const BREATHING_VIDEO_URL = 'https://www.youtube.com/watch?v=oWfEcpmz8X8';
