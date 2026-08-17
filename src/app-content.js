@@ -159,7 +159,7 @@ export const SPRINT_GUIDANCE = [
   'Go all out on every sprint rep.',
   'Recover strong in the rest — that is the quality that matters.',
   'Record HR after 60 seconds of rest. The timer will prompt you.',
-  'The 85% piece in Warmup is warmup only, not the sprints.',
+  'The 85% run is warmup only. Take a couple minutes of rest after it, then start the sprints. The 5 min walk is the cooldown after the last rep.',
 ];
 
 export const SHADOWBOXING_GUIDANCE = [
