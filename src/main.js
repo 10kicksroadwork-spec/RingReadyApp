@@ -3,6 +3,7 @@ import { initPWAInstall, registerServiceWorker } from './pwa.js';
 import { initAthleteShell } from './shell.js';
 import { enforceAthleteOnboarding, installSignupNameCapture } from './onboarding.js';
 import { MILE_TEST_STORAGE_KEY } from './app-content.js';
+import { sanitizeDurationInput } from './workout.js';
 import { getHRMonitorSetupCopy } from './platform.js';
 import { initSyncControls } from './sync.js';
 import {
@@ -122,12 +123,8 @@ function parseDuration(value) {
   };
 }
 
-function sanitizeDuration(value) {
-  const cleaned = String(value || '').replace(/[^\d:]/g, '');
-  if (!cleaned.includes(':')) return cleaned.slice(0, 3);
-
-  const [minutes, ...secondsParts] = cleaned.split(':');
-  return `${minutes.slice(0, 3)}:${secondsParts.join('').slice(0, 2)}`;
+function sanitizeDuration(value, previousValue = '') {
+  return sanitizeDurationInput(value, previousValue);
 }
 
 function formatDistance(value) {
@@ -215,7 +212,9 @@ function configureMileTimeInput() {
     input.addEventListener('input', () => {
       if (mileSaveInProgress) return;
 
-      const next = sanitizeDuration(input.value);
+      const previous = input.dataset.prevDuration || '';
+      const next = sanitizeDuration(input.value, previous);
+      input.dataset.prevDuration = next;
       if (input.value !== next) input.value = next;
     });
 
@@ -223,7 +222,10 @@ function configureMileTimeInput() {
       if (mileSaveInProgress) return;
 
       const parsed = parseDuration(input.value);
-      if (parsed) input.value = parsed.display;
+      if (parsed) {
+        input.value = parsed.display;
+        input.dataset.prevDuration = parsed.display;
+      }
     });
   }
 
