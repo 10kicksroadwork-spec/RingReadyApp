@@ -12,7 +12,7 @@ import {
   connectHR,
   onHRDisconnectUI,
 } from './hr-service.js';
-import { registerMainHandlers, showToast, selectExportText, closeExportModal, showScreen } from './ui.js';
+import { registerMainHandlers, showToast, selectExportText, closeExportModal, showScreen, bindHoldToCancel } from './ui.js';
 import {
   adjust,
   setWorkoutContext,
@@ -21,6 +21,7 @@ import {
   handleSprintDone,
   confirmHR,
   cancelSession,
+  sessionCancelRequiresHold,
   copyResults,
   completeWorkout,
   clearResultWorkoutCompletion,
@@ -317,9 +318,13 @@ async function init() {
 
   bindClick('ble-btn', () => connectHR());
   bindClick('start-session-btn', () => startSession());
-  bindClick('cancel-session-btn', () => cancelSession());
+  bindHoldToCancel(document.getElementById('cancel-session-btn'), () => cancelSession(), {
+    requiresHold: sessionCancelRequiresHold,
+  });
   bindClick('modal-confirm-btn', () => confirmHR());
-  bindClick('modal-cancel-btn', () => cancelSession());
+  bindHoldToCancel(document.getElementById('modal-cancel-btn'), () => cancelSession(), {
+    requiresHold: sessionCancelRequiresHold,
+  });
   bindClick('copy-results-btn', () => copyResults());
   bindClick('complete-workout-btn', () => completeWorkout());
   bindClick('clear-result-completion-btn', () => clearResultWorkoutCompletion());
