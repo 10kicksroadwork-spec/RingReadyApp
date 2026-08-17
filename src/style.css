@@ -450,13 +450,40 @@
 
   .main-btn-wrap { padding: 0 24px 40px; display: flex; flex-direction: column; gap: 12px; align-items: center; }
 
-  .cancel-session-btn {
-    background: none; border: none; color: var(--light-grey);
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 10px;
-    letter-spacing: 2px; text-transform: uppercase;
-    cursor: pointer; padding: 8px 16px;
+  .hold-cancel-btn {
+    position: relative;
+    overflow: hidden;
+    isolation: isolate;
+    width: 100%;
+    background: var(--dark2);
+    border: 1px solid var(--grey);
+    color: var(--light-grey);
+    border-radius: 14px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    cursor: pointer;
+    padding: 16px;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+    touch-action: none;
   }
-  .cancel-session-btn:active { color: var(--red); }
+  .hold-cancel-btn.is-holding { color: var(--white); border-color: var(--red); }
+  .cancel-session-fill {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 0;
+    background: rgba(229, 57, 53, 0.45);
+    pointer-events: none;
+    z-index: 0;
+  }
+  .hold-cancel-btn.is-holding .cancel-session-fill {
+    width: 100%;
+    transition: width calc(var(--cancel-hold-ms, 5000) * 1ms) linear;
+  }
+  .cancel-session-label { position: relative; z-index: 1; }
   .main-btn {
     width: 100%; border: none; border-radius: 20px;
     font-family: Impact, Haettenschweiler, 'Arial Narrow Bold', sans-serif; font-size: 32px;

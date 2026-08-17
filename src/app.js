@@ -2,6 +2,7 @@ import {
   AUTO_START_NEXT_SPRINT,
   AUTO_START_DELAY_MS,
   REST_CAPTURE_SEC,
+  REST_LOG_ALERT_REMAINING_SEC,
 } from './constants.js';
 import { HR_INFO_DEFAULTS, HR_INFO_STORAGE_KEY } from './app-content.js';
 import {
@@ -49,6 +50,9 @@ import {
   vibrate,
   unlockAudio,
   restCompleteAlert,
+  startRestLogAlert,
+  stopRestLogAlert,
+  syncHoldToCancelLabels,
 } from './ui.js';
 
 export const cfg = { reps: 8, rest: 90, maxHR: 183, targetPct: 90, workoutContext: null };
@@ -209,6 +213,7 @@ function runStartSession() {
   resetChips();
   setRing(1, false);
   showScreen('session');
+  syncHoldToCancelLabels();
 }
 
 export function startSession() {
@@ -229,6 +234,7 @@ export function handleMainBtn() {
 
 export function beginSprint() {
   clearSessionTimer();
+  stopRestLogAlert();
   unlockAudio();
 
   state.currentRep++;
@@ -252,6 +258,7 @@ export function beginSprint() {
   setTimerDisplay('SPRINTING', '--', 'hit done when finished');
   setRing(1, true);
   vibrate([100, 50, 100]);
+  syncHoldToCancelLabels();
 }
 
 export function handleSprintDone() {
@@ -259,6 +266,7 @@ export function handleSprintDone() {
 
   clearSessionTimer();
   resetChips();
+  unlockAudio();
   vibrate([200]);
 
   const sprintHR = getAutoCapturedHR();
@@ -363,8 +371,16 @@ function runAutoRestCountdown(totalRest, restCaptureAt, initialElapsed) {
     setRing(state.seconds / totalRest, false);
 
     const digits = document.getElementById('timer-digits');
-    if (state.seconds <= 10) digits.classList.add('urgent');
+    if (state.seconds <= REST_LOG_ALERT_REMAINING_SEC) digits.classList.add('urgent');
     else digits.classList.remove('urgent');
+
+    // At 30s remaining, keep beeping until rest HR is logged. BLE capture
+    // usually lands in this same tick, so the alert is only a short cue.
+    if (state.seconds <= REST_LOG_ALERT_REMAINING_SEC && !alreadyCaptured) {
+      startRestLogAlert();
+    } else if (alreadyCaptured) {
+      stopRestLogAlert();
+    }
 
     // Fire at/after the checkpoint (60s into rest = 30s left on a 90s timer).
     // Use >= so a delayed/throttled tick cannot skip the exact second.
@@ -416,6 +432,7 @@ export function autoCaptureRestHR(captureAt) {
   document.getElementById('chip-rest').classList.add('has-val');
 
   showToast(`REST HR CAPTURED: ${restHR}`);
+  stopRestLogAlert();
   return true;
 }
 
@@ -450,6 +467,7 @@ export function openManualRestHRModal(captureAt) {
   setMainBtn('disabled', 'HR NEEDED');
   document.getElementById('hr-modal').classList.add('open');
   showToast('ENTER RECOVERY HR TO CONTINUE');
+  startRestLogAlert();
 
   setTimeout(() => restInput.focus(), 200);
 }
@@ -487,6 +505,7 @@ export function completeRestAndAdvance() {
   state.capturedRestHR = null;
   document.getElementById('timer-digits').classList.remove('urgent');
 
+  stopRestLogAlert();
   restCompleteAlert();
 
   if (state.currentRep >= cfg.reps) {
@@ -554,6 +573,7 @@ export function confirmHR() {
     state.awaitingModal = false;
     state.phase = 'resting';
     showToast(`RECOVERY HR SAVED: ${restCheck.value}`);
+    stopRestLogAlert();
 
     if (state.seconds <= 0) completeRestAndAdvance();
     else resumeAutoRest();
@@ -584,6 +604,10 @@ export function confirmHR() {
   startAutoRest();
 }
 
+export function sessionCancelRequiresHold() {
+  return state.phase !== 'idle' && state.phase !== 'done';
+}
+
 export function cancelSession() {
   if (state.phase === 'idle' || state.phase === 'done') return;
 
@@ -607,10 +631,12 @@ export function cancelSession() {
 
 export function finishSession() {
   clearSessionTimer();
+  stopRestLogAlert();
   state.phase = 'done';
   setStatus('done');
   setTimerDisplay('DONE', 'OK', 'session complete');
   setMainBtn('disabled', 'COMPLETE');
+  syncHoldToCancelLabels();
   vibrate([100, 50, 100, 50, 200]);
   activeResultRecord = saveSessionToHistory(cfg, state.data);
   window.dispatchEvent(new CustomEvent('ringready:sprint-session-saved', { detail: activeResultRecord }));
@@ -862,6 +888,7 @@ export async function copyResults() {
 
 export function resetSessionUI() {
   clearSessionTimer();
+  stopRestLogAlert();
 
   document.getElementById('hr-modal').classList.remove('open');
   closeExportModal();
@@ -886,6 +913,7 @@ export function resetSessionUI() {
   if (badge) badge.style.display = hasFreshHRSample() ? 'flex' : 'none';
 
   state.awaitingModal = false;
+  syncHoldToCancelLabels();
 }
 
 export function newSession() {
