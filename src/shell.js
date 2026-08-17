@@ -36,6 +36,7 @@ import {
   saveAthleteProfile,
 } from './sync.js';
 import { getWorkoutCompletion, removeWorkoutCompletion, saveWorkoutCompletion } from './storage.js';
+import { sanitizeDurationInput } from './workout.js';
 import {
   deleteCloudWorkoutCompletion,
   getCurrentUser,
@@ -807,14 +808,8 @@ function readDetailWorkoutLog(options = {}) {
   const note = sanitizeWorkoutNote(readInputValue('detail-note-input'));
   return { totalMinutes: duration.totalMinutes, totalSeconds: duration.totalSeconds, totalTimeDisplay: duration.totalTimeDisplay, avgBpm, maxBpm, distance, note, completedAt: new Date().toISOString() };
 }
-function sanitizeWorkoutDurationInput(value) {
-  const cleaned = String(value || '').replace(/[^\d:.]/g, '');
-  if (cleaned.includes(':')) {
-    const parts = cleaned.split(':');
-    return `${parts[0].slice(0, 3)}:${parts.slice(1).join('').slice(0, 2)}`;
-  }
-  const parts = cleaned.split('.');
-  return parts.length > 1 ? `${parts[0].slice(0, 3)}.${parts.slice(1).join('').slice(0, 2)}` : parts[0].slice(0, 3);
+function sanitizeWorkoutDurationInput(value, previousValue = '') {
+  return sanitizeDurationInput(value, previousValue);
 }
 function sanitizeThreeDigitInput(value) { return String(value || '').replace(/\D/g, '').slice(0, 3); }
 function updateDetailCompletionState() {
@@ -831,14 +826,19 @@ function normalizeDetailDurationInput() {
   const input = document.getElementById('detail-total-minutes-input');
   if (!input) return;
   const duration = parseWorkoutDuration(input.value);
-  if (duration) input.value = duration.totalTimeDisplay;
+  if (duration) {
+    input.value = duration.totalTimeDisplay;
+    input.dataset.prevDuration = duration.totalTimeDisplay;
+  }
   updateDetailCompletionState();
 }
 function handleDetailLogInput(event) {
   const input = event.target;
   if (!(input instanceof HTMLInputElement)) return;
   if (input.id === 'detail-total-minutes-input') {
-    const next = sanitizeWorkoutDurationInput(input.value);
+    const previous = input.dataset.prevDuration || '';
+    const next = sanitizeWorkoutDurationInput(input.value, previous);
+    input.dataset.prevDuration = next;
     if (input.value !== next) input.value = next;
   }
   if (input.id === 'detail-avg-bpm-input' || input.id === 'detail-max-bpm-input') {
@@ -856,6 +856,8 @@ function setDetailWorkoutLog(isVisible, completion = null, workout = null) {
   if (timeInput) timeInput.placeholder = getWorkoutDurationPlaceholder(workout);
   const log = completion?.workoutLog || {};
   setInputValue('detail-total-minutes-input', formatWorkoutDuration(log));
+  const timeValue = readInputValue('detail-total-minutes-input');
+  if (timeInput) timeInput.dataset.prevDuration = timeValue;
   setInputValue('detail-avg-bpm-input', log.avgBpm ?? '');
   setInputValue('detail-max-bpm-input', log.maxBpm ?? '');
   setInputValue('detail-distance-input', log.distance ?? '');
