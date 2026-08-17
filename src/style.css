@@ -2649,12 +2649,24 @@
     border-left-color: var(--green);
   }
 
+  .coach-scan-tile.is-green strong {
+    color: #9be29f;
+  }
+
   .coach-scan-tile.is-amber {
     border-left-color: var(--orange);
   }
 
+  .coach-scan-tile.is-amber strong {
+    color: #ffd19a;
+  }
+
   .coach-scan-tile.is-red {
     border-left-color: var(--red);
+  }
+
+  .coach-scan-tile.is-red strong {
+    color: #ff9b9b;
   }
 
   .coach-scan-tile.is-neutral {
