@@ -7,6 +7,7 @@
     --light-grey: #555;
     --white: #f0f0f0;
     --red: #e84040;
+    --orange: #f08a2a;
     --green: #3ecf6e;
   }
 
@@ -1176,14 +1177,23 @@
   }
 
   .detail-expected-status.is-on-track {
-    background: rgba(76, 175, 80, 0.16);
+    background: rgba(62, 207, 110, 0.16);
     color: #9be29f;
   }
 
-  .detail-expected-status.is-high,
-  .detail-expected-status.is-low {
-    background: rgba(245, 200, 66, 0.14);
+  .detail-expected-status.is-mild {
+    background: rgba(245, 200, 66, 0.16);
     color: var(--gold);
+  }
+
+  .detail-expected-status.is-hard {
+    background: rgba(240, 138, 42, 0.2);
+    color: #ffb46a;
+  }
+
+  .detail-expected-status.is-way {
+    background: rgba(232, 64, 64, 0.22);
+    color: #ff8d8d;
   }
 
   #detail-action-btn:disabled {
