@@ -102,7 +102,7 @@ export const MILE_TEST_INFO = {
   day: 'Any Saturday or Sunday before roadwork starts',
   workout: 'Mile Test (Max HR Test)',
   description: 'Run one mile, 4 laps, as fast as possible. You are running for time and also testing Max HR. Repeat this again at Week 6.',
-  warmup: 'Dynamic stretches, 10 minute easy jog, mobility, 3 x 30m strides, then a 10 minute walk cooldown.',
+  warmup: 'Dynamic stretches, 10 minute easy jog, mobility, 3 x 30m strides.\n\nCooldown (after the run): 10 min walk',
   warmupLink: 'https://www.youtube.com/watch?v=3WUtJxLv-wI',
   locations: [
     'Eastern Henrico Recreation Center - 1440 N. Laburnum Ave., Henrico, VA 23223',
@@ -134,6 +134,7 @@ export const FIGHT_PACE_GUIDANCE = [
   'Log Total Time and Average HR for the whole workout (hard intervals + recoveries).',
   'Your session average will look lower because it blends hard work and rest.',
   'The app will figure out the math. Coaches can also check your workout screenshot to triple-check if needed.',
+  'Cooldown after the last interval is a 5 min walk. Do not include that walk in Total Time.',
 ];
 
 export const ZONE2_GUIDANCE = [
