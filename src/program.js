@@ -75,7 +75,7 @@ export const PROGRAM = [
       { day: 'Tuesday', type: 'Benchmark Run', description: '30 min conversational jog, HR and Time stay the same, goal is more distance', warmup: 'Dynamic Stretches (Video)', targetZone: '60-70%', targetBPM: 137, action: 'log' },
       { day: 'Wednesday', type: 'Threshold Run', description: '6x4min at 84%-88% HRmax (2 min easy jog recovery between rounds). Total time in Minutes to be recorded is 34', warmup: '10 min easy jog; 2x20 m strides; 1x60 m acceleration.\n\nCooldown (after the run): 5 min walk', targetZone: '84-88%', targetBPM: 163, action: 'log', intervalPlan: { reps: 6, workMinutes: 4, restMinutes: 2 } },
       { day: 'Thursday', type: 'Easy Run', description: '20 min easy jog (recovery).', warmup: 'Dynamic Stretches (Video)', targetZone: '60-70%', targetBPM: 137, action: 'log' },
-      { day: 'Saturday/Sunday', type: 'Fight-Pace Intervals', description: '3x3 min hard run : 1 min easy jog between rounds Total time in Minutes to be recorded is 11', warmup: '6 min jog; 2x30 m strides.\n\nCooldown (after the run): 5 min walk', targetZone: '90-95%', targetBPM: 172, action: 'log', intervalPlan: { reps: 3, workMinutes: 3, restMinutes: 1 } },
+      { day: 'Saturday/Sunday', type: 'Fight-Pace Intervals', description: '3x3 min hard run : 1 min easy jog between rounds Total time in Minutes to be recorded is 11', warmup: '6 min jog; 2x50 m strides.\n\nCooldown (after the run): 5 min walk', targetZone: '90-95%', targetBPM: 172, action: 'log', intervalPlan: { reps: 3, workMinutes: 3, restMinutes: 1 } },
     ].map(addVideoLink),
   },
   {
