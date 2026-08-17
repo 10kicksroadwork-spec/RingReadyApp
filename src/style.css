@@ -1065,6 +1065,11 @@
     line-height: 1;
   }
 
+  .detail-value.big.is-range {
+    font-size: 32px;
+    letter-spacing: 0.5px;
+  }
+
   .detail-value-note {
     margin-top: 8px;
     font-size: 12px;
@@ -1073,9 +1078,14 @@
   }
 
   .detail-guidance-card[hidden],
-  .detail-expected-card[hidden] {
+  .detail-expected-card[hidden],
+  #detail-zone-card[hidden] {
     display: none;
   }
+
+  .detail-grid.is-zone-swap #detail-warmup-card { order: 1; }
+  .detail-grid.is-zone-swap #detail-expected-avg-card { order: 2; }
+  .detail-grid.is-zone-swap #detail-bpm-card { order: 3; }
 
   .detail-guidance-list {
     margin: 10px 0 0;
@@ -1089,6 +1099,18 @@
 
   .detail-guidance-list li::marker {
     color: var(--gold);
+  }
+
+  .guidance-video-link {
+    color: var(--gold);
+    font-weight: 800;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+
+  .guidance-video-link:hover,
+  .guidance-video-link:focus-visible {
+    color: #ffe08a;
   }
 
   .detail-expected-status {
@@ -1179,6 +1201,38 @@
     display: flex;
     flex-direction: column;
     gap: 12px;
+  }
+
+  .program-guide-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .program-guide-head .field-label {
+    margin-bottom: 0;
+  }
+
+  .program-guide-card.collapsed {
+    gap: 0;
+    padding-top: 14px;
+    padding-bottom: 14px;
+  }
+
+  .program-guide-card h2 {
+    font-family: Impact, Haettenschweiler, 'Arial Narrow Bold', sans-serif;
+    font-size: 28px;
+    font-weight: 400;
+    line-height: 0.96;
+    letter-spacing: 0;
+    text-transform: none;
+    color: var(--white);
+    margin: 8px 0 10px;
+  }
+
+  #program-guide-content[hidden] {
+    display: none;
   }
 
   .program-guide-intro {

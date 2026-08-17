@@ -70,8 +70,12 @@
 
     <div class="home-body">
       <section class="program-info" aria-label="Program information">
-        <div class="info-card info-card-feature program-guide-card">
-          <div class="field-label">Program Guide</div>
+        <div class="info-card info-card-feature program-guide-card" id="program-guide-card">
+          <div class="program-guide-head">
+            <div class="field-label">Program Guide</div>
+            <button type="button" class="profile-toggle-btn" id="program-guide-toggle-btn" aria-expanded="true" aria-controls="program-guide-content">HIDE</button>
+          </div>
+          <div id="program-guide-content">
           <h2>Roadwork built for fight camp.</h2>
           <p class="program-guide-intro">
             Use this space as your launchpad. Start with your profile, review the welcome docs, and then follow your weekly roadwork and S&amp;C plan from the menu or the weekly cards below.
@@ -105,6 +109,7 @@
                 <span>Start roadwork and S&amp;C on your assigned start day</span>
               </li>
             </ol>
+          </div>
           </div>
         </div>
       </section>
@@ -460,17 +465,17 @@
           <div class="summary-label">Warmup</div>
           <div class="detail-value" id="detail-warmup"></div>
         </div>
-        <div class="detail-card">
+        <div class="detail-card" id="detail-zone-card">
           <div class="summary-label">Target Zone</div>
           <div class="detail-value" id="detail-zone"></div>
         </div>
-        <div class="detail-card">
+        <div class="detail-card" id="detail-bpm-card">
           <div class="summary-label">Target BPM</div>
           <div class="detail-value big" id="detail-bpm"></div>
           <div class="detail-value-note" id="detail-bpm-note" hidden>Hard intervals only</div>
         </div>
         <div class="detail-card detail-expected-card" id="detail-expected-avg-card" hidden>
-          <div class="summary-label">Expected Session Avg</div>
+          <div class="summary-label" id="detail-expected-label">Expected Session Avg</div>
           <div class="detail-value big" id="detail-expected-avg" aria-live="polite">--</div>
           <div class="detail-value-note" id="detail-expected-meta">Read-only · hard work + recoveries</div>
           <div class="detail-expected-status" id="detail-expected-status" hidden></div>
