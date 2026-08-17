@@ -1111,7 +1111,8 @@
 
   .detail-guidance-card[hidden],
   .detail-expected-card[hidden],
-  #detail-zone-card[hidden] {
+  #detail-zone-card[hidden],
+  #detail-warmup-card[hidden] {
     display: none;
   }
 

@@ -103,9 +103,19 @@ function renderWarmupCard(workout) {
   const warmupValue = document.getElementById('detail-warmup');
   if (!warmupCard || !warmupValue) return;
 
-  const warmupText = workout.warmup || 'As assigned';
+  const warmupText = String(workout.warmup || '').trim();
   const videoUrl = workout.videoUrl || '';
   const hasVideo = Boolean(videoUrl);
+  warmupCard.hidden = !warmupText && !hasVideo;
+  if (!warmupText && !hasVideo) {
+    warmupCard.classList.remove('warmup-card-link');
+    warmupCard.removeAttribute('role');
+    warmupCard.removeAttribute('tabindex');
+    warmupCard.onclick = null;
+    warmupCard.onkeydown = null;
+    warmupValue.replaceChildren();
+    return;
+  }
 
   warmupValue.innerHTML = hasVideo
     ? `${escapeHTML(warmupText)}<a class="secondary-link warmup-video-link" href="${escapeHTML(videoUrl)}" target="_blank" rel="noopener noreferrer">WATCH WARMUP VIDEO</a>`
@@ -472,7 +482,7 @@ function getExpectedSessionAvg(workout, hrInfo = getHRInfo()) {
 }
 function isZoneCheckWorkout(workout) {
   const type = String(workout?.type || '');
-  if (/sprint|mile|shadowbox|fight-?pace|threshold/i.test(type)) return false;
+  if (/sprint|mile|fight-?pace|threshold/i.test(type)) return false;
   if (/stride/i.test(type)) return false;
   const bounds = getWorkoutZoneBounds(workout);
   if (!bounds) return false;
