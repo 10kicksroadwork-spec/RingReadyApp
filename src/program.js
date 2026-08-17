@@ -98,7 +98,7 @@ export const PROGRAM = [
     workouts: [
       { day: 'Monday', type: 'Shake-Out Run + Strides', description: '15 min easy jog (Zone 2) + 3x50 m strides. Strides are fast; keep the jog easy.', warmup: 'Dynamic Stretches (Video)', targetZone: '60-70%', targetBPM: 137, action: 'log' },
       { day: 'Tuesday', type: 'Benchmark run', description: '30 min conversational jog, HR and Time stay the same, goal is more distance', warmup: 'Dynamic Stretches (Video)', targetZone: '60-70%', targetBPM: 137, action: 'log' },
-      { day: 'Wednesday', type: 'Light Shadowboxing', description: '20 min technique-focused shadowboxing.', warmup: '5 min mobility warm-up', targetZone: '80-85%', targetBPM: 159, action: 'log' },
+      { day: 'Wednesday', type: 'Light Shadowboxing', description: '20 min technique-focused shadowboxing.', warmup: '', targetZone: '60-70%', targetBPM: 137, action: 'log' },
       { day: 'Saturday/Sunday', type: 'Fight-Day Warm-Up', description: 'Pre-bout warm-up: 5 min walk, dynamic stretches, a few pad/air combos.', warmup: 'Light 5 min walk; dynamic stretches', targetZone: '60-70%', targetBPM: 137, action: 'log' },
     ].map(addVideoLink),
   },

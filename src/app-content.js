@@ -18,8 +18,8 @@ export const HR_ZONES = [
   { label: '84% HR', pct: 84, uses: ['Threshold Run'] },
   { label: '80% HR', pct: 80, uses: ['Tempo Run', 'Circuits'] },
   { label: '75% HR', pct: 75, uses: ['Tempo Run', 'Circuits'] },
-  { label: '70% HR', pct: 70, uses: ['Easy Runs', 'Long Runs', 'Benchmark'] },
-  { label: '60% HR', pct: 60, uses: ['Easy Runs', 'Long Runs', 'Benchmark'] },
+  { label: '70% HR', pct: 70, uses: ['Easy Runs', 'Long Runs', 'Benchmark', 'Shadowboxing'] },
+  { label: '60% HR', pct: 60, uses: ['Easy Runs', 'Long Runs', 'Benchmark', 'Shadowboxing'] },
 ];
 
 export const WELCOME_SECTIONS = [
@@ -166,6 +166,6 @@ export const SPRINT_GUIDANCE = [
 
 export const SHADOWBOXING_GUIDANCE = [
   'Stay technical. This is skill work, not a hard cardio session.',
-  'Target Zone is a ceiling, not a goal. Heart rate is secondary.',
-  'If Average HR lands below the zone, that’s fine as long as the work was clean.',
+  'Keep Average HR in Zone 2 (60–70%). Anywhere in that range is success.',
+  'Don’t chase a hard pace. If it starts feeling like cardio, slow the work down.',
 ];
