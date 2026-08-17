@@ -466,7 +466,7 @@ function getExpectedSessionAvg(workout, hrInfo = getHRInfo()) {
     plan,
     label: 'Expected Session Avg',
     displayValue: String(expectedAvg),
-    meta: `Aim ~${expectedAvg - range}–${expectedAvg + range} · read-only`,
+    meta: `Aim ~${expectedAvg - range}–${expectedAvg + range}`,
     bpmNote: 'Hard intervals only',
   };
 }
@@ -490,7 +490,7 @@ function getZoneHrFeedback(workout, hrInfo = getHRInfo()) {
     high: bounds.high,
     label: 'Target Zone BPM',
     displayValue: bounds.low === bounds.high ? String(bounds.low) : `${bounds.low}–${bounds.high}`,
-    meta: 'Stay in this range · read-only',
+    meta: 'Stay in this range',
     bpmNote: '',
   };
 }
@@ -597,7 +597,7 @@ function hideDetailHrFeedback() {
   setDetailZoneCardVisible(true);
   setText('detail-expected-avg', '--');
   setText('detail-expected-label', 'Expected Session Avg');
-  setText('detail-expected-meta', 'Read-only · hard work + recoveries');
+  setText('detail-expected-meta', 'Hard work + recoveries');
 }
 function renderDetailExpectedAvg(workout) {
   const card = document.getElementById('detail-expected-avg-card');
