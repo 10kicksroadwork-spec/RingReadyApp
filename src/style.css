@@ -2584,6 +2584,97 @@
     line-height: 1.35;
   }
 
+  .coach-metric-stack {
+    display: grid;
+    gap: 10px;
+  }
+
+  .coach-metric-card {
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: var(--dark2);
+    border: 1px solid var(--grey);
+    border-left: 4px solid var(--light-grey);
+    border-radius: 12px;
+    padding: 14px 14px 12px;
+    color: var(--white);
+  }
+
+  .coach-metric-card.is-clickable {
+    cursor: pointer;
+  }
+
+  .coach-metric-card.is-green { border-left-color: var(--green); }
+  .coach-metric-card.is-amber { border-left-color: var(--orange); }
+  .coach-metric-card.is-red { border-left-color: var(--red); }
+  .coach-metric-card.is-neutral { border-left-color: var(--light-grey); }
+  .coach-metric-card.is-open {
+    border-color: rgba(245, 200, 66, 0.45);
+  }
+
+  .coach-metric-card-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .coach-metric-card-head span,
+  .coach-metric-card-head em {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 9px;
+    letter-spacing: 1.6px;
+    text-transform: uppercase;
+    font-style: normal;
+  }
+
+  .coach-metric-card-head span { color: var(--gold); }
+  .coach-metric-card-head em { color: var(--light-grey); }
+
+  .coach-metric-card.is-green strong { color: #9be29f; }
+  .coach-metric-card.is-amber strong { color: #ffd19a; }
+  .coach-metric-card.is-red strong { color: #ff9b9b; }
+
+  .coach-metric-card strong {
+    display: block;
+    margin-top: 8px;
+    font-family: Impact, Haettenschweiler, 'Arial Narrow Bold', sans-serif;
+    font-size: 34px;
+    line-height: 0.95;
+  }
+
+  .coach-metric-card p {
+    margin: 8px 0 0;
+    color: #c9c9c9;
+    font-size: 13px;
+    line-height: 1.35;
+  }
+
+  .coach-drill-panel {
+    position: relative;
+  }
+
+  .coach-drill-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .coach-drill-close {
+    border: 1px solid var(--grey);
+    background: transparent;
+    color: var(--gold);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 9px;
+    letter-spacing: 1.4px;
+    text-transform: uppercase;
+    padding: 6px 8px;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+
   .coach-signal-row {
     display: flex;
     flex-wrap: wrap;
