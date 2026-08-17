@@ -2577,6 +2577,193 @@
     background: rgba(240, 138, 42, 0.1);
   }
 
+  .coach-athlete-verdict {
+    margin-top: 14px;
+    color: var(--white);
+    font-size: 16px;
+    line-height: 1.35;
+  }
+
+  .coach-signal-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 0 0 12px;
+  }
+
+  .coach-signal {
+    display: inline-flex;
+    align-items: center;
+    min-height: 22px;
+    padding: 0 8px;
+    border-radius: 999px;
+    border: 1px solid rgba(62, 207, 110, 0.4);
+    background: rgba(62, 207, 110, 0.12);
+    color: #9be29f;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 9px;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .coach-signal.is-amber {
+    border-color: rgba(240, 138, 42, 0.5);
+    background: rgba(240, 138, 42, 0.12);
+    color: #ffd19a;
+  }
+
+  .coach-signal.is-red {
+    border-color: rgba(232, 64, 64, 0.5);
+    background: rgba(232, 64, 64, 0.12);
+    color: #ff9b9b;
+  }
+
+  .coach-signal.is-neutral {
+    border-color: var(--grey);
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--light-grey);
+  }
+
+  .coach-signal.is-green {
+    border-color: rgba(62, 207, 110, 0.4);
+    background: rgba(62, 207, 110, 0.12);
+    color: #9be29f;
+  }
+
+  .coach-scan-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .coach-scan-tile {
+    background: var(--dark2);
+    border: 1px solid var(--grey);
+    border-left-width: 4px;
+    border-radius: 12px;
+    padding: 14px 12px;
+  }
+
+  .coach-scan-tile.is-green {
+    border-left-color: var(--green);
+  }
+
+  .coach-scan-tile.is-amber {
+    border-left-color: var(--orange);
+  }
+
+  .coach-scan-tile.is-red {
+    border-left-color: var(--red);
+  }
+
+  .coach-scan-tile.is-neutral {
+    border-left-color: var(--light-grey);
+  }
+
+  .coach-scan-tile span {
+    display: block;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 9px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+    color: var(--gold);
+  }
+
+  .coach-scan-tile strong {
+    display: block;
+    font-family: Impact, Haettenschweiler, 'Arial Narrow Bold', sans-serif;
+    font-size: 30px;
+    line-height: 0.95;
+    color: var(--white);
+  }
+
+  .coach-scan-tile em {
+    display: block;
+    margin-top: 6px;
+    font-style: normal;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 9px;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    color: #bdbdbd;
+  }
+
+  .coach-scan-trends {
+    display: grid;
+    gap: 18px;
+  }
+
+  .coach-trend-note,
+  .coach-trend-empty {
+    margin-top: 8px;
+    color: #c9c9c9;
+    font-size: 13px;
+    line-height: 1.4;
+  }
+
+  .coach-spark {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+    height: 72px;
+    margin-top: 10px;
+  }
+
+  .coach-spark-col {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-end;
+    height: 100%;
+    gap: 6px;
+  }
+
+  .coach-spark-col i {
+    display: block;
+    width: 100%;
+    max-width: 28px;
+    border-radius: 4px 4px 0 0;
+    background: var(--gold);
+  }
+
+  .coach-spark-col span {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 9px;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    color: var(--light-grey);
+  }
+
+  .coach-mile-table {
+    width: 100%;
+    margin-top: 10px;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+
+  .coach-mile-table th,
+  .coach-mile-table td {
+    padding: 8px 6px;
+    border-bottom: 1px solid var(--grey);
+    text-align: right;
+    color: var(--white);
+  }
+
+  .coach-mile-table th:first-child,
+  .coach-mile-table td:first-child,
+  .coach-mile-table tbody th {
+    text-align: left;
+    color: var(--light-grey);
+    font-weight: 600;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 10px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+
   .coach-attention-panel p {
     color: #ffd19a;
     font-size: 14px;

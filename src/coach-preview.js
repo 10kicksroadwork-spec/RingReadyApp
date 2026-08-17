@@ -2,6 +2,12 @@ import { PROGRAM } from './program.js';
 
 const NOTES_KEY = 'ringReadyCoachPreviewNotes';
 const COACH_SCREENS = new Set(['coach-dashboard', 'coach-athlete']);
+const HR_TARGET_TOLERANCE_BPM = 5;
+const SPRINT_TARGET_DROP = 30;
+const EQUIV_RATIO_MIN = 0.85;
+const EQUIV_RATIO_MAX = 1.15;
+const EQUIV_K = 0.5;
+const BENCHMARK_TARGET_BPM = 137;
 
 let coachHooks = null;
 let selectedAthleteId = '';
@@ -44,12 +50,319 @@ function formatTime(totalMinutes) {
   return `${whole}:${String(seconds).padStart(2, '0')}`;
 }
 
+function formatSignedPct(pct) {
+  if (!Number.isFinite(pct)) return '--';
+  const rounded = Math.abs(pct) < 0.05 ? 0 : pct;
+  const sign = rounded > 0 ? '+' : '';
+  return `${sign}${rounded.toFixed(0)}%`;
+}
+
+function formatSecondsShort(deltaMin) {
+  if (!Number.isFinite(deltaMin)) return '--';
+  const sec = Math.round(Math.abs(deltaMin) * 60);
+  if (sec === 0) return '0s';
+  const sign = deltaMin < 0 ? '−' : '+';
+  return `${sign}${sec}s`;
+}
+
+function clampNumber(value, lo, hi) {
+  return Math.min(hi, Math.max(lo, value));
+}
+
+function isSprintType(type) {
+  return /\bsprint\b/i.test(String(type || ''));
+}
+
+function isBenchmarkType(type) {
+  return /benchmark/i.test(String(type || ''));
+}
+
 function campWeeks(campLength) {
   return PROGRAM.slice(0, campLength === 4 ? 4 : PROGRAM.length);
 }
 
 function sessionKey(weekIndex, workoutIndex) {
   return `${weekIndex}:${workoutIndex}`;
+}
+
+/**
+ * HR-adjusted equivalent distance for a 30-min benchmark (Sheets formula).
+ * Credits sessions a bit below target HR; clamps wild ratios.
+ */
+function getEquivDistance(distance, avgBpm, targetBpm) {
+  const dist = Number(distance);
+  if (!Number.isFinite(dist) || dist <= 0) return null;
+  const avg = Number(avgBpm);
+  const tgt = Number(targetBpm) || BENCHMARK_TARGET_BPM;
+  if (!Number.isFinite(avg) || avg <= 0 || !Number.isFinite(tgt) || tgt <= 0) return dist;
+  const ratio = clampNumber(tgt / avg, EQUIV_RATIO_MIN, EQUIV_RATIO_MAX);
+  const equiv = dist * (ratio ** EQUIV_K);
+  return Number.isFinite(equiv) && equiv > 0 ? equiv : dist;
+}
+
+function emptySignal(label) {
+  return {
+    key: label,
+    tone: 'neutral',
+    value: '--',
+    short: '--',
+    detail: 'No data yet',
+  };
+}
+
+function buildDoneSignal(logged, due, missingCount) {
+  const pct = due ? Math.round((logged / due) * 100) : 0;
+  let tone = 'green';
+  if (missingCount > 0 || pct < 75) tone = 'red';
+  else if (pct < 90) tone = 'amber';
+  return {
+    key: 'done',
+    tone,
+    value: `${pct}%`,
+    short: `${logged}/${due}`,
+    detail: `${logged}/${due} due sessions`,
+    pct,
+  };
+}
+
+function buildBenchSignal(points) {
+  if (!points.length) return emptySignal('bench');
+  const first = points[0].equiv;
+  const last = points[points.length - 1].equiv;
+  const lastAvg = points[points.length - 1].avgBpm;
+  const lastDist = points[points.length - 1].distance;
+  if (points.length < 2 || !Number.isFinite(first) || !Number.isFinite(last) || first <= 0) {
+    return {
+      key: 'bench',
+      tone: 'neutral',
+      value: Number.isFinite(lastDist) ? `${formatDecimal(lastDist)} mi` : '--',
+      short: '--',
+      detail: 'Need two benchmarks',
+      points,
+      lastAvg,
+    };
+  }
+  const pct = ((last - first) / first) * 100;
+  let tone = 'amber';
+  if (pct >= 5) tone = 'green';
+  else if (pct < 0) tone = 'red';
+  return {
+    key: 'bench',
+    tone,
+    value: formatSignedPct(pct),
+    short: formatSignedPct(pct),
+    detail: `${formatDecimal(first)} → ${formatDecimal(last)} equiv mi`,
+    points,
+    lastAvg,
+    pct,
+  };
+}
+
+function buildMileSignal(tests) {
+  const list = Array.isArray(tests) ? tests : [];
+  if (!list.length) return emptySignal('mile');
+  const first = list[0];
+  const last = list[list.length - 1];
+  if (list.length < 2 || !Number.isFinite(first.minutes) || !Number.isFinite(last.minutes) || first.minutes <= 0) {
+    return {
+      key: 'mile',
+      tone: 'neutral',
+      value: formatTime(last.minutes),
+      short: '--',
+      detail: 'Retest not in yet',
+      first,
+      last,
+    };
+  }
+  const deltaMin = last.minutes - first.minutes;
+  const pct = ((first.minutes - last.minutes) / first.minutes) * 100;
+  let tone = 'amber';
+  if (pct >= 3) tone = 'green';
+  else if (pct < 0) tone = 'red';
+  const faster = deltaMin < 0;
+  return {
+    key: 'mile',
+    tone,
+    value: formatTime(last.minutes),
+    short: formatSecondsShort(deltaMin),
+    detail: faster
+      ? `${Math.abs(Math.round(deltaMin * 60))}s faster vs baseline`
+      : deltaMin > 0
+        ? `${Math.round(deltaMin * 60)}s slower vs baseline`
+        : 'Same as baseline',
+    first,
+    last,
+    deltaMin,
+    deltaSeconds: Math.round(deltaMin * 60),
+    pct,
+  };
+}
+
+function buildSprintSignal(points) {
+  if (!points.length) return emptySignal('sprint');
+  const first = points[0].first5Avg;
+  const latest = points[points.length - 1].first5Avg;
+  const change = points.length >= 2 ? latest - first : 0;
+  const down = points.length >= 2 && latest < first - 0.4;
+  let tone = 'amber';
+  if (latest < 25 || down) tone = 'red';
+  else if (latest >= SPRINT_TARGET_DROP) tone = 'green';
+  return {
+    key: 'sprint',
+    tone,
+    value: `${Math.round(latest)}`,
+    short: `${Math.round(latest)}`,
+    detail: points.length >= 2
+      ? `${Math.round(first)} → ${Math.round(latest)} bpm drop (target ${SPRINT_TARGET_DROP})`
+      : `Latest first-5 drop · target ${SPRINT_TARGET_DROP}+`,
+    latest,
+    first,
+    change,
+    points,
+  };
+}
+
+function buildZoneSignal(sessions) {
+  let scored = 0;
+  let onTarget = 0;
+  sessions.forEach((session) => {
+    if (session.status !== 'logged') return;
+    if (isSprintType(session.type)) return;
+    const avg = Number(session.avgBpm);
+    const tgt = Number(session.targetBPM);
+    if (!Number.isFinite(avg) || avg <= 0 || !Number.isFinite(tgt) || tgt <= 0) return;
+    scored += 1;
+    if (Math.abs(avg - tgt) <= HR_TARGET_TOLERANCE_BPM) onTarget += 1;
+  });
+  if (!scored) return emptySignal('zone');
+  const pct = Math.round((onTarget / scored) * 100);
+  let tone = 'red';
+  if (pct >= 80) tone = 'green';
+  else if (pct >= 60) tone = 'amber';
+  return {
+    key: 'zone',
+    tone,
+    value: `${pct}%`,
+    short: `${pct}%`,
+    detail: `${onTarget}/${scored} runs within ±${HR_TARGET_TOLERANCE_BPM} bpm`,
+    pct,
+    scored,
+    onTarget,
+  };
+}
+
+function collectBenchmarkPoints(config, sessions) {
+  if (Array.isArray(config.benchmarks) && config.benchmarks.length) {
+    return config.benchmarks.map((row) => {
+      const distance = Number(row.distance);
+      const avgBpm = Number(row.avgBpm);
+      const targetBPM = Number(row.targetBPM) || BENCHMARK_TARGET_BPM;
+      return {
+        weekIndex: row.weekIndex,
+        distance,
+        avgBpm,
+        targetBPM,
+        equiv: getEquivDistance(distance, avgBpm, targetBPM),
+      };
+    }).filter((row) => Number.isFinite(row.equiv));
+  }
+  return sessions
+    .filter((session) => session.status === 'logged' && isBenchmarkType(session.type) && Number(session.distance) > 0)
+    .map((session) => ({
+      weekIndex: session.weekIndex,
+      distance: Number(session.distance),
+      avgBpm: Number(session.avgBpm),
+      targetBPM: Number(session.targetBPM) || BENCHMARK_TARGET_BPM,
+      equiv: getEquivDistance(session.distance, session.avgBpm, session.targetBPM || BENCHMARK_TARGET_BPM),
+    }))
+    .filter((row) => Number.isFinite(row.equiv));
+}
+
+function hasSprintDrop(value) {
+  if (value == null || value === '') return false;
+  const num = Number(value);
+  return Number.isFinite(num) && num > 0;
+}
+
+function collectSprintPoints(config, sessions) {
+  if (Array.isArray(config.sprints) && config.sprints.length) {
+    return config.sprints
+      .map((row) => ({ weekIndex: row.weekIndex, first5Avg: Number(row.first5Avg) }))
+      .filter((row) => hasSprintDrop(row.first5Avg));
+  }
+  const fromSessions = sessions
+    .filter((session) => session.status === 'logged' && isSprintType(session.type) && hasSprintDrop(session.drop))
+    .map((session) => ({ weekIndex: session.weekIndex, first5Avg: Number(session.drop) }));
+  if (fromSessions.length) return fromSessions;
+  if (hasSprintDrop(config.sprintDrop)) {
+    return [{ weekIndex: config.currentWeekIndex, first5Avg: Number(config.sprintDrop) }];
+  }
+  return [];
+}
+
+function hasEasyHotFlag(config) {
+  return Object.values(config.flags || {}).some((flag) => /easy/i.test(String(flag)));
+}
+
+/**
+ * One punchline: worst ops/fitness issue first, then one useful note.
+ */
+function buildHeadline(athlete) {
+  const bits = [];
+  const { scan, tone, missingCount, currentWeekIndex, campLength, proofGaps } = athlete;
+  const sprint = scan.sprint;
+  const bench = scan.bench;
+  const mile = scan.mile;
+
+  if (tone === 'behind' && currentWeekIndex === 0) {
+    bits.push(`Week 1. ${missingCount} session${missingCount === 1 ? '' : 's'} missing.`);
+  } else if (tone === 'behind') {
+    bits.push(`Behind. ${missingCount} missing.`);
+  } else if (tone === 'watch') {
+    bits.push('Watch HR.');
+    if (hasEasyHotFlag(athlete)) bits.push('Easy days running hot.');
+  } else if (tone === 'proof') {
+    bits.push(`${proofGaps} proof gap${proofGaps === 1 ? '' : 's'}.`);
+  } else {
+    bits.push('On track.');
+  }
+
+  if (sprint.tone === 'neutral') {
+    bits.push('No sprint yet.');
+  } else if (sprint.tone === 'red' && Number.isFinite(sprint.latest)) {
+    bits.push(`Sprint ${Math.round(sprint.latest)} bpm (target ${SPRINT_TARGET_DROP}).`);
+  } else if (tone === 'watch' && Number.isFinite(bench.lastAvg)) {
+    bits.push(`Benchmark avg ${Math.round(bench.lastAvg)} vs Zone 2.`);
+  } else if (mile.tone === 'green' && Number.isFinite(mile.deltaSeconds) && mile.deltaSeconds < 0) {
+    bits.push(`Mile ${Math.abs(mile.deltaSeconds)}s faster.`);
+    if (currentWeekIndex >= campLength - 1) bits.push('Camp nearly done.');
+  } else if (bench.tone === 'green') {
+    bits.push('Benchmark up.');
+    if (sprint.tone === 'green' && Number.isFinite(sprint.latest)) {
+      bits.push(`Sprint ${Math.round(sprint.latest)} bpm.`);
+    }
+  } else if (sprint.tone === 'green' && Number.isFinite(sprint.latest)) {
+    bits.push(`Sprint ${Math.round(sprint.latest)} bpm.`);
+  }
+
+  return bits.join(' ');
+}
+
+function overlaySeriesOntoSession(session, config) {
+  const next = { ...session };
+  if (isBenchmarkType(session.type)) {
+    const point = (config.benchmarks || []).find((row) => row.weekIndex === session.weekIndex);
+    if (point) {
+      if (next.distance == null) next.distance = point.distance;
+      if (next.avgBpm == null) next.avgBpm = point.avgBpm;
+      if (next.minutes == null) next.minutes = 30;
+    }
+  }
+  if (isSprintType(session.type)) {
+    const point = (config.sprints || []).find((row) => row.weekIndex === session.weekIndex);
+    if (point && next.drop == null) next.drop = point.first5Avg;
+  }
+  return next;
 }
 
 function buildAthleteRecord(config) {
@@ -81,7 +394,7 @@ function buildAthleteRecord(config) {
       }
       if (proof === 'missing') proofGaps += 1;
       if (flag) watchCount += 1;
-      const session = {
+      const session = overlaySeriesOntoSession({
         key,
         weekIndex,
         workoutIndex,
@@ -90,6 +403,7 @@ function buildAthleteRecord(config) {
         day: workout.day,
         type: workout.type,
         targetZone: workout.targetZone || '',
+        targetBPM: workout.targetBPM ?? null,
         status,
         proof,
         flag,
@@ -99,7 +413,7 @@ function buildAthleteRecord(config) {
         minutes: config.minutes?.[key] ?? null,
         distance: config.distances?.[key] ?? null,
         drop: config.drops?.[key] ?? null,
-      };
+      }, config);
       sessions.push(session);
       return session;
     });
@@ -123,7 +437,17 @@ function buildAthleteRecord(config) {
   else if (watchCount > 0) tone = 'watch';
   else if (proofGaps > 0) tone = 'proof';
 
-  return {
+  const benchPoints = collectBenchmarkPoints(config, sessions);
+  const sprintPoints = collectSprintPoints(config, sessions);
+  const scan = {
+    done: buildDoneSignal(logged, due, Math.max(0, due - logged)),
+    bench: buildBenchSignal(benchPoints),
+    mile: buildMileSignal(config.mileTests),
+    sprint: buildSprintSignal(sprintPoints),
+    zone: buildZoneSignal(sessions),
+  };
+
+  const athlete = {
     ...config,
     completionPct: due ? Math.round((logged / due) * 100) : 0,
     logged,
@@ -135,7 +459,11 @@ function buildAthleteRecord(config) {
     tone,
     weekRows,
     sessions,
+    scan,
+    sprintDrop: sprintPoints.length ? sprintPoints[sprintPoints.length - 1].first5Avg : config.sprintDrop ?? null,
   };
+  athlete.headline = buildHeadline(athlete);
+  return athlete;
 }
 
 const MOCK_ATHLETES = [
@@ -152,11 +480,24 @@ const MOCK_ATHLETES = [
     mileTests: [
       { label: 'Baseline', minutes: 7.7, avgBpm: 176, maxBpm: 188 },
     ],
-    sprintDrop: 38,
     sprintPeak: 184,
     missing: [],
     missingProofs: [],
-    avgs: { '2:2': 164 },
+    benchmarks: [
+      { weekIndex: 0, distance: 2.82, avgBpm: 136 },
+      { weekIndex: 1, distance: 2.96, avgBpm: 137 },
+      { weekIndex: 2, distance: 3.14, avgBpm: 135 },
+    ],
+    sprints: [
+      { weekIndex: 0, first5Avg: 33 },
+      { weekIndex: 1, first5Avg: 35 },
+      { weekIndex: 2, first5Avg: 38 },
+    ],
+    avgs: {
+      '0:2': 161, '0:3': 135, '0:4': 138,
+      '1:2': 164, '1:3': 136, '1:4': 139,
+      '2:2': 164, '2:3': 137, '2:4': 138,
+    },
     maxes: { '2:2': 171 },
     minutes: { '2:2': 16 },
   }),
@@ -173,12 +514,23 @@ const MOCK_ATHLETES = [
     mileTests: [
       { label: 'Baseline', minutes: 8.35, avgBpm: 172, maxBpm: 181 },
     ],
-    sprintDrop: 24,
     sprintPeak: 176,
     missing: ['0:3', '0:4', '1:3'],
     missingProofs: ['1:0'],
     sessionNotes: {
       '0:3': 'Said legs were heavy after sparring.',
+    },
+    benchmarks: [
+      { weekIndex: 0, distance: 2.70, avgBpm: 140 },
+      { weekIndex: 1, distance: 2.68, avgBpm: 141 },
+    ],
+    sprints: [
+      { weekIndex: 0, first5Avg: 24 },
+      { weekIndex: 1, first5Avg: 24 },
+    ],
+    avgs: {
+      '0:2': 158,
+      '1:2': 160,
     },
   }),
   buildAthleteRecord({
@@ -194,7 +546,6 @@ const MOCK_ATHLETES = [
     mileTests: [
       { label: 'Baseline', minutes: 7.2, avgBpm: 168, maxBpm: 176 },
     ],
-    sprintDrop: 41,
     sprintPeak: 174,
     missing: [],
     missingProofs: [],
@@ -202,7 +553,25 @@ const MOCK_ATHLETES = [
       '3:3': 'Easy-day HR sat in Tempo',
       '4:1': 'Benchmark avg 154 · Zone 2 is 106–123',
     },
-    avgs: { '4:1': 154, '3:3': 148 },
+    benchmarks: [
+      { weekIndex: 0, distance: 3.20, avgBpm: 138 },
+      { weekIndex: 1, distance: 3.28, avgBpm: 140 },
+      { weekIndex: 2, distance: 3.35, avgBpm: 144 },
+      { weekIndex: 3, distance: 3.42, avgBpm: 148 },
+      { weekIndex: 4, distance: 3.40, avgBpm: 154 },
+    ],
+    sprints: [
+      { weekIndex: 0, first5Avg: 38 },
+      { weekIndex: 2, first5Avg: 40 },
+      { weekIndex: 4, first5Avg: 41 },
+    ],
+    avgs: {
+      '0:2': 162, '0:3': 148, '0:4': 146,
+      '1:2': 163, '1:3': 150, '1:4': 147,
+      '2:2': 164, '2:3': 149, '2:4': 145,
+      '3:2': 160, '3:3': 148,
+      '4:1': 154,
+    },
     minutes: { '4:1': 30, '3:3': 20 },
     distances: { '4:1': 3.4 },
   }),
@@ -219,10 +588,11 @@ const MOCK_ATHLETES = [
     mileTests: [
       { label: 'Baseline', minutes: 9.1, avgBpm: 178, maxBpm: 192 },
     ],
-    sprintDrop: null,
     sprintPeak: null,
     missing: ['0:1', '0:2', '0:3', '0:4'],
     missingProofs: [],
+    benchmarks: [],
+    sprints: [],
   }),
   buildAthleteRecord({
     id: 'avery',
@@ -238,10 +608,27 @@ const MOCK_ATHLETES = [
       { label: 'Baseline', minutes: 7.92, avgBpm: 171, maxBpm: 180 },
       { label: 'Re-Test', minutes: 7.47, avgBpm: 174, maxBpm: 184 },
     ],
-    sprintDrop: 36,
     sprintPeak: 182,
     missing: [],
     missingProofs: [],
+    benchmarks: [
+      { weekIndex: 0, distance: 2.90, avgBpm: 136 },
+      { weekIndex: 1, distance: 3.02, avgBpm: 137 },
+      { weekIndex: 2, distance: 3.11, avgBpm: 136 },
+      { weekIndex: 3, distance: 3.22, avgBpm: 135 },
+    ],
+    sprints: [
+      { weekIndex: 0, first5Avg: 32 },
+      { weekIndex: 1, first5Avg: 34 },
+      { weekIndex: 2, first5Avg: 35 },
+      { weekIndex: 3, first5Avg: 36 },
+    ],
+    avgs: {
+      '0:2': 162, '0:3': 136, '0:4': 138,
+      '1:2': 164, '1:3': 137, '1:4': 139,
+      '2:2': 163, '2:3': 136, '2:4': 138,
+      '3:2': 154, '3:3': 135, '3:4': 137,
+    },
   }),
 ];
 
@@ -303,6 +690,15 @@ export function syncCoachPreviewChrome() {
   document.body.classList.toggle('is-coach-preview', enabled && isCoachScreen(document.querySelector('.screen.active')?.id));
 }
 
+function renderSignalPills(athlete) {
+  const keys = ['done', 'bench', 'mile', 'sprint'];
+  const labels = { done: 'Done', bench: 'Bench', mile: 'Mile', sprint: 'Sprint' };
+  return `<div class="coach-signal-row">${keys.map((key) => {
+    const signal = athlete.scan[key];
+    return `<span class="coach-signal is-${signal.tone}">${labels[key]} ${escapeHTML(signal.short)}</span>`;
+  }).join('')}</div>`;
+}
+
 function renderRoster() {
   const list = document.getElementById('coach-roster-list');
   const empty = document.getElementById('coach-roster-empty');
@@ -331,7 +727,8 @@ function renderRoster() {
         </div>
         <span class="coach-status-chip">${escapeHTML(toneCopy(athlete.tone))}</span>
       </div>
-      <p>${athlete.attention.length ? escapeHTML(athlete.attention.join(' · ')) : 'Camp work is current. No flags.'}</p>
+      <p>${escapeHTML(athlete.headline)}</p>
+      ${renderSignalPills(athlete)}
       <div class="coach-roster-meta">
         <span>${athlete.logged}/${athlete.due} logged</span>
         <span>${escapeHTML(athlete.lastSession)}</span>
@@ -342,6 +739,73 @@ function renderRoster() {
   `).join('');
 }
 
+function sparkHeights(values) {
+  const nums = values.filter((value) => Number.isFinite(value));
+  if (!nums.length) return values.map(() => 0);
+  const min = Math.min(...nums);
+  const max = Math.max(...nums);
+  const span = Math.max(max - min, 0.08);
+  return values.map((value) => {
+    if (!Number.isFinite(value)) return 0;
+    return Math.round(28 + ((value - min) / span) * 72);
+  });
+}
+
+function renderScanTiles(scan) {
+  const tiles = [
+    { key: 'done', label: 'Done' },
+    { key: 'bench', label: 'Bench' },
+    { key: 'mile', label: 'Mile' },
+    { key: 'sprint', label: 'Sprint' },
+    { key: 'zone', label: 'Zone' },
+  ];
+  return tiles.map(({ key, label }) => {
+    const signal = scan[key];
+    const suffix = key === 'sprint' && signal.value !== '--' ? ' bpm' : '';
+    return `<article class="coach-scan-tile is-${signal.tone}">
+      <span>${label}</span>
+      <strong>${escapeHTML(signal.value)}${suffix}</strong>
+      <em>${escapeHTML(signal.detail)}</em>
+    </article>`;
+  }).join('');
+}
+
+function renderTrends(athlete) {
+  const points = athlete.scan.bench.points || [];
+  const mile = athlete.scan.mile;
+  const heights = sparkHeights(points.map((row) => row.equiv));
+  const spark = points.length
+    ? `<div class="coach-spark" aria-hidden="true">${points.map((row, index) => `
+        <div class="coach-spark-col">
+          <i style="height:${heights[index]}%"></i>
+          <span>W${row.weekIndex + 1}</span>
+        </div>`).join('')}</div>`
+    : '<p class="coach-trend-empty">No benchmark runs yet.</p>';
+
+  const mileTable = mile.first && mile.last && athlete.mileTests.length >= 2
+    ? `<table class="coach-mile-table">
+        <thead><tr><th></th><th>First</th><th>Last</th></tr></thead>
+        <tbody>
+          <tr><th>Time</th><td>${formatTime(mile.first.minutes)}</td><td>${formatTime(mile.last.minutes)}</td></tr>
+          <tr><th>Avg HR</th><td>${formatNumber(mile.first.avgBpm)}</td><td>${formatNumber(mile.last.avgBpm)}</td></tr>
+          <tr><th>Max HR</th><td>${formatNumber(mile.first.maxBpm)}</td><td>${formatNumber(mile.last.maxBpm)}</td></tr>
+        </tbody>
+      </table>`
+    : '<p class="coach-trend-empty">Mile delta shows after the Week 6 retest.</p>';
+
+  return `
+    <div class="coach-trend-block">
+      <div class="info-kicker">Benchmark equiv</div>
+      ${spark}
+      <p class="coach-trend-note">${escapeHTML(athlete.scan.bench.detail)}</p>
+    </div>
+    <div class="coach-trend-block">
+      <div class="info-kicker">Mile first vs last</div>
+      ${mileTable}
+    </div>
+  `;
+}
+
 function renderAthlete() {
   const athlete = getAthlete(selectedAthleteId);
   selectedAthleteId = athlete.id;
@@ -349,11 +813,11 @@ function renderAthlete() {
   const note = notes[athlete.id] || '';
   const currentWeek = athlete.weekRows[athlete.currentWeekIndex] || athlete.weekRows[0];
   const recent = athlete.sessions.filter((session) => session.status !== 'upcoming').slice(-8).reverse();
-  const mileCopy = athlete.mileTests.map((test) => `${test.label} ${formatTime(test.minutes)}`).join(' · ');
 
   setText('coach-athlete-kicker', `Week ${athlete.currentWeekIndex + 1} · ${athlete.campLength} week camp`);
   setText('coach-athlete-name', athlete.name);
   setText('coach-athlete-sub', `${toneCopy(athlete.tone)} · Fight ${athlete.fightDate} · ${athlete.tenure}`);
+  setText('coach-athlete-verdict', athlete.headline);
   const chip = document.getElementById('coach-athlete-status');
   if (chip) {
     chip.textContent = toneCopy(athlete.tone);
@@ -361,14 +825,10 @@ function renderAthlete() {
   }
 
   const stats = document.getElementById('coach-athlete-stats');
-  if (stats) {
-    stats.innerHTML = `
-      <article class="dash-card dash-stat-card"><span>Camp</span><strong>${athlete.completionPct}%</strong><em>${athlete.logged}/${athlete.due} due sessions</em></article>
-      <article class="dash-card dash-stat-card"><span>Max HR</span><strong>${formatNumber(athlete.maxHr)}</strong><em>${formatNumber(athlete.restingHr)} resting</em></article>
-      <article class="dash-card dash-stat-card"><span>Mile</span><strong>${formatTime(athlete.mileTests.at(-1)?.minutes)}</strong><em>${escapeHTML(mileCopy)}</em></article>
-      <article class="dash-card dash-stat-card"><span>Sprint Drop</span><strong>${formatNumber(athlete.sprintDrop)}</strong><em>${athlete.sprintPeak ? `${formatNumber(athlete.sprintPeak)} peak` : 'no sprint yet'}</em></article>
-    `;
-  }
+  if (stats) stats.innerHTML = renderScanTiles(athlete.scan);
+
+  const trends = document.getElementById('coach-athlete-trends');
+  if (trends) trends.innerHTML = renderTrends(athlete);
 
   const attention = document.getElementById('coach-athlete-attention');
   if (attention) {
