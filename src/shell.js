@@ -21,6 +21,8 @@ import {
   ZONE2_GUIDANCE,
   BENCHMARK_GUIDANCE,
   TEMPO_GUIDANCE,
+  SPRINT_GUIDANCE,
+  SHADOWBOXING_GUIDANCE,
   BREATHING_VIDEO_URL,
 } from './app-content.js';
 import {
@@ -500,6 +502,8 @@ function getWorkoutGuidance(workout) {
   if (/fight-?pace/i.test(type)) return FIGHT_PACE_GUIDANCE;
   if (/tempo/i.test(type)) return TEMPO_GUIDANCE;
   if (/benchmark/i.test(type)) return BENCHMARK_GUIDANCE;
+  if (/sprint/i.test(type)) return SPRINT_GUIDANCE;
+  if (/shadowbox/i.test(type)) return SHADOWBOXING_GUIDANCE;
   if (isZoneCheckWorkout(workout)) {
     const zone = workout.targetZone || '60-70%';
     return [
@@ -534,10 +538,11 @@ function renderDetailGuidance(workout) {
     return;
   }
   card.hidden = false;
+  const isShadowboxing = /shadowbox/i.test(workout?.type || '');
   const breathingLine = `Remember to <a class="guidance-video-link" href="${escapeHTML(BREATHING_VIDEO_URL)}" target="_blank" rel="noopener noreferrer">breath properly</a> during your run.`;
   list.innerHTML = [
     ...bullets.map((line) => `<li>${escapeHTML(line)}</li>`),
-    `<li>${breathingLine}</li>`,
+    ...(isShadowboxing ? [] : [`<li>${breathingLine}</li>`]),
   ].join('');
 }
 function setDetailZoneCardVisible(visible) {
