@@ -31,6 +31,16 @@ values
     '0c4d24e9-9778-456f-b046-970f32235fff',
     'kellimbergmann@gmail.com',
     'Kelli Bergmann'
+  ),
+  (
+    '05a75ab0-ebac-4a2b-b959-6820225bd028',
+    'ryankfisch@gmail.com',
+    'Ryan Fisch'
+  ),
+  (
+    '77481fd7-1411-4799-96bb-42daa347ab6a',
+    'simonbhyard@gmail.com',
+    'Simon Byard'
   )
 on conflict (user_id) do update
 set

@@ -108,6 +108,8 @@ That creates `coach_roster_exclusions` and currently hides:
 
 - `d.a.friend108@gmail.com` — Daniel's athlete-side test account
 - `kellimbergmann@gmail.com` — Kelli Bergmann
+- `ryankfisch@gmail.com` — Ryan Fisch
+- `simonbhyard@gmail.com` — Simon Byard
 
 To hide someone else later, insert another row into `coach_roster_exclusions` with their auth `user_id`.
 

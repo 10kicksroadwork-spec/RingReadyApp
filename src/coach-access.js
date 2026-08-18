@@ -7,11 +7,15 @@ export const COACH_EMAILS = [
 export const ROSTER_EXCLUDED_USER_IDS = [
   '81c1f795-cd72-416d-b56d-4c3578a7c7f9',
   '0c4d24e9-9778-456f-b046-970f32235fff',
+  '05a75ab0-ebac-4a2b-b959-6820225bd028',
+  '77481fd7-1411-4799-96bb-42daa347ab6a',
 ];
 
 export const ROSTER_EXCLUDED_EMAILS = [
   'd.a.friend108@gmail.com',
   'kellimbergmann@gmail.com',
+  'ryankfisch@gmail.com',
+  'simonbhyard@gmail.com',
 ];
 
 export function isCoachEmail(email) {
