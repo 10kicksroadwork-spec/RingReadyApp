@@ -2618,19 +2618,28 @@
     justify-content: space-between;
     align-items: center;
     gap: 8px;
+    margin-bottom: 2px;
   }
 
   .coach-metric-card-head span,
   .coach-metric-card-head em {
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 9px;
-    letter-spacing: 1.6px;
     text-transform: uppercase;
     font-style: normal;
+    line-height: 1.25;
   }
 
-  .coach-metric-card-head span { color: var(--gold); }
-  .coach-metric-card-head em { color: var(--light-grey); }
+  .coach-metric-card-head span {
+    color: var(--gold);
+    font-size: 12px;
+    letter-spacing: 1.4px;
+  }
+
+  .coach-metric-card-head em {
+    color: var(--light-grey);
+    font-size: 11px;
+    letter-spacing: 1px;
+  }
 
   .coach-metric-card.is-green strong { color: #9be29f; }
   .coach-metric-card.is-amber strong { color: #ffd19a; }
