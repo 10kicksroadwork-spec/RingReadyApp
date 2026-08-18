@@ -85,6 +85,17 @@ scripts/supabase-workout-data.sql
 ```
 
 It adds the workout completion, sprint session, and Mile Test columns used by the app, plus the indexes and RLS policies needed for each athlete to only read and write their own rows.
+
+## 4b. Coach dashboard access
+
+Run this third SQL file so Gene and Daniel can open the in-app coach roster and see every fighter who logs in the PWA:
+
+```text
+scripts/supabase-coach-access.sql
+```
+
+Until that file is run, coaches will sign in but the roster will be empty (or show a permission error). Gene (`gene.byard@gmail.com`) and Daniel (`10kicksroadwork@gmail.com`) both see every fighter with a Ring Ready account and can both write the shared coach note. Athletes are unchanged: they still only see their own data. The Google Sheets dashboard can stay in use for deeper charts.
+
 ## 5. Private workout proof
 
 Run this second migration in Supabase SQL Editor:

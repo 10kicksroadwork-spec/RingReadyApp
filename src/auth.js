@@ -1,3 +1,4 @@
+import { isCoachEmail } from './coach-access.js';
 import { isSupabaseConfigured, supabase } from './supabase-client.js';
 
 let currentSession = null;
@@ -270,6 +271,61 @@ export async function initSupabaseAuth(onChange) {
 
 export function getCurrentUser() {
   return currentSession?.user || null;
+}
+
+export function isCoachUser(user = getCurrentUser()) {
+  return isCoachEmail(user?.email);
+}
+
+async function loadCoachTable(table) {
+  const client = requireSupabase();
+  const { data, error } = await client.from(table).select('*');
+  if (error) throw error;
+  return data || [];
+}
+
+function settledRows(result) {
+  return result.status === 'fulfilled' ? (result.value || []) : [];
+}
+
+export async function loadCoachRosterPayload() {
+  if (!isSupabaseConfigured || !supabase || !isCoachUser()) return null;
+  const client = requireSupabase();
+  const [profilesResult, hrResult, completionsResult, sprintsResult, notesResult, identitiesResult] = await Promise.allSettled([
+    loadCoachTable('athlete_profiles'),
+    loadCoachTable('hr_info'),
+    loadCoachTable('workout_completions'),
+    loadCoachTable('sprint_sessions'),
+    loadCoachTable('coach_notes'),
+    client.rpc('coach_roster_identities').then(({ data, error }) => {
+      if (error) throw error;
+      return data || [];
+    }),
+  ]);
+  if (profilesResult.status === 'rejected') throw profilesResult.reason;
+  return {
+    profiles: settledRows(profilesResult),
+    hrRows: settledRows(hrResult),
+    completions: settledRows(completionsResult),
+    sprints: settledRows(sprintsResult),
+    notes: settledRows(notesResult),
+    identities: settledRows(identitiesResult),
+  };
+}
+
+export async function saveCoachNote(athleteUserId, note) {
+  const user = getCurrentUser();
+  if (!isSupabaseConfigured || !supabase || !user || !isCoachUser() || !athleteUserId) return null;
+  const { error } = await supabase
+    .from('coach_notes')
+    .upsert({
+      athlete_user_id: athleteUserId,
+      note: String(note || '').trim(),
+      updated_by: user.id,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'athlete_user_id' });
+  if (error) throw error;
+  return true;
 }
 
 export async function signInWithEmail(email, password) {

@@ -2524,6 +2524,14 @@
     line-height: 0.95;
   }
 
+  .coach-roster-email {
+    margin-top: 6px;
+    color: var(--light-grey);
+    font-size: 12px;
+    letter-spacing: 0.02em;
+    word-break: break-all;
+  }
+
   .coach-roster-card p {
     margin: 10px 0 12px;
     color: #cfcfcf;

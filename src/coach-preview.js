@@ -1,4 +1,11 @@
 import { PROGRAM } from './program.js';
+import { isCoachEmail, isLocalCoachPreviewHost as isLocalHost } from './coach-access.js';
+import {
+  getCurrentUser,
+  isCoachUser,
+  loadCoachRosterPayload,
+  saveCoachNote,
+} from './auth.js';
 
 const NOTES_KEY = 'ringReadyCoachPreviewNotes';
 const COACH_SCREENS = new Set(['coach-dashboard', 'coach-athlete']);
@@ -23,9 +30,17 @@ let rosterFilter = 'all';
 let rosterQuery = '';
 let bound = false;
 
+let liveAthletes = null;
+let liveLoadError = '';
+let liveLoadState = 'idle';
+let rosterSource = 'mock';
+
 export function isLocalCoachPreviewHost() {
-  const host = String(window.location.hostname || '');
-  return host === 'localhost' || host === '127.0.0.1' || host === '[::1]';
+  return isLocalHost();
+}
+
+export function canAccessCoachScreens() {
+  return isCoachUser() || isLocalCoachPreviewHost();
 }
 
 export function isCoachScreen(screenId) {
@@ -714,8 +729,178 @@ const MOCK_ATHLETES = [
   }),
 ];
 
+function inferCurrentWeekIndex(fightDate, campLength, completionWeeks) {
+  const lastWeek = (campLength === 4 ? 4 : 7) - 1;
+  if (fightDate) {
+    const fight = new Date(`${fightDate}T12:00:00`);
+    if (!Number.isNaN(fight.getTime())) {
+      const start = new Date(fight);
+      start.setDate(start.getDate() - (lastWeek + 1) * 7);
+      const idx = Math.floor((Date.now() - start.getTime()) / (7 * 86400000));
+      return clampNumber(idx, 0, lastWeek);
+    }
+  }
+  if (completionWeeks.length) return clampNumber(Math.max(...completionWeeks), 0, lastWeek);
+  return 0;
+}
+
+function completionKeyFromRow(row) {
+  if (row.completion_key) return String(row.completion_key);
+  if (Number.isFinite(Number(row.week_index)) && Number.isFinite(Number(row.workout_index))) {
+    return `${Number(row.week_index)}:${Number(row.workout_index)}`;
+  }
+  return '';
+}
+
+function sprintDropFromRow(row) {
+  const json = row.session_json && typeof row.session_json === 'object' ? row.session_json : {};
+  const data = Array.isArray(json.data) ? json.data : [];
+  const drops = data
+    .map((rep) => Number(rep.drop ?? rep.bpmDrop ?? rep.hrDrop))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  if (drops.length) {
+    const firstN = drops.slice(0, Math.min(5, drops.length));
+    return firstN.reduce((sum, value) => sum + value, 0) / firstN.length;
+  }
+  const avg = Number(row.avg_drop ?? json.avgDrop);
+  return Number.isFinite(avg) && avg > 0 ? avg : null;
+}
+
+function formatLastSession(completions) {
+  const dated = [...completions]
+    .map((row) => ({
+      at: new Date(row.completed_at || row.updated_at || 0).getTime(),
+      type: row.workout_type || 'Session',
+    }))
+    .filter((row) => Number.isFinite(row.at) && row.at > 0)
+    .sort((a, b) => b.at - a.at);
+  if (!dated.length) return 'No sessions yet';
+  const latest = dated[0];
+  const day = new Date(latest.at).toLocaleDateString('en-US', { weekday: 'short' });
+  return `${day} · ${latest.type}`;
+}
+
+function liveAthleteConfig(profile, hrRow, completions, sprints, note, email = '') {
+  const campLength = Number(profile.camp_length) === 4 ? 4 : 7;
+  const weeks = campWeeks(campLength);
+  const byKey = new Map();
+  completions.forEach((row) => {
+    const key = completionKeyFromRow(row);
+    if (key) byKey.set(key, row);
+  });
+  const currentWeekIndex = inferCurrentWeekIndex(
+    profile.fight_date,
+    campLength,
+    completions.map((row) => Number(row.week_index)).filter(Number.isFinite)
+  );
+  const missing = [];
+  const missingProofs = [];
+  const flags = {};
+  const avgs = {};
+  const maxes = {};
+  const minutes = {};
+  const distances = {};
+  const drops = {};
+  const sprintPoints = [];
+
+  weeks.forEach((week, weekIndex) => {
+    week.workouts.forEach((workout, workoutIndex) => {
+      const key = sessionKey(weekIndex, workoutIndex);
+      if (weekIndex > currentWeekIndex) return;
+      const row = byKey.get(key);
+      if (!row) {
+        missing.push(key);
+        return;
+      }
+      if (!row.attachment_id) missingProofs.push(key);
+      const avg = Number(row.avg_bpm);
+      const tgt = Number(row.target_bpm || workout.targetBPM);
+      if (Number.isFinite(avg) && avg > 0) avgs[key] = avg;
+      if (Number.isFinite(Number(row.max_bpm)) && Number(row.max_bpm) > 0) maxes[key] = Number(row.max_bpm);
+      if (Number.isFinite(Number(row.total_minutes)) && Number(row.total_minutes) > 0) minutes[key] = Number(row.total_minutes);
+      if (Number.isFinite(Number(row.distance)) && Number(row.distance) > 0) distances[key] = Number(row.distance);
+      if (Number.isFinite(avg) && Number.isFinite(tgt) && tgt > 0 && avg > tgt + 10 && !isSprintType(workout.type)) {
+        flags[key] = `${workout.type} avg ${Math.round(avg)} · target ${Math.round(tgt)}`;
+      }
+    });
+  });
+
+  sprints.forEach((row) => {
+    const drop = sprintDropFromRow(row);
+    const weekIndex = Number(row.week_index);
+    if (!Number.isFinite(drop) || !Number.isFinite(weekIndex)) return;
+    sprintPoints.push({ weekIndex, first5Avg: drop });
+    const workoutIndex = Number(row.workout_index);
+    if (Number.isFinite(workoutIndex)) drops[sessionKey(weekIndex, workoutIndex)] = drop;
+  });
+
+  return {
+    id: profile.user_id,
+    name: profile.athlete_name || email || 'Profile incomplete',
+    email,
+    campLength,
+    currentWeekIndex,
+    fightDate: profile.fight_date || '--',
+    tenure: profile.training_tenure || '',
+    maxHr: hrRow?.max_hr ?? null,
+    restingHr: hrRow?.resting_hr ?? null,
+    lastSession: formatLastSession(completions),
+    missing,
+    missingProofs,
+    flags,
+    avgs,
+    maxes,
+    minutes,
+    distances,
+    drops,
+    sprints: sprintPoints,
+    coachNote: note || '',
+  };
+}
+
+function buildLiveRoster(payload) {
+  const hrByUser = new Map((payload.hrRows || []).map((row) => [row.user_id, row]));
+  const completionsByUser = new Map();
+  (payload.completions || []).forEach((row) => {
+    const list = completionsByUser.get(row.user_id) || [];
+    list.push(row);
+    completionsByUser.set(row.user_id, list);
+  });
+  const sprintsByUser = new Map();
+  (payload.sprints || []).forEach((row) => {
+    const list = sprintsByUser.get(row.user_id) || [];
+    list.push(row);
+    sprintsByUser.set(row.user_id, list);
+  });
+  const notesByUser = new Map((payload.notes || []).map((row) => [row.athlete_user_id, row.note || '']));
+  const emailByUser = new Map((payload.identities || []).map((row) => [row.user_id, String(row.email || '').trim()]));
+  const coachId = getCurrentUser()?.id;
+
+  return (payload.profiles || [])
+    .filter((profile) => {
+      if (!profile?.user_id || profile.user_id === coachId) return false;
+      const email = emailByUser.get(profile.user_id) || '';
+      return !isCoachEmail(email);
+    })
+    .map((profile) => buildAthleteRecord(liveAthleteConfig(
+      profile,
+      hrByUser.get(profile.user_id),
+      completionsByUser.get(profile.user_id) || [],
+      sprintsByUser.get(profile.user_id) || [],
+      notesByUser.get(profile.user_id) || '',
+      emailByUser.get(profile.user_id) || ''
+    )))
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+}
+
+function rosterAthletes() {
+  if (rosterSource === 'live') return liveAthletes || [];
+  return MOCK_ATHLETES;
+}
+
 function getAthlete(id) {
-  return MOCK_ATHLETES.find((athlete) => athlete.id === id) || MOCK_ATHLETES[0];
+  const list = rosterAthletes();
+  return list.find((athlete) => athlete.id === id) || list[0] || null;
 }
 
 function readNotes() {
@@ -728,6 +913,21 @@ function readNotes() {
 
 function writeNotes(notes) {
   localStorage.setItem(NOTES_KEY, JSON.stringify(notes));
+}
+
+function athleteNote(athlete) {
+  if (rosterSource === 'live') return athlete.coachNote || '';
+  return readNotes()[athlete.id] || '';
+}
+
+function summaryCounts() {
+  const list = rosterAthletes();
+  return {
+    total: list.length,
+    attention: list.filter((athlete) => athlete.tone !== 'on-track').length,
+    onTrack: list.filter((athlete) => athlete.tone === 'on-track').length,
+    missing: list.reduce((sum, athlete) => sum + athlete.missingCount, 0),
+  };
 }
 
 function toneCopy(tone) {
@@ -755,21 +955,28 @@ function matchesQuery(athlete) {
   return athlete.name.toLowerCase().includes(query);
 }
 
-function summaryCounts() {
-  return {
-    total: MOCK_ATHLETES.length,
-    attention: MOCK_ATHLETES.filter((athlete) => athlete.tone !== 'on-track').length,
-    onTrack: MOCK_ATHLETES.filter((athlete) => athlete.tone === 'on-track').length,
-    missing: MOCK_ATHLETES.reduce((sum, athlete) => sum + athlete.missingCount, 0),
-  };
-}
-
 export function syncCoachPreviewChrome() {
-  const enabled = isLocalCoachPreviewHost();
+  const enabled = canAccessCoachScreens();
   document.querySelectorAll('[data-coach-preview]').forEach((el) => {
     el.hidden = !enabled;
   });
   document.body.classList.toggle('is-coach-preview', enabled && isCoachScreen(document.querySelector('.screen.active')?.id));
+}
+
+function syncCoachHeroCopy() {
+  const live = rosterSource === 'live' || isCoachUser();
+  const kicker = document.querySelector('#coach-dashboard .coach-hero .field-label');
+  const title = document.querySelector('#coach-dashboard .coach-hero h2');
+  const copy = document.querySelector('#coach-dashboard .coach-hero p');
+  if (kicker) kicker.textContent = live ? 'Coach' : 'Local Preview';
+  if (title) title.textContent = 'Camp roster.';
+  if (copy) {
+    copy.textContent = live
+      ? 'Every fighter with a Ring Ready account. Sheets stays available for the deeper charts.'
+      : 'Mock fighters only. Sign in as a coach on the live site to see the real roster.';
+  }
+  const rosterLabel = document.querySelector('#coach-roster-count')?.parentElement?.querySelector('em');
+  if (rosterLabel) rosterLabel.textContent = live ? 'fighters with accounts' : 'fighters in preview';
 }
 
 function renderSignalPills(athlete) {
@@ -785,6 +992,7 @@ function renderRoster() {
   const list = document.getElementById('coach-roster-list');
   const empty = document.getElementById('coach-roster-empty');
   const counts = summaryCounts();
+  syncCoachHeroCopy();
   setText('coach-roster-count', String(counts.total));
   setText('coach-attention-count', String(counts.attention));
   setText('coach-ontrack-count', String(counts.onTrack));
@@ -797,8 +1005,35 @@ function renderRoster() {
   const search = document.getElementById('coach-roster-search');
   if (search && search.value !== rosterQuery) search.value = rosterQuery;
 
-  const athletes = MOCK_ATHLETES.filter((athlete) => matchesFilter(athlete) && matchesQuery(athlete));
-  if (empty) empty.hidden = athletes.length > 0;
+  if (liveLoadState === 'loading' && rosterSource === 'live') {
+    if (empty) {
+      empty.hidden = false;
+      empty.textContent = 'Loading fighters...';
+    }
+    if (list) list.innerHTML = '';
+    return;
+  }
+
+  if (liveLoadError && rosterSource === 'live') {
+    if (empty) {
+      empty.hidden = false;
+      empty.textContent = liveLoadError;
+    }
+    if (list) list.innerHTML = '';
+    return;
+  }
+
+  const athletes = rosterAthletes().filter((athlete) => matchesFilter(athlete) && matchesQuery(athlete));
+  if (empty) {
+    empty.hidden = athletes.length > 0;
+    if (rosterSource === 'live' && counts.total === 0) {
+      empty.textContent = 'No fighter accounts yet. If athletes are already logging in, run scripts/supabase-coach-access.sql in the Supabase SQL editor, then refresh.';
+    } else {
+      empty.textContent = rosterSource === 'live'
+        ? 'No fighters match that filter. Fighters appear after they create a Ring Ready account and save a profile.'
+        : 'No fighters match that filter.';
+    }
+  }
   if (!list) return;
   list.innerHTML = athletes.map((athlete) => `
     <button type="button" class="coach-roster-card is-${athlete.tone}" data-page-target="coach-athlete" data-coach-athlete="${escapeHTML(athlete.id)}">
@@ -806,6 +1041,7 @@ function renderRoster() {
         <div>
           <div class="info-kicker">Week ${athlete.currentWeekIndex + 1} · ${athlete.campLength} week camp</div>
           <strong>${escapeHTML(athlete.name)}</strong>
+          ${athlete.email ? `<div class="coach-roster-email">${escapeHTML(athlete.email)}</div>` : ''}
         </div>
         <span class="coach-status-chip">${escapeHTML(toneCopy(athlete.tone))}</span>
       </div>
@@ -942,14 +1178,14 @@ function renderDrill(athlete) {
 
 function renderAthlete() {
   const athlete = getAthlete(selectedAthleteId);
+  if (!athlete) return;
   selectedAthleteId = athlete.id;
-  const notes = readNotes();
-  const note = notes[athlete.id] || '';
+  const note = athleteNote(athlete);
   const missed = athlete.sessions.filter((session) => session.status === 'missing');
 
   setText('coach-athlete-kicker', `Week ${athlete.currentWeekIndex + 1} · ${athlete.campLength} week camp`);
   setText('coach-athlete-name', athlete.name);
-  setText('coach-athlete-sub', `${toneCopy(athlete.tone)} · Fight ${athlete.fightDate} · ${athlete.tenure}`);
+  setText('coach-athlete-sub', [toneCopy(athlete.tone), athlete.email, `Fight ${athlete.fightDate}`, athlete.tenure].filter(Boolean).join(' · '));
   setText('coach-athlete-verdict', athlete.headline);
   const chip = document.getElementById('coach-athlete-status');
   if (chip) {
@@ -983,6 +1219,13 @@ function renderAthlete() {
       : '';
   }
 
+  const noteCopy = document.querySelector('#coach-athlete .coach-note-copy');
+  if (noteCopy) {
+    noteCopy.textContent = rosterSource === 'live'
+      ? 'Shared with Gene and Daniel. Fighters do not see this note.'
+      : 'Stays on this device for the preview. Later this becomes a cloud note on the athlete record.';
+  }
+
   const noteInput = document.getElementById('coach-athlete-note');
   if (noteInput) noteInput.value = note;
 }
@@ -992,23 +1235,69 @@ function setText(id, value) {
   if (el) el.textContent = value;
 }
 
-function saveOpenNote() {
+async function saveOpenNote() {
   if (!selectedAthleteId) return;
   const input = document.getElementById('coach-athlete-note');
+  const note = String(input?.value || '').trim();
+  if (rosterSource === 'live') {
+    try {
+      await saveCoachNote(selectedAthleteId, note);
+      const athlete = getAthlete(selectedAthleteId);
+      if (athlete) athlete.coachNote = note;
+      coachHooks?.showToast?.('COACH NOTE SAVED');
+    } catch (error) {
+      console.warn('Coach note save failed', error);
+      coachHooks?.showToast?.('COULD NOT SAVE NOTE');
+    }
+    return;
+  }
   const notes = readNotes();
-  notes[selectedAthleteId] = String(input?.value || '').trim();
+  notes[selectedAthleteId] = note;
   writeNotes(notes);
   coachHooks?.showToast?.('COACH NOTE SAVED LOCALLY');
 }
 
+async function loadLiveRoster() {
+  if (!isCoachUser()) {
+    rosterSource = 'mock';
+    liveAthletes = null;
+    liveLoadError = '';
+    liveLoadState = 'idle';
+    return;
+  }
+  liveLoadState = 'loading';
+  rosterSource = 'live';
+  liveLoadError = '';
+  try {
+    const payload = await loadCoachRosterPayload();
+    liveAthletes = buildLiveRoster(payload || { profiles: [], hrRows: [], completions: [], sprints: [], notes: [], identities: [] });
+    liveLoadState = 'ready';
+  } catch (error) {
+    console.warn('Coach roster load failed', error);
+    liveAthletes = [];
+    liveLoadState = 'error';
+    const message = String(error?.message || error);
+    liveLoadError = /permission|rls|policy|42501|42p01|does not exist|schema cache/i.test(message)
+      ? 'Coach access is not enabled yet. Run scripts/supabase-coach-access.sql in the Supabase SQL editor, then refresh.'
+      : 'Could not load fighters. Check the connection and try again.';
+  }
+}
+
 export function renderCoachPage(screenId) {
-  if (!isLocalCoachPreviewHost()) return;
+  if (!canAccessCoachScreens()) return;
   syncCoachPreviewChrome();
+  if (isCoachUser() && liveLoadState === 'idle') {
+    loadLiveRoster().then(() => renderCoachPage(screenId));
+  }
   if (screenId === 'coach-dashboard') renderRoster();
   if (screenId === 'coach-athlete') renderAthlete();
 }
 
 export function openCoachPreviewIfRequested() {
+  if (isCoachUser()) {
+    coachHooks?.navigateTo?.('coach-dashboard');
+    return true;
+  }
   if (!isLocalCoachPreviewHost()) return false;
   const params = new URLSearchParams(window.location.search);
   if (params.get('coach') !== '1') return false;
@@ -1029,11 +1318,20 @@ export function setSelectedCoachAthlete(id) {
   athleteDrill = '';
 }
 
+export async function refreshCoachPreview() {
+  syncCoachPreviewChrome();
+  if (isCoachUser()) await loadLiveRoster();
+  else {
+    rosterSource = 'mock';
+    liveAthletes = null;
+  }
+}
+
 export function initCoachPreview(hooks) {
   coachHooks = hooks;
   syncCoachPreviewChrome();
   if (bound) {
-    openCoachPreviewIfRequested();
+    refreshCoachPreview().then(() => openCoachPreviewIfRequested());
     return;
   }
   bound = true;
@@ -1043,7 +1341,7 @@ export function initCoachPreview(hooks) {
     if (athleteBtn) setSelectedCoachAthlete(athleteBtn.dataset.coachAthlete);
 
     const drillBtn = event.target.closest('[data-coach-drill]');
-    if (drillBtn && isLocalCoachPreviewHost()) {
+    if (drillBtn && canAccessCoachScreens()) {
       event.preventDefault();
       const next = drillBtn.dataset.coachDrill || '';
       athleteDrill = athleteDrill === next ? '' : next;
@@ -1052,7 +1350,7 @@ export function initCoachPreview(hooks) {
     }
 
     const closeBtn = event.target.closest('[data-coach-drill-close]');
-    if (closeBtn && isLocalCoachPreviewHost()) {
+    if (closeBtn && canAccessCoachScreens()) {
       event.preventDefault();
       athleteDrill = '';
       renderAthlete();
@@ -1060,7 +1358,7 @@ export function initCoachPreview(hooks) {
     }
 
     const filterBtn = event.target.closest('[data-coach-filter]');
-    if (!filterBtn || !isLocalCoachPreviewHost()) return;
+    if (!filterBtn || !canAccessCoachScreens()) return;
     event.preventDefault();
     rosterFilter = filterBtn.dataset.coachFilter || 'all';
     renderRoster();
@@ -1071,4 +1369,9 @@ export function initCoachPreview(hooks) {
     renderRoster();
   });
   document.getElementById('coach-note-save-btn')?.addEventListener('click', saveOpenNote);
+
+  refreshCoachPreview().then(() => {
+    const screen = document.querySelector('.screen.active')?.id;
+    if (isCoachScreen(screen)) renderCoachPage(screen);
+  });
 }

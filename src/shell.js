@@ -39,10 +39,11 @@ import {
 import { getWorkoutCompletion, removeWorkoutCompletion, saveWorkoutCompletion } from './storage.js';
 import { sanitizeDurationInput } from './workout.js';
 import {
+  canAccessCoachScreens,
   initCoachPreview,
   isCoachScreen,
-  isLocalCoachPreviewHost,
   openCoachPreviewIfRequested,
+  refreshCoachPreview,
   renderCoachPage,
   setSelectedCoachAthlete,
   syncCoachPreviewChrome,
@@ -51,6 +52,7 @@ import {
   deleteCloudWorkoutCompletion,
   getCurrentUser,
   initSupabaseAuth,
+  isCoachUser,
   loadCloudHRInfo,
   loadCloudMileTest,
   loadCloudProfile,
@@ -371,7 +373,7 @@ async function handleAuthSubmit(event) {
       setAuthStatus('Check your email to confirm the account, then sign in.');
       return;
     }
-    await hydrateCloudData();
+    if (!isCoachUser()) await hydrateCloudData();
     enterAppHome();
     shellHooks?.showToast?.(authMode === 'sign-up' ? 'ACCOUNT CREATED' : 'SIGNED IN');
   } catch (error) {
@@ -390,6 +392,7 @@ async function handleLogout() {
     await signOut();
     clearAccountLocalData();
     localStorage.removeItem(AUTH_USER_STORAGE_KEY);
+    await refreshCoachPreview();
     renderAllPages();
     showAuthScreen('Signed out.');
   } catch (error) {
@@ -1378,7 +1381,7 @@ function renderPage(screenId) {
   if (screenId === 'sc-page') renderSCPage();
   if (screenId === 'mile-test-page') renderMileTestPage();
   if (isCoachScreen(screenId)) {
-    if (!isLocalCoachPreviewHost()) return;
+    if (!canAccessCoachScreens()) return;
     renderCoachPage(screenId);
   }
 }
@@ -1395,6 +1398,11 @@ function dismissOnboarding() {
 function maybeShowOnboarding() {
   const modal = document.getElementById('onboarding-modal');
   if (!modal) return;
+  if (isCoachUser()) {
+    modal.hidden = true;
+    modal.setAttribute('aria-hidden', 'true');
+    return;
+  }
   const hasProfile = !!getAthleteProfile().athleteName;
   const dismissed = localStorage.getItem(ONBOARDING_DISMISSED_KEY) === '1';
   modal.hidden = hasProfile || dismissed;
@@ -1402,7 +1410,7 @@ function maybeShowOnboarding() {
 }
 function navigateTo(screenId) {
   closeWeekDrawer();
-  if (isCoachScreen(screenId) && !isLocalCoachPreviewHost()) screenId = 'home';
+  if (isCoachScreen(screenId) && !canAccessCoachScreens()) screenId = 'home';
   renderPage(screenId);
   shellHooks?.showScreen(screenId);
   setActiveNavigation(screenId);
@@ -1579,7 +1587,7 @@ export async function initAthleteShell(hooks) {
       openCoachPreviewIfRequested();
       return;
     }
-    await hydrateCloudData();
+    if (!isCoachUser()) await hydrateCloudData();
     enterAppHome();
     openCoachPreviewIfRequested();
   } catch (error) {

@@ -1,5 +1,6 @@
 import {
   getCurrentUser,
+  isCoachUser,
   loadCloudHRInfo,
   loadCloudProfile,
   saveCloudHRInfo,
@@ -828,7 +829,7 @@ function bindGateEvents() {
 }
 
 export async function enforceAthleteOnboarding({ showScreen }) {
-  if (!isSupabaseConfigured || !getCurrentUser()) return false;
+  if (!isSupabaseConfigured || !getCurrentUser() || isCoachUser()) return false;
 
   ensureStyles();
   ensureScreen();

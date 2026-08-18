@@ -49,7 +49,7 @@
         <button type="submit" class="start-btn auth-submit-btn" id="auth-submit-btn">SIGN IN</button>
       </form>
       <button type="button" class="auth-switch-btn" id="auth-mode-toggle-btn">Create an account instead</button>
-      <button type="button" class="auth-switch-btn" id="coach-preview-auth-btn" data-coach-preview data-page-target="coach-dashboard" hidden>Preview coach dashboard</button>
+      <button type="button" class="auth-switch-btn" id="coach-preview-auth-btn" data-coach-preview data-page-target="coach-dashboard" hidden>Coach dashboard</button>
       <div class="auth-status" id="auth-status" role="status"></div>
     </div>
   </div>
@@ -124,7 +124,7 @@
           <strong>S&amp;C</strong>
         </button>
         <button type="button" class="app-nav-card" data-coach-preview data-page-target="coach-dashboard" hidden>
-          <span>Local Preview</span>
+          <span>Camp roster</span>
           <strong>Coach</strong>
         </button>
       </section>
@@ -383,7 +383,7 @@
     </div>
   </div>
 
-  <!-- COACH DASHBOARD (local preview only) -->
+  <!-- COACH DASHBOARD -->
   <div id="coach-dashboard" class="screen app-page">
     <div class="page-header">
       <div class="page-actions">
@@ -397,12 +397,12 @@
     </div>
     <div class="page-body">
       <section class="page-hero coach-hero">
-        <div class="field-label">Local Preview</div>
+        <div class="field-label">Coach</div>
         <h2>Camp roster.</h2>
-        <p>Mock fighters only. This screen stays on localhost so you can shape the coach view before it ever goes live.</p>
+        <p>Every fighter with a Ring Ready account. Sheets stays available for the deeper charts.</p>
       </section>
       <section class="dash-stat-grid coach-summary-grid">
-        <article class="dash-card dash-stat-card"><span>Roster</span><strong id="coach-roster-count">0</strong><em>fighters in preview</em></article>
+        <article class="dash-card dash-stat-card"><span>Roster</span><strong id="coach-roster-count">0</strong><em>fighters with accounts</em></article>
         <article class="dash-card dash-stat-card"><span>Needs a look</span><strong id="coach-attention-count">0</strong><em>behind, HR, or proof</em></article>
         <article class="dash-card dash-stat-card"><span>On track</span><strong id="coach-ontrack-count">0</strong><em>current work</em></article>
         <article class="dash-card dash-stat-card"><span>Missing</span><strong id="coach-missing-count">0</strong><em>sessions across camp</em></article>
@@ -424,7 +424,7 @@
     </div>
   </div>
 
-  <!-- COACH ATHLETE DETAIL (local preview only) -->
+  <!-- COACH ATHLETE DETAIL -->
   <div id="coach-athlete" class="screen app-page">
     <div class="page-header">
       <div class="page-actions">
@@ -454,7 +454,7 @@
       <section class="page-panel" id="coach-athlete-missed" hidden></section>
       <section class="page-panel">
         <div class="info-kicker">Coach Note</div>
-        <p class="coach-note-copy">Stays on this device for the preview. Later this becomes a cloud note on the athlete record.</p>
+        <p class="coach-note-copy">Shared with Gene and Daniel. Fighters do not see this note.</p>
         <label class="app-input-wrap" for="coach-athlete-note">
           <span>Note</span>
           <textarea id="coach-athlete-note" rows="4" maxlength="400" placeholder="What should the next session look like?"></textarea>
@@ -691,7 +691,7 @@
       <button type="button" class="drawer-page-btn" data-page-target="hr-info">HR Info</button>
       <button type="button" class="drawer-page-btn" data-page-target="sc-page">S&amp;C</button>
       <button type="button" class="drawer-page-btn" data-page-target="mile-test-page">Mile Test</button>
-      <button type="button" class="drawer-page-btn" data-coach-preview data-page-target="coach-dashboard" hidden>Coach Preview</button>
+      <button type="button" class="drawer-page-btn" data-coach-preview data-page-target="coach-dashboard" hidden>Coach dashboard</button>
     </div>
     <div class="drawer-section-label">Training Weeks</div>
     <div class="drawer-week-list" id="drawer-week-list"></div>
