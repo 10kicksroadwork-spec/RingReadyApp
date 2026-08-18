@@ -111,6 +111,16 @@ That creates `coach_roster_exclusions` and currently hides:
 
 To hide someone else later, insert another row into `coach_roster_exclusions` with their auth `user_id`.
 
+## 4d. Coach camp start dates
+
+Run this so coaches can set when each fighter's roadwork begins:
+
+```text
+scripts/supabase-coach-camp-start.sql
+```
+
+On the athlete detail screen, set a start date (for example `2026-08-24`). Missing-workout flags then follow the program calendar: Week 1 Monday is the start date, Tuesday is the next day, and so on. Sessions that have not reached their day yet stay off the missing list.
+
 ## 5. Private workout proof
 
 Run this second migration in Supabase SQL Editor:

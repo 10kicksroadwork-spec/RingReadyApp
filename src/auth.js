@@ -291,7 +291,7 @@ function settledRows(result) {
 export async function loadCoachRosterPayload() {
   if (!isSupabaseConfigured || !supabase || !isCoachUser()) return null;
   const client = requireSupabase();
-  const [profilesResult, hrResult, completionsResult, sprintsResult, notesResult, identitiesResult, exclusionsResult] = await Promise.allSettled([
+  const [profilesResult, hrResult, completionsResult, sprintsResult, notesResult, identitiesResult, exclusionsResult, metaResult] = await Promise.allSettled([
     loadCoachTable('athlete_profiles'),
     loadCoachTable('hr_info'),
     loadCoachTable('workout_completions'),
@@ -302,6 +302,7 @@ export async function loadCoachRosterPayload() {
       return data || [];
     }),
     loadCoachTable('coach_roster_exclusions'),
+    loadCoachTable('coach_athlete_meta'),
   ]);
   if (profilesResult.status === 'rejected') throw profilesResult.reason;
   return {
@@ -312,7 +313,23 @@ export async function loadCoachRosterPayload() {
     notes: settledRows(notesResult),
     identities: settledRows(identitiesResult),
     exclusions: settledRows(exclusionsResult),
+    meta: settledRows(metaResult),
   };
+}
+
+export async function saveCoachCampStartDate(athleteUserId, campStartDate) {
+  const user = getCurrentUser();
+  if (!isSupabaseConfigured || !supabase || !user || !isCoachUser() || !athleteUserId) return null;
+  const { error } = await supabase
+    .from('coach_athlete_meta')
+    .upsert({
+      athlete_user_id: athleteUserId,
+      camp_start_date: campStartDate || null,
+      updated_by: user.id,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'athlete_user_id' });
+  if (error) throw error;
+  return true;
 }
 
 export async function saveCoachNote(athleteUserId, note) {

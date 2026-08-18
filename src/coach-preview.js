@@ -1,9 +1,15 @@
 import { PROGRAM } from './program.js';
+import {
+  formatCampStartLabel,
+  inferCampWeekIndex,
+  isSessionDueYet,
+} from './coach-camp-schedule.js';
 import { buildCoachUserIdSet, buildRosterExclusionSet, isCoachEmail, isLocalCoachPreviewHost as isLocalHost, isRosterExcludedEmail, normalizeUserId } from './coach-access.js';
 import {
   getCurrentUser,
   isCoachUser,
   loadCoachRosterPayload,
+  saveCoachCampStartDate,
   saveCoachNote,
 } from './auth.js';
 
@@ -483,10 +489,14 @@ function buildAthleteRecord(config) {
 
   weeks.forEach((week, weekIndex) => {
     let done = 0;
-    const weekSessions = week.workouts.map((workout, workoutIndex) => {
+    const weekSessions =     week.workouts.map((workout, workoutIndex) => {
       const key = sessionKey(weekIndex, workoutIndex);
-      const isFuture = weekIndex > config.currentWeekIndex;
-      const isMissing = missing.has(key);
+      const isFutureWeek = weekIndex > config.currentWeekIndex;
+      const isBeforeStart = config.campStartDate
+        ? !isSessionDueYet(config.campStartDate, weekIndex, workout.day)
+        : false;
+      const isFuture = isFutureWeek || isBeforeStart;
+      const isMissing = !isFuture && missing.has(key);
       const status = isFuture ? 'upcoming' : isMissing ? 'missing' : 'logged';
       const proof = isFuture ? 'upcoming' : missingProofs.has(key) ? 'missing' : status === 'logged' ? 'on-file' : 'none';
       const flag = flags[key] || '';
@@ -729,7 +739,9 @@ const MOCK_ATHLETES = [
   }),
 ];
 
-function inferCurrentWeekIndex(fightDate, campLength, completionWeeks) {
+function inferCurrentWeekIndex(fightDate, campLength, completionWeeks, campStartDate) {
+  const fromStart = inferCampWeekIndex(campStartDate, campLength);
+  if (fromStart !== null) return fromStart;
   const lastWeek = (campLength === 4 ? 4 : 7) - 1;
   if (fightDate) {
     const fight = new Date(`${fightDate}T12:00:00`);
@@ -780,7 +792,7 @@ function formatLastSession(completions) {
   return `${day} · ${latest.type}`;
 }
 
-function liveAthleteConfig(profile, hrRow, completions, sprints, note, email = '') {
+function liveAthleteConfig(profile, hrRow, completions, sprints, note, email = '', campStartDate = '') {
   const campLength = Number(profile.camp_length) === 4 ? 4 : 7;
   const weeks = campWeeks(campLength);
   const byKey = new Map();
@@ -791,7 +803,8 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, note, email = '
   const currentWeekIndex = inferCurrentWeekIndex(
     profile.fight_date,
     campLength,
-    completions.map((row) => Number(row.week_index)).filter(Number.isFinite)
+    completions.map((row) => Number(row.week_index)).filter(Number.isFinite),
+    campStartDate
   );
   const missing = [];
   const missingProofs = [];
@@ -807,6 +820,7 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, note, email = '
     week.workouts.forEach((workout, workoutIndex) => {
       const key = sessionKey(weekIndex, workoutIndex);
       if (weekIndex > currentWeekIndex) return;
+      if (campStartDate && !isSessionDueYet(campStartDate, weekIndex, workout.day)) return;
       const row = byKey.get(key);
       if (!row) {
         missing.push(key);
@@ -841,6 +855,7 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, note, email = '
     campLength,
     currentWeekIndex,
     fightDate: profile.fight_date || '--',
+    campStartDate,
     tenure: profile.training_tenure || '',
     maxHr: hrRow?.max_hr ?? null,
     restingHr: hrRow?.resting_hr ?? null,
@@ -873,6 +888,7 @@ function buildLiveRoster(payload) {
     sprintsByUser.set(row.user_id, list);
   });
   const notesByUser = new Map((payload.notes || []).map((row) => [row.athlete_user_id, row.note || '']));
+  const metaByUser = new Map((payload.meta || []).map((row) => [row.athlete_user_id, row]));
   const emailByUser = new Map();
   (payload.identities || []).forEach((row) => {
     const id = normalizeUserId(row.user_id);
@@ -894,7 +910,8 @@ function buildLiveRoster(payload) {
       completionsByUser.get(profile.user_id) || [],
       sprintsByUser.get(profile.user_id) || [],
       notesByUser.get(profile.user_id) || '',
-      emailByUser.get(normalizeUserId(profile.user_id)) || ''
+      emailByUser.get(normalizeUserId(profile.user_id)) || '',
+      metaByUser.get(profile.user_id)?.camp_start_date || ''
     )))
     .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
 }
@@ -1060,6 +1077,7 @@ function renderRoster() {
       ${renderSignalPills(athlete)}
       <div class="coach-roster-meta">
         <span>${athlete.logged}/${athlete.due} logged</span>
+        ${athlete.campStartDate ? `<span>Starts ${escapeHTML(formatCampStartLabel(athlete.campStartDate))}</span>` : ''}
         <span>${escapeHTML(athlete.lastSession)}</span>
         <span>Fight ${escapeHTML(athlete.fightDate)}</span>
         <span class="coach-roster-open">Open</span>
@@ -1196,7 +1214,13 @@ function renderAthlete() {
 
   setText('coach-athlete-kicker', `Week ${athlete.currentWeekIndex + 1} · ${athlete.campLength} week camp`);
   setText('coach-athlete-name', athlete.name);
-  setText('coach-athlete-sub', [toneCopy(athlete.tone), athlete.email, `Fight ${athlete.fightDate}`, athlete.tenure].filter(Boolean).join(' · '));
+  setText('coach-athlete-sub', [
+    toneCopy(athlete.tone),
+    athlete.campStartDate ? `Starts ${formatCampStartLabel(athlete.campStartDate)}` : '',
+    athlete.email,
+    `Fight ${athlete.fightDate}`,
+    athlete.tenure,
+  ].filter(Boolean).join(' · '));
   setText('coach-athlete-verdict', athlete.headline);
   const chip = document.getElementById('coach-athlete-status');
   if (chip) {
@@ -1239,11 +1263,40 @@ function renderAthlete() {
 
   const noteInput = document.getElementById('coach-athlete-note');
   if (noteInput) noteInput.value = note;
+
+  const startInput = document.getElementById('coach-athlete-start-date');
+  if (startInput) startInput.value = athlete.campStartDate || '';
 }
 
 function setText(id, value) {
   const el = document.getElementById(id);
   if (el) el.textContent = value;
+}
+
+async function saveOpenStartDate() {
+  if (!selectedAthleteId) return;
+  const input = document.getElementById('coach-athlete-start-date');
+  const campStartDate = String(input?.value || '').trim();
+  if (rosterSource === 'live') {
+    try {
+      await saveCoachCampStartDate(selectedAthleteId, campStartDate || null);
+      await loadLiveRoster();
+      renderAthlete();
+      renderRoster();
+      coachHooks?.showToast?.('START DATE SAVED');
+    } catch (error) {
+      console.warn('Coach start date save failed', error);
+      coachHooks?.showToast?.('COULD NOT SAVE START DATE');
+    }
+    return;
+  }
+  const athlete = getAthlete(selectedAthleteId);
+  if (athlete) {
+    athlete.campStartDate = campStartDate;
+    renderAthlete();
+    renderRoster();
+  }
+  coachHooks?.showToast?.('START DATE SAVED LOCALLY');
 }
 
 async function saveOpenNote() {
@@ -1281,7 +1334,9 @@ async function loadLiveRoster() {
   liveLoadError = '';
   try {
     const payload = await loadCoachRosterPayload();
-    liveAthletes = buildLiveRoster(payload || { profiles: [], hrRows: [], completions: [], sprints: [], notes: [], identities: [], exclusions: [] });
+    liveAthletes = buildLiveRoster(payload || {
+      profiles: [], hrRows: [], completions: [], sprints: [], notes: [], identities: [], exclusions: [], meta: [],
+    });
     liveLoadState = 'ready';
   } catch (error) {
     console.warn('Coach roster load failed', error);
@@ -1380,6 +1435,7 @@ export function initCoachPreview(hooks) {
     renderRoster();
   });
   document.getElementById('coach-note-save-btn')?.addEventListener('click', saveOpenNote);
+  document.getElementById('coach-start-save-btn')?.addEventListener('click', saveOpenStartDate);
 
   refreshCoachPreview().then(() => {
     const screen = document.querySelector('.screen.active')?.id;
