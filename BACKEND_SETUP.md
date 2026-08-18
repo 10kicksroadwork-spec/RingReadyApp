@@ -96,6 +96,8 @@ scripts/supabase-coach-access.sql
 
 Until that file is run, coaches will sign in but the roster will be empty (or show a permission error). Gene (`gene.byard@gmail.com`) and Daniel (`10kicksroadwork@gmail.com`) both see every fighter with a Ring Ready account and can both write the shared coach note. Athletes are unchanged: they still only see their own data. The Google Sheets dashboard can stay in use for deeper charts.
 
+If a coach account was created with **Add user** and cannot sign in on a new device, run `scripts/supabase-set-coach-password.sql` after replacing the password placeholder.
+
 ## 4c. Coach roster exclusions
 
 Run this after the coach access script to hide specific test or personal fighter accounts from the coach roster:
