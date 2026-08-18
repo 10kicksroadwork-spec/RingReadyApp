@@ -1534,6 +1534,14 @@
     gap: 12px;
   }
 
+  .app-nav-card[hidden],
+  .drawer-page-btn[hidden],
+  .header-action[hidden],
+  [data-coach-preview][hidden],
+  [data-coach-hide][hidden] {
+    display: none;
+  }
+
   .app-nav-card span {
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 10px;
