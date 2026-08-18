@@ -1,5 +1,5 @@
 import { PROGRAM } from './program.js';
-import { isCoachEmail, isLocalCoachPreviewHost as isLocalHost } from './coach-access.js';
+import { isCoachEmail, isLocalCoachPreviewHost as isLocalHost, buildCoachUserIdSet, normalizeUserId } from './coach-access.js';
 import {
   getCurrentUser,
   isCoachUser,
@@ -873,14 +873,18 @@ function buildLiveRoster(payload) {
     sprintsByUser.set(row.user_id, list);
   });
   const notesByUser = new Map((payload.notes || []).map((row) => [row.athlete_user_id, row.note || '']));
-  const emailByUser = new Map((payload.identities || []).map((row) => [row.user_id, String(row.email || '').trim()]));
-  const coachId = getCurrentUser()?.id;
+  const emailByUser = new Map();
+  (payload.identities || []).forEach((row) => {
+    const id = normalizeUserId(row.user_id);
+    if (id) emailByUser.set(id, String(row.email || '').trim().toLowerCase());
+  });
+  const coachUserIds = buildCoachUserIdSet(payload.identities, getCurrentUser()?.id);
 
   return (payload.profiles || [])
     .filter((profile) => {
-      if (!profile?.user_id || profile.user_id === coachId) return false;
-      const email = emailByUser.get(profile.user_id) || '';
-      return !isCoachEmail(email);
+      const userId = normalizeUserId(profile?.user_id);
+      if (!userId || coachUserIds.has(userId)) return false;
+      return !isCoachEmail(emailByUser.get(userId));
     })
     .map((profile) => buildAthleteRecord(liveAthleteConfig(
       profile,
@@ -888,7 +892,7 @@ function buildLiveRoster(payload) {
       completionsByUser.get(profile.user_id) || [],
       sprintsByUser.get(profile.user_id) || [],
       notesByUser.get(profile.user_id) || '',
-      emailByUser.get(profile.user_id) || ''
+      emailByUser.get(normalizeUserId(profile.user_id)) || ''
     )))
     .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
 }
@@ -957,10 +961,15 @@ function matchesQuery(athlete) {
 
 export function syncCoachPreviewChrome() {
   const enabled = canAccessCoachScreens();
+  const liveCoach = isCoachUser();
   document.querySelectorAll('[data-coach-preview]').forEach((el) => {
     el.hidden = !enabled;
   });
+  document.querySelectorAll('[data-coach-hide]').forEach((el) => {
+    el.hidden = liveCoach;
+  });
   document.body.classList.toggle('is-coach-preview', enabled && isCoachScreen(document.querySelector('.screen.active')?.id));
+  document.body.classList.toggle('is-live-coach', liveCoach);
 }
 
 function syncCoachHeroCopy() {

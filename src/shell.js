@@ -187,6 +187,12 @@ function getCloudTimestamp(record) {
 function clearAccountLocalData() {
   [PROFILE_STORAGE_KEY, STORAGE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY, HR_INFO_STORAGE_KEY, MILE_TEST_STORAGE_KEY, PROFILE_FORM_COLLAPSED_KEY, PROGRAM_GUIDE_COLLAPSED_KEY, WORKOUT_NOTES_STORAGE_KEY].forEach((key) => localStorage.removeItem(key));
 }
+function prepareCoachSession() {
+  if (!isCoachUser()) return;
+  clearAccountLocalData();
+  const userId = getCurrentUser()?.id;
+  if (userId) localStorage.setItem(AUTH_USER_STORAGE_KEY, userId);
+}
 function mergeWorkoutCompletions(localCompletions = {}, cloudCompletions = {}) {
   const merged = { ...localCompletions };
   Object.entries(cloudCompletions || {}).forEach(([key, cloudRecord]) => {
@@ -374,6 +380,7 @@ async function handleAuthSubmit(event) {
       return;
     }
     if (!isCoachUser()) await hydrateCloudData();
+    else prepareCoachSession();
     enterAppHome();
     shellHooks?.showToast?.(authMode === 'sign-up' ? 'ACCOUNT CREATED' : 'SIGNED IN');
   } catch (error) {
@@ -1017,9 +1024,14 @@ async function clearCompletionFromDetail(weekIndex, workoutIndex) {
   shellHooks?.showToast?.('WORKOUT MARKED INCOMPLETE');
 }
 function renderHeaderProfile() {
-  const profile = getAthleteProfile();
   const chip = document.getElementById('header-athlete-name');
   if (!chip) return;
+  if (isCoachUser()) {
+    chip.textContent = 'Coach';
+    chip.classList.remove('empty');
+    return;
+  }
+  const profile = getAthleteProfile();
   chip.textContent = profile.athleteName || 'Set Profile';
   chip.classList.toggle('empty', !profile.athleteName);
 }
@@ -1411,6 +1423,7 @@ function maybeShowOnboarding() {
 function navigateTo(screenId) {
   closeWeekDrawer();
   if (isCoachScreen(screenId) && !canAccessCoachScreens()) screenId = 'home';
+  if (isCoachUser() && !isCoachScreen(screenId)) screenId = 'coach-dashboard';
   renderPage(screenId);
   shellHooks?.showScreen(screenId);
   setActiveNavigation(screenId);
@@ -1588,6 +1601,7 @@ export async function initAthleteShell(hooks) {
       return;
     }
     if (!isCoachUser()) await hydrateCloudData();
+    else prepareCoachSession();
     enterAppHome();
     openCoachPreviewIfRequested();
   } catch (error) {

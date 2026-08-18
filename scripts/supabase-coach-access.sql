@@ -19,14 +19,16 @@ revoke all on function public.is_coach() from public;
 grant execute on function public.is_coach() to authenticated;
 
 -- Lets coaches match roster names to the email used in the PWA.
+-- Returns every auth account while the caller is a coach so the app can
+-- hide coach logins from the fighter roster.
 create or replace function public.coach_roster_identities()
 returns table (user_id uuid, email text)
 language sql
 stable
 security definer
-set search_path = public
+set search_path = public, auth
 as $$
-  select u.id, u.email::text
+  select u.id, lower(u.email::text)
   from auth.users u
   where public.is_coach();
 $$;
