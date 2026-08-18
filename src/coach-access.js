@@ -3,8 +3,23 @@ export const COACH_EMAILS = [
   '10kicksroadwork@gmail.com',
 ];
 
+/** Hidden from the live coach roster even when they have athlete profiles. */
+export const ROSTER_EXCLUDED_USER_IDS = [
+  '81c1f795-cd72-416d-b56d-4c3578a7c7f9',
+  '0c4d24e9-9778-456f-b046-970f32235fff',
+];
+
+export const ROSTER_EXCLUDED_EMAILS = [
+  'd.a.friend108@gmail.com',
+  'kellimbergmann@gmail.com',
+];
+
 export function isCoachEmail(email) {
   return COACH_EMAILS.includes(String(email || '').trim().toLowerCase());
+}
+
+export function isRosterExcludedEmail(email) {
+  return ROSTER_EXCLUDED_EMAILS.includes(String(email || '').trim().toLowerCase());
 }
 
 export function normalizeUserId(value) {
@@ -18,6 +33,15 @@ export function buildCoachUserIdSet(identities = [], currentUserId = '') {
   identities.forEach((row) => {
     const id = normalizeUserId(row?.user_id);
     if (id && isCoachEmail(row?.email)) ids.add(id);
+  });
+  return ids;
+}
+
+export function buildRosterExclusionSet(exclusions = []) {
+  const ids = new Set(ROSTER_EXCLUDED_USER_IDS.map(normalizeUserId));
+  exclusions.forEach((row) => {
+    const id = normalizeUserId(row?.user_id);
+    if (id) ids.add(id);
   });
   return ids;
 }

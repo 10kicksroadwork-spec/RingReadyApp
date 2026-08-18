@@ -1,5 +1,5 @@
 import { PROGRAM } from './program.js';
-import { isCoachEmail, isLocalCoachPreviewHost as isLocalHost, buildCoachUserIdSet, normalizeUserId } from './coach-access.js';
+import { buildCoachUserIdSet, buildRosterExclusionSet, isCoachEmail, isLocalCoachPreviewHost as isLocalHost, isRosterExcludedEmail, normalizeUserId } from './coach-access.js';
 import {
   getCurrentUser,
   isCoachUser,
@@ -879,12 +879,14 @@ function buildLiveRoster(payload) {
     if (id) emailByUser.set(id, String(row.email || '').trim().toLowerCase());
   });
   const coachUserIds = buildCoachUserIdSet(payload.identities, getCurrentUser()?.id);
+  const excludedUserIds = buildRosterExclusionSet(payload.exclusions);
 
   return (payload.profiles || [])
     .filter((profile) => {
       const userId = normalizeUserId(profile?.user_id);
-      if (!userId || coachUserIds.has(userId)) return false;
-      return !isCoachEmail(emailByUser.get(userId));
+      if (!userId || coachUserIds.has(userId) || excludedUserIds.has(userId)) return false;
+      const email = emailByUser.get(userId) || '';
+      return !isCoachEmail(email) && !isRosterExcludedEmail(email);
     })
     .map((profile) => buildAthleteRecord(liveAthleteConfig(
       profile,
@@ -1279,7 +1281,7 @@ async function loadLiveRoster() {
   liveLoadError = '';
   try {
     const payload = await loadCoachRosterPayload();
-    liveAthletes = buildLiveRoster(payload || { profiles: [], hrRows: [], completions: [], sprints: [], notes: [], identities: [] });
+    liveAthletes = buildLiveRoster(payload || { profiles: [], hrRows: [], completions: [], sprints: [], notes: [], identities: [], exclusions: [] });
     liveLoadState = 'ready';
   } catch (error) {
     console.warn('Coach roster load failed', error);
