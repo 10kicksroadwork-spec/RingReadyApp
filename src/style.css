@@ -2280,6 +2280,34 @@
     margin: 4px 0 10px;
   }
 
+  .drawer-account {
+    margin-top: 18px;
+    padding-top: 14px;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
+  .drawer-account[hidden] {
+    display: none;
+  }
+
+  .drawer-logout-btn {
+    width: 100%;
+    min-height: 48px;
+    border: 1px solid rgba(245, 200, 66, 0.45);
+    border-radius: 12px;
+    background: rgba(245, 200, 66, 0.08);
+    color: var(--gold);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+    letter-spacing: 1.6px;
+    text-transform: uppercase;
+    cursor: pointer;
+  }
+
+  .drawer-logout-btn:active {
+    transform: scale(0.98);
+  }
+
   .empty-state {
     border: 1px dashed var(--grey);
     border-radius: 12px;

@@ -227,7 +227,7 @@
           </div>
           <button type="button" class="start-btn page-save-btn" id="save-athlete-profile-btn">SAVE PROFILE</button>
           <button type="button" class="profile-reset-btn" id="clear-test-data-btn">CLEAR LOCAL TEST DATA</button>
-          <button type="button" class="profile-reset-btn logout-btn" id="logout-btn">LOG OUT</button>
+          <button type="button" class="profile-reset-btn logout-btn" data-logout hidden>SIGN OUT</button>
         </div>
       </section>
     </div>
@@ -755,6 +755,10 @@
     </div>
     <div class="drawer-section-label">Training Weeks</div>
     <div class="drawer-week-list" id="drawer-week-list"></div>
+    <div class="drawer-account" id="drawer-account" hidden>
+      <div class="drawer-section-label">Account</div>
+      <button type="button" class="drawer-logout-btn logout-btn" data-logout>Sign Out</button>
+    </div>
   </aside>
 </div>
 

@@ -290,6 +290,7 @@ function renderAllPages() {
   renderSCPage();
   renderMileTestPage();
   syncCoachPreviewChrome();
+  syncSignOutControls();
 }
 function enterAppHome() {
   renderAllPages();
@@ -407,15 +408,25 @@ function toggleAuthMode() {
 }
 async function handleLogout() {
   try {
+    closeWeekDrawer();
     await signOut();
     clearAccountLocalData();
     localStorage.removeItem(AUTH_USER_STORAGE_KEY);
+    syncSignOutControls();
     await refreshCoachPreview();
     renderAllPages();
     showAuthScreen('Signed out.');
   } catch (error) {
     shellHooks?.showToast?.(cleanAuthError(error).toUpperCase());
   }
+}
+function syncSignOutControls() {
+  const signedIn = !!(isSupabaseConfigured && getCurrentUser());
+  document.querySelectorAll('[data-logout]').forEach((btn) => {
+    btn.hidden = !signedIn;
+  });
+  const drawerAccount = document.getElementById('drawer-account');
+  if (drawerAccount) drawerAccount.hidden = !signedIn;
 }
 function handleAuthStateChange(session, event) {
   if (event === 'SIGNED_OUT' && isSupabaseConfigured) showAuthScreen();
@@ -1739,7 +1750,7 @@ function openWorkoutDetail(weekIndex, workoutIndex) {
 function bindShellEvents() {
   document.getElementById('auth-form')?.addEventListener('submit', handleAuthSubmit);
   document.getElementById('auth-mode-toggle-btn')?.addEventListener('click', toggleAuthMode);
-  document.getElementById('logout-btn')?.addEventListener('click', handleLogout);
+  document.querySelectorAll('[data-logout]').forEach((btn) => btn.addEventListener('click', handleLogout));
   document.getElementById('week-prev-btn')?.addEventListener('click', () => { saveWeek(activeWeekIndex - 1); scWeek = activeWeekIndex + 1; renderShell(); renderSCPage(); });
   document.getElementById('week-next-btn')?.addEventListener('click', () => { saveWeek(activeWeekIndex + 1); scWeek = activeWeekIndex + 1; renderShell(); renderSCPage(); });
   document.addEventListener('click', (event) => {
