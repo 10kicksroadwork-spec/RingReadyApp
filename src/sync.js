@@ -271,14 +271,11 @@ export function enqueueMileTestForSync(result, hrInfo, testContext) {
 }
 
 export function buildDailyWorkoutPayload(workoutLog, workoutContext = {}) {
-  const distance = Number(workoutLog.distance) || 0;
-  const totalMinutes = Number(workoutLog.totalMinutes) || 0;
-  const avgBpm = Number(workoutLog.avgBpm) || 0;
-  const maxBpm = Number(workoutLog.maxBpm) || 0;
   const completedAt = workoutLog.completedAt || new Date().toISOString();
+  const isSkip = workoutLog?.status === 'skipped';
 
   return {
-    ...buildBasePayload('daily_workout'),
+    ...buildBasePayload(isSkip ? 'daily_workout_skip' : 'daily_workout'),
     workoutContext: Object.keys(workoutContext).length ? workoutContext : null,
     weekTab: workoutContext.weekTab || '',
     dayOfWeek: workoutContext.dayOfWeek || '',
@@ -287,13 +284,23 @@ export function buildDailyWorkoutPayload(workoutLog, workoutContext = {}) {
     warmup: workoutContext.warmup || '',
     targetZone: workoutContext.targetZone || '',
     targetBPM: Number(workoutContext.targetBPM) || '',
-    workoutLog: {
-      distance,
-      totalMinutes,
-      avgBpm,
-      maxBpm,
-      completedAt,
-    },
+    workoutLog: isSkip
+      ? {
+        status: 'skipped',
+        skipReason: workoutLog.skipReason || '',
+        skipReasonLabel: workoutLog.skipReasonLabel || '',
+        skipDetail: workoutLog.skipDetail || '',
+        coachApproved: !!workoutLog.coachApproved,
+        note: workoutLog.note || '',
+        completedAt,
+      }
+      : {
+        distance: Number(workoutLog.distance) || 0,
+        totalMinutes: Number(workoutLog.totalMinutes) || 0,
+        avgBpm: Number(workoutLog.avgBpm) || 0,
+        maxBpm: Number(workoutLog.maxBpm) || 0,
+        completedAt,
+      },
   };
 }
 

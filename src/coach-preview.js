@@ -524,6 +524,7 @@ function overlaySeriesOntoSession(session, config) {
 function buildAthleteRecord(config) {
   const weeks = campWeeks(config.campLength);
   const missing = new Set(config.missing || []);
+  const skipped = new Set(config.skipped || []);
   const missingProofs = new Set(config.missingProofs || []);
   const flags = config.flags || {};
   const notes = config.sessionNotes || {};
@@ -543,12 +544,19 @@ function buildAthleteRecord(config) {
         ? !isSessionDueYet(config.campStartDate, weekIndex, workout.day)
         : false;
       const isFuture = isFutureWeek || isBeforeStart;
-      const isMissing = !isFuture && missing.has(key);
-      const status = isFuture ? 'upcoming' : isMissing ? 'missing' : 'logged';
-      const proof = isFuture ? 'upcoming' : missingProofs.has(key) ? 'missing' : status === 'logged' ? 'on-file' : 'none';
+      const isSkipped = !isFuture && skipped.has(key);
+      const isMissing = !isFuture && !isSkipped && missing.has(key);
+      const status = isFuture ? 'upcoming' : isSkipped ? 'skipped' : isMissing ? 'missing' : 'logged';
+      const proof = isFuture || isSkipped
+        ? (isFuture ? 'upcoming' : 'none')
+        : missingProofs.has(key)
+          ? 'missing'
+          : status === 'logged'
+            ? 'on-file'
+            : 'none';
       const flag = flags[key] || '';
       if (!isFuture) due += 1;
-      if (status === 'logged') {
+      if (status === 'logged' || status === 'skipped') {
         logged += 1;
         done += 1;
       }
@@ -599,6 +607,8 @@ function buildAthleteRecord(config) {
   if (due - logged > 0) attention.push(`${due - logged} session${due - logged === 1 ? '' : 's'} missing`);
   if (proofGaps > 0) attention.push(`${proofGaps} proof gap${proofGaps === 1 ? '' : 's'}`);
   if (watchCount > 0) attention.push(`${watchCount} HR flag${watchCount === 1 ? '' : 's'}`);
+  const skippedCount = sessions.filter((session) => session.status === 'skipped').length;
+  if (skippedCount > 0) attention.push(`${skippedCount} skipped`);
 
   let tone = 'on-track';
   if (due - logged > 0) tone = 'behind';
@@ -622,6 +632,7 @@ function buildAthleteRecord(config) {
     logged,
     due,
     missingCount: Math.max(0, due - logged),
+    skippedCount,
     proofGaps,
     watchCount,
     attention,
@@ -742,10 +753,11 @@ const MOCK_ATHLETES = [
     maxHr: 181,
     restingHr: 58,
     lastSession: 'Mon · Sprints',
-    missing: ['0:3', '0:4', '1:3'],
+    missing: ['0:4', '1:3'],
+    skipped: ['0:3'],
     missingProofs: ['1:0'],
     sessionNotes: {
-      '0:3': 'Said legs were heavy after sparring.',
+      '0:3': 'Travel day. Gene approved the skip.',
     },
     benchmarks: [
       { weekIndex: 0, distance: 2.70, avgBpm: 140 },
@@ -912,6 +924,14 @@ function formatLastSession(completions) {
   return `${day} · ${latest.type}`;
 }
 
+function isSkippedCloudCompletion(row, record = {}) {
+  const log = record.workoutLog || {};
+  return row?.status === 'skipped'
+    || record.status === 'skipped'
+    || record.type === 'daily-workout-skip'
+    || log.status === 'skipped';
+}
+
 function liveAthleteConfig(profile, hrRow, completions, sprints, note, email = '', campStartDate = '') {
   const campLength = Number(profile.camp_length) === 4 ? 4 : 7;
   const weeks = campWeeks(campLength);
@@ -927,6 +947,7 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, note, email = '
     campStartDate
   );
   const missing = [];
+  const skipped = [];
   const missingProofs = [];
   const flags = {};
   const avgs = {};
@@ -936,6 +957,7 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, note, email = '
   const watts = {};
   const modalities = {};
   const drops = {};
+  const sessionNotes = {};
   const sprintPoints = [];
 
   weeks.forEach((week, weekIndex) => {
@@ -948,8 +970,16 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, note, email = '
         missing.push(key);
         return;
       }
-      if (!row.attachment_id) missingProofs.push(key);
       const record = row.record_json && typeof row.record_json === 'object' ? row.record_json : {};
+      if (isSkippedCloudCompletion(row, record)) {
+        skipped.push(key);
+        const log = record.workoutLog || {};
+        const skipNote = String(log.skipDetail || log.note || record.note || '').trim();
+        const reason = String(log.skipReasonLabel || log.skipReason || '').trim();
+        sessionNotes[key] = skipNote || (reason ? `Skipped · ${reason}` : 'Coach-approved skip.');
+        return;
+      }
+      if (!row.attachment_id) missingProofs.push(key);
       const log = record.workoutLog || {};
       const output = readOutputFromWorkoutLog({
         modality: log.modality,
@@ -998,6 +1028,7 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, note, email = '
     restingHr: hrRow?.resting_hr ?? null,
     lastSession: formatLastSession(completions),
     missing,
+    skipped,
     missingProofs,
     flags,
     avgs,
@@ -1007,6 +1038,7 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, note, email = '
     watts,
     modalities,
     drops,
+    sessionNotes,
     sprints: sprintPoints,
     coachNote: note || '',
   };
@@ -1102,6 +1134,7 @@ function toneCopy(tone) {
 function statusCopy(status) {
   if (status === 'missing') return 'Missing';
   if (status === 'upcoming') return 'Upcoming';
+  if (status === 'skipped') return 'Skipped';
   return 'Logged';
 }
 
@@ -1306,6 +1339,9 @@ function renderMetricCards(athlete) {
 }
 
 function sessionDetail(session) {
+  if (session.status === 'skipped') {
+    return session.note || 'Coach-approved skip. No workout proof required.';
+  }
   if (session.flag) return session.flag;
   if (session.note) return session.note;
   if (session.proof === 'missing') return 'Logged, but workout proof is missing.';
@@ -1366,6 +1402,7 @@ function renderAthlete() {
   selectedAthleteId = athlete.id;
   const note = athleteNote(athlete);
   const missed = athlete.sessions.filter((session) => session.status === 'missing');
+  const skipped = athlete.sessions.filter((session) => session.status === 'skipped');
 
   setText('coach-athlete-kicker', `Week ${athlete.currentWeekIndex + 1} · ${athlete.campLength} week camp`);
   setText('coach-athlete-name', athlete.name);
@@ -1406,6 +1443,14 @@ function renderAthlete() {
     missedRoot.hidden = missed.length === 0;
     missedRoot.innerHTML = missed.length
       ? `<div class="info-kicker">Missed workouts</div><div class="coach-session-list">${renderSessionRows(missed)}</div>`
+      : '';
+  }
+
+  const skippedRoot = document.getElementById('coach-athlete-skipped');
+  if (skippedRoot) {
+    skippedRoot.hidden = skipped.length === 0;
+    skippedRoot.innerHTML = skipped.length
+      ? `<div class="info-kicker">Skipped workouts</div><div class="coach-session-list">${renderSessionRows(skipped)}</div>`
       : '';
   }
 

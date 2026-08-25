@@ -765,10 +765,42 @@ function buildWorkoutContext(week, workout, weekIndex, workoutIndex) {
 }
 function makeWorkoutCompletionId() { return window.crypto && typeof window.crypto.randomUUID === 'function' ? window.crypto.randomUUID() : `workout-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`; }
 function hasSessionResults(completion) { return Array.isArray(completion?.data) && completion.data.length > 0; }
+function isSkippedCompletion(completion) {
+  if (!completion) return false;
+  return completion.status === 'skipped'
+    || completion.workoutLog?.status === 'skipped'
+    || completion.type === 'daily-workout-skip';
+}
 function buildBasicWorkoutCompletion(week, workout, weekIndex, workoutIndex, workoutLog = null) {
   const context = buildWorkoutContext(week, workout, weekIndex, workoutIndex);
   const note = sanitizeWorkoutNote(workoutLog?.note || getStoredWorkoutNote(weekIndex, workoutIndex));
-  return { id: makeWorkoutCompletionId(), date: new Date().toISOString(), type: 'daily-workout-completion', cfg: { workoutContext: context }, workoutContext: context, workoutLog, note, data: [], avgDrop: null, peakHR: workoutLog ? workoutLog.maxBpm : null };
+  return { id: makeWorkoutCompletionId(), date: new Date().toISOString(), type: 'daily-workout-completion', status: 'completed', cfg: { workoutContext: context }, workoutContext: context, workoutLog, note, data: [], avgDrop: null, peakHR: workoutLog ? workoutLog.maxBpm : null };
+}
+function buildSkippedWorkoutCompletion(week, workout, weekIndex, workoutIndex, skipMeta) {
+  const context = buildWorkoutContext(week, workout, weekIndex, workoutIndex);
+  const detail = sanitizeWorkoutNote(skipMeta.detail || '');
+  const note = detail || `Skipped: ${skipMeta.reasonLabel}`;
+  return {
+    id: makeWorkoutCompletionId(),
+    date: new Date().toISOString(),
+    type: 'daily-workout-skip',
+    status: 'skipped',
+    cfg: { workoutContext: context },
+    workoutContext: context,
+    workoutLog: {
+      status: 'skipped',
+      skipReason: skipMeta.reason,
+      skipReasonLabel: skipMeta.reasonLabel,
+      skipDetail: detail,
+      coachApproved: true,
+      note,
+      completedAt: new Date().toISOString(),
+    },
+    note,
+    data: [],
+    avgDrop: null,
+    peakHR: null,
+  };
 }
 function getWorkoutNoteKey(weekIndex, workoutIndex) {
   return `${Number(weekIndex)}:${Number(workoutIndex)}`;
@@ -983,11 +1015,15 @@ function updateDetailCompletionState() {
   const action = document.getElementById('detail-action-btn');
   if (!action || action.dataset.action !== 'complete-workout') return;
   const completion = getWorkoutCompletion(action.dataset.weekIndex, action.dataset.workoutIndex);
+  if (isSkippedCompletion(completion) || action.hidden) return;
   action.textContent = completion ? 'SAVE CHANGES' : 'COMPLETE WORKOUT';
   action.disabled = !readDetailWorkoutLog({ silent: true }) || !hasWorkoutProof('detail');
   action.classList.toggle('completed', false);
   const clearBtn = document.getElementById('detail-clear-completion-btn');
-  if (clearBtn) clearBtn.hidden = !completion;
+  if (clearBtn) {
+    clearBtn.hidden = !completion;
+    clearBtn.textContent = 'Clear Log';
+  }
 }
 function normalizeDetailDurationInput() {
   const input = document.getElementById('detail-total-minutes-input');
@@ -1093,16 +1129,87 @@ async function clearCompletionFromDetail(weekIndex, workoutIndex) {
   const safeWeekIndex = Number(weekIndex);
   const safeWorkoutIndex = Number(workoutIndex);
   if (!Number.isFinite(safeWeekIndex) || !Number.isFinite(safeWorkoutIndex)) return;
-  if (!window.confirm('Mark this workout incomplete on this device?')) return;
   const existing = getWorkoutCompletion(safeWeekIndex, safeWorkoutIndex);
+  const label = isSkippedCompletion(existing) ? 'Clear this skipped workout on this device?' : 'Mark this workout incomplete on this device?';
+  if (!window.confirm(label)) return;
   const removed = removeWorkoutCompletion(safeWeekIndex, safeWorkoutIndex);
   if (!removed) { shellHooks?.showToast?.('NO COMPLETION TO CLEAR'); return; }
   await deleteWorkoutCompletionFromCloud(safeWeekIndex, safeWorkoutIndex);
   markWorkoutProofCleared(existing?.attachment?.id, true).catch((error) => console.warn('Could not mark proof cleared', error));
+  setDetailSkipCard(false);
   renderShell();
   renderAthleteProfileDashboard();
   openWorkoutDetail(safeWeekIndex, safeWorkoutIndex);
-  shellHooks?.showToast?.('WORKOUT MARKED INCOMPLETE');
+  shellHooks?.showToast?.(isSkippedCompletion(existing) ? 'SKIP CLEARED' : 'WORKOUT MARKED INCOMPLETE');
+}
+
+const SKIP_REASON_LABELS = {
+  injury: 'Injury / recovery',
+  travel: 'Travel',
+  coach_call: 'Coach call',
+  other: 'Other',
+};
+
+function setDetailSkipCard(isVisible) {
+  const card = document.getElementById('detail-skip-card');
+  if (!card) return;
+  card.hidden = !isVisible;
+  if (!isVisible) return;
+  const reason = document.getElementById('detail-skip-reason-select');
+  const detail = document.getElementById('detail-skip-reason-detail');
+  const approved = document.getElementById('detail-skip-approved-check');
+  if (reason) reason.value = '';
+  if (detail) detail.value = '';
+  if (approved) approved.checked = false;
+}
+
+function openDetailSkipCard() {
+  setDetailSkipCard(true);
+  document.getElementById('detail-skip-card')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+async function confirmSkipWorkoutFromDetail() {
+  const action = document.getElementById('detail-action-btn');
+  const weekIndex = Number(action?.dataset.weekIndex);
+  const workoutIndex = Number(action?.dataset.workoutIndex);
+  if (!Number.isFinite(weekIndex) || !Number.isFinite(workoutIndex)) return;
+
+  const reason = readInputValue('detail-skip-reason-select');
+  const detail = sanitizeWorkoutNote(readInputValue('detail-skip-reason-detail'));
+  const approved = !!document.getElementById('detail-skip-approved-check')?.checked;
+  if (!reason) {
+    shellHooks?.showToast?.('PICK A SKIP REASON');
+    return;
+  }
+  if (!approved) {
+    shellHooks?.showToast?.('CONFIRM COACH APPROVAL FIRST');
+    return;
+  }
+
+  const week = getWeek(weekIndex);
+  const workout = week.workouts[workoutIndex] || week.workouts[0];
+  const existing = getWorkoutCompletion(weekIndex, workoutIndex);
+  const record = buildSkippedWorkoutCompletion(week, workout, weekIndex, workoutIndex, {
+    reason,
+    reasonLabel: SKIP_REASON_LABELS[reason] || reason,
+    detail,
+  });
+  if (existing?.id) record.id = existing.id;
+
+  const completed = saveWorkoutCompletion(record);
+  let cloudSaved = false;
+  if (completed) cloudSaved = await saveWorkoutCompletionToCloud(completed);
+  if (completed) {
+    enqueueDailyWorkoutForSync(record.workoutLog, record.workoutContext);
+    flushQueuedEvent('SKIP SYNCED');
+  }
+  setDetailSkipCard(false);
+  renderShell();
+  renderAthleteProfileDashboard();
+  openWorkoutDetail(weekIndex, workoutIndex);
+  if (!completed) shellHooks?.showToast?.('COULD NOT SAVE SKIP');
+  else if (cloudSaved) shellHooks?.showToast?.('WORKOUT SKIPPED IN ACCOUNT');
+  else shellHooks?.showToast?.('WORKOUT SKIPPED');
 }
 function renderHeaderProfile() {
   const chip = document.getElementById('header-athlete-name');
@@ -1139,7 +1246,10 @@ function renderAthleteProfileDashboard() {
   const totalWorkouts = slots.length;
   const completedWorkouts = completions.length;
   const completionPct = totalWorkouts ? Math.round((completedWorkouts / totalWorkouts) * 100) : 0;
-  const dailyLogs = completions.map((row) => ({ ...row, log: row.completion.workoutLog || null })).filter((row) => row.log).sort((a, b) => getRecordDate(b.completion) - getRecordDate(a.completion));
+  const dailyLogs = completions
+    .map((row) => ({ ...row, log: row.completion.workoutLog || null }))
+    .filter((row) => row.log && !isSkippedCompletion(row.completion))
+    .sort((a, b) => getRecordDate(b.completion) - getRecordDate(a.completion));
   const latestRun = dailyLogs[0] || null;
   const totalMiles = dailyLogs.reduce((sum, row) => sum + (Number(row.log.distance) || 0), 0);
   const totalMinutes = dailyLogs.reduce((sum, row) => sum + (Number(row.log.totalMinutes) || 0), 0);
@@ -1277,6 +1387,7 @@ function workoutTag(workout) {
   return 'Run';
 }
 function getActionCopy(workout, completion = null) {
+  if (isSkippedCompletion(completion)) return 'SKIPPED';
   if (completion) return hasSessionResults(completion) ? 'RESULTS' : 'EDIT';
   if (workout.action === 'sprint') return 'OPEN TIMER';
   if (workout.action === 'mile-test') return 'OPEN MILE TEST';
@@ -1315,9 +1426,12 @@ function renderShell() {
   if (!root) return;
   root.innerHTML = week.workouts.map((workout, index) => {
     const completion = getWorkoutCompletion(activeWeekIndex, index);
+    const skipped = isSkippedCompletion(completion);
     const targetBPM = getWorkoutTargetBPM(workout);
     const targetCopy = isSprintWorkout(workout) ? 'All out' : (targetBPM ? `${targetBPM} bpm` : '--');
-    return `<button type="button" class="week-workout-card ${completion ? 'completed' : ''}" data-week-index="${activeWeekIndex}" data-workout-index="${index}"><div><div class="field-label week-card-day">${escapeHTML(workout.day)}</div><div class="week-card-title">${escapeHTML(workout.type)}</div><div class="week-card-desc">${escapeHTML(workout.description)}</div></div><div class="week-card-side"><div class="workout-tag">${escapeHTML(completion ? 'Done' : workoutTag(workout))}</div><div class="workout-target">${targetCopy}</div><div class="workout-action">${escapeHTML(getActionCopy(workout, completion))}</div></div></button>`;
+    const cardState = skipped ? 'skipped' : (completion ? 'completed' : '');
+    const tag = skipped ? 'Skipped' : (completion ? 'Done' : workoutTag(workout));
+    return `<button type="button" class="week-workout-card ${cardState}" data-week-index="${activeWeekIndex}" data-workout-index="${index}"><div><div class="field-label week-card-day">${escapeHTML(workout.day)}</div><div class="week-card-title">${escapeHTML(workout.type)}</div><div class="week-card-desc">${escapeHTML(workout.description)}</div></div><div class="week-card-side"><div class="workout-tag">${escapeHTML(tag)}</div><div class="workout-target">${targetCopy}</div><div class="workout-action">${escapeHTML(getActionCopy(workout, completion))}</div></div></button>`;
   }).join('');
   renderDrawerWeeks();
 }
@@ -1534,6 +1648,7 @@ function openWorkoutDetail(weekIndex, workoutIndex) {
   const week = getWeek(safeWeekIndex);
   const workout = week.workouts[safeWorkoutIndex] || week.workouts[0];
   const completion = getWorkoutCompletion(safeWeekIndex, safeWorkoutIndex);
+  const skipped = isSkippedCompletion(completion);
   setText('detail-week', `${week.label} / ${workout.day}`);
   setText('detail-title', workout.type);
   setText('detail-desc', workout.description);
@@ -1545,9 +1660,9 @@ function openWorkoutDetail(weekIndex, workoutIndex) {
   renderDetailExpectedAvg(workout);
   syncDetailSprintLayout(workout);
   const baseActionType = ['sprint', 'mile-test'].includes(workout.action) ? workout.action : 'complete-workout';
-  const actionType = completion && hasSessionResults(completion) ? 'view-results' : baseActionType;
-  setDetailWorkoutLog(baseActionType === 'complete-workout', completion, workout);
-  if (baseActionType === 'complete-workout') {
+  const actionType = !skipped && completion && hasSessionResults(completion) ? 'view-results' : baseActionType;
+  setDetailWorkoutLog(baseActionType === 'complete-workout' && !skipped, skipped ? null : completion, workout);
+  if (baseActionType === 'complete-workout' && !skipped) {
     const proofContext = { ...buildWorkoutContext(week, workout, safeWeekIndex, safeWorkoutIndex), campLength: Number(getAthleteProfile().campLength) || 7 };
     initWorkoutProof('detail', {
       proofKey: buildProgramProofKey(proofContext.campLength, safeWeekIndex, safeWorkoutIndex),
@@ -1556,25 +1671,65 @@ function openWorkoutDetail(weekIndex, workoutIndex) {
       legacy: !!(completion && !completion.proofPolicyVersion),
     });
   }
+  const proofHost = document.querySelector('[data-proof-host="detail"]');
+  if (proofHost) proofHost.hidden = skipped || baseActionType !== 'complete-workout';
   setDetailWorkoutNote(completion, safeWeekIndex, safeWorkoutIndex);
+  setDetailSkipCard(false);
+
+  const skippedCard = document.getElementById('detail-skipped-card');
+  if (skippedCard) {
+    skippedCard.hidden = !skipped;
+    if (skipped) {
+      const reasonEl = document.getElementById('detail-skipped-reason');
+      const detailEl = document.getElementById('detail-skipped-detail');
+      const reasonLabel = String(completion?.workoutLog?.skipReasonLabel || completion?.skipReasonLabel || '').trim();
+      const reasonCode = String(completion?.workoutLog?.skipReason || completion?.skipReason || '').trim();
+      const detail = String(completion?.workoutLog?.skipDetail || completion?.skipDetail || '').trim();
+      if (reasonEl) reasonEl.textContent = reasonLabel || SKIP_REASON_LABELS[reasonCode] || 'Coach-approved skip.';
+      if (detailEl) {
+        detailEl.hidden = !detail;
+        detailEl.textContent = detail;
+      }
+    }
+  }
+
+  const noteCard = document.getElementById('detail-note-card');
+  if (noteCard) noteCard.hidden = skipped;
+
   const action = document.getElementById('detail-action-btn');
   if (action) {
-    const isCompleted = !!completion;
+    const isCompleted = !!completion && !skipped;
     const isLoggedWorkout = baseActionType === 'complete-workout';
+    action.hidden = skipped;
     action.textContent = actionType === 'view-results'
       ? 'VIEW RESULTS'
       : isLoggedWorkout
         ? (isCompleted ? 'SAVE CHANGES' : 'COMPLETE WORKOUT')
         : (isCompleted ? 'WORKOUT COMPLETE' : getActionCopy(workout));
-    action.disabled = actionType === 'view-results' ? false : isLoggedWorkout ? (!readDetailWorkoutLog({ silent: true }) || !hasWorkoutProof('detail')) : isCompleted;
+    action.disabled = skipped
+      ? true
+      : actionType === 'view-results'
+        ? false
+        : isLoggedWorkout
+          ? (!readDetailWorkoutLog({ silent: true }) || !hasWorkoutProof('detail'))
+          : isCompleted;
     action.classList.toggle('completed', isCompleted && !isLoggedWorkout && actionType !== 'view-results');
     action.dataset.action = actionType;
     action.dataset.weekIndex = String(safeWeekIndex);
     action.dataset.workoutIndex = String(safeWorkoutIndex);
   }
+
+  const skipBtn = document.getElementById('detail-skip-workout-btn');
+  if (skipBtn) {
+    skipBtn.hidden = !!completion;
+    skipBtn.dataset.weekIndex = String(safeWeekIndex);
+    skipBtn.dataset.workoutIndex = String(safeWorkoutIndex);
+  }
+
   const clearBtn = document.getElementById('detail-clear-completion-btn');
   if (clearBtn) {
-    clearBtn.hidden = !(baseActionType === 'complete-workout' && completion);
+    clearBtn.hidden = !(completion && (skipped || baseActionType === 'complete-workout'));
+    clearBtn.textContent = skipped ? 'Clear Skip' : 'Clear Log';
     clearBtn.dataset.weekIndex = String(safeWeekIndex);
     clearBtn.dataset.workoutIndex = String(safeWorkoutIndex);
   }
@@ -1619,6 +1774,9 @@ function bindShellEvents() {
   document.getElementById('detail-save-note-btn')?.addEventListener('click', saveWorkoutNoteFromDetail);
   document.getElementById('detail-total-minutes-input')?.addEventListener('blur', normalizeDetailDurationInput);
   document.getElementById('detail-clear-completion-btn')?.addEventListener('click', (event) => clearCompletionFromDetail(event.currentTarget.dataset.weekIndex, event.currentTarget.dataset.workoutIndex));
+  document.getElementById('detail-skip-workout-btn')?.addEventListener('click', openDetailSkipCard);
+  document.getElementById('detail-skip-cancel-btn')?.addEventListener('click', () => setDetailSkipCard(false));
+  document.getElementById('detail-skip-confirm-btn')?.addEventListener('click', confirmSkipWorkoutFromDetail);
   document.getElementById('detail-action-btn')?.addEventListener('click', (event) => {
     if (event.currentTarget.dataset.action === 'view-results') {
       const completion = getWorkoutCompletion(event.currentTarget.dataset.weekIndex, event.currentTarget.dataset.workoutIndex);

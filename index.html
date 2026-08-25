@@ -460,6 +460,7 @@
       <section class="page-panel coach-drill-panel" id="coach-athlete-drill" hidden></section>
       <section class="page-panel coach-attention-panel" id="coach-athlete-attention" hidden></section>
       <section class="page-panel" id="coach-athlete-missed" hidden></section>
+      <section class="page-panel" id="coach-athlete-skipped" hidden></section>
       <section class="page-panel">
         <div class="info-kicker">Camp start</div>
         <p class="coach-note-copy">Missing flags only count once each workout day arrives on the calendar. Set this to the date they actually begin roadwork.</p>
@@ -626,10 +627,42 @@
         </div>
       </section>
 
+      <section class="detail-card detail-skipped-card" id="detail-skipped-card" hidden>
+        <div class="field-label">Skipped</div>
+        <p class="detail-skipped-reason" id="detail-skipped-reason">Coach-approved skip.</p>
+        <p class="detail-skipped-detail" id="detail-skipped-detail" hidden></p>
+      </section>
       <div class="detail-actions">
         <button type="button" class="start-btn" id="detail-action-btn">OPEN SPRINT TIMER</button>
+        <button type="button" class="secondary-danger-btn" id="detail-skip-workout-btn" hidden>SKIP WORKOUT</button>
         <button type="button" class="secondary-danger-btn" id="detail-clear-completion-btn" hidden>CLEAR COMPLETION</button>
       </div>
+      <section class="detail-card detail-skip-card" id="detail-skip-card" hidden>
+        <div class="field-label">Skip Workout</div>
+        <p class="detail-skip-warning">Only skip if Gene or Daniel already approved this verbally. Skipped workouts stay on your camp record but will not count as missing.</p>
+        <label class="app-input-wrap" for="detail-skip-reason-select">
+          <span>Reason</span>
+          <select id="detail-skip-reason-select">
+            <option value="">Select</option>
+            <option value="injury">Injury / recovery</option>
+            <option value="travel">Travel</option>
+            <option value="coach_call">Coach call</option>
+            <option value="other">Other</option>
+          </select>
+        </label>
+        <label class="app-input-wrap" for="detail-skip-reason-detail">
+          <span>Details (optional)</span>
+          <input type="text" id="detail-skip-reason-detail" maxlength="120" placeholder="Short note for coaches">
+        </label>
+        <label class="detail-skip-confirm" for="detail-skip-approved-check">
+          <input type="checkbox" id="detail-skip-approved-check">
+          <span>I got verbal approval from Gene or Daniel before skipping.</span>
+        </label>
+        <div class="detail-skip-actions">
+          <button type="button" class="start-btn" id="detail-skip-confirm-btn">CONFIRM SKIP</button>
+          <button type="button" class="secondary-danger-btn" id="detail-skip-cancel-btn">CANCEL</button>
+        </div>
+      </section>
     </div>
   </div>
   <!-- SESSION -->

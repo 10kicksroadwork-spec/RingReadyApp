@@ -624,6 +624,54 @@
   }
 
   .secondary-danger-btn[hidden] { display: none; }
+  .detail-skip-card[hidden],
+  .detail-skipped-card[hidden] { display: none; }
+  .detail-skipped-card {
+    border-color: rgba(240, 210, 122, 0.45);
+  }
+  .detail-skipped-reason {
+    margin: 0;
+    color: #f0d27a;
+    font-size: 14px;
+    line-height: 1.4;
+  }
+  .detail-skipped-detail {
+    margin: 8px 0 0;
+    color: rgba(255, 255, 255, 0.72);
+    font-size: 13px;
+    line-height: 1.4;
+  }
+  .detail-skip-warning {
+    margin: 0 0 12px;
+    color: #f0d27a;
+    font-size: 13px;
+    line-height: 1.4;
+  }
+  .detail-skip-confirm {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    margin: 12px 0;
+    color: var(--white);
+    font-size: 13px;
+    line-height: 1.35;
+  }
+  .detail-skip-confirm input {
+    margin-top: 2px;
+  }
+  .detail-skip-actions {
+    display: grid;
+    gap: 8px;
+  }
+  .week-workout-card.skipped {
+    border-color: rgba(240, 210, 122, 0.55);
+  }
+  .week-workout-card.skipped .week-card-day,
+  .week-workout-card.skipped .workout-action { color: #f0d27a; }
+  .week-workout-card.skipped .workout-tag { background: #f0d27a; color: var(--black); }
+  .coach-session-row.is-skipped em {
+    color: #f0d27a;
+  }
   .secondary-danger-btn:active,
   .profile-reset-btn:active { border-color: #ff9a9a; }
 
