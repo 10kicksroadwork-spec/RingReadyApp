@@ -143,6 +143,7 @@ function mapCloudWorkoutCompletion(row) {
     id: record.id || row.id,
     completionKey: row.completion_key || record.completionKey || getCompletionKeyFromRecord({ ...record, workoutContext: nextContext }),
     completedAt: row.completed_at || record.completedAt || row.updated_at || row.created_at,
+    updatedAt: row.updated_at || row.completed_at || record.completedAt || row.created_at,
     workoutContext: record.workoutContext || nextContext,
     cfg: record.cfg || { workoutContext: nextContext },
     workoutLog,
@@ -485,15 +486,29 @@ export async function saveCloudWorkoutCompletion(record) {
 export async function deleteCloudWorkoutCompletion(weekIndex, workoutIndex) {
   const user = getCurrentUser();
   if (!isSupabaseConfigured || !supabase || !user) return false;
-  const completionKey = `${Number(weekIndex)}:${Number(workoutIndex)}`;
+  const week = Number(weekIndex);
+  const workout = Number(workoutIndex);
+  const completionKey = `${week}:${workout}`;
 
-  const { error } = await supabase
+  // Prefer key delete, then fall back to week/workout columns in case older rows
+  // were saved with a mismatched completion_key.
+  const { data: byKey, error: keyError } = await supabase
     .from('workout_completions')
     .delete()
     .eq('user_id', user.id)
-    .eq('completion_key', completionKey);
+    .eq('completion_key', completionKey)
+    .select('completion_key');
+  if (keyError) throw keyError;
 
-  if (error) throw error;
+  const { data: byIndex, error: indexError } = await supabase
+    .from('workout_completions')
+    .delete()
+    .eq('user_id', user.id)
+    .eq('week_index', week)
+    .eq('workout_index', workout)
+    .select('completion_key');
+  if (indexError) throw indexError;
+
   return true;
 }
 

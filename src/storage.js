@@ -2,6 +2,7 @@ import { STORAGE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY } from './constants.js';
 import { calculateAvgDrop, calculatePeakHR } from './workout.js';
 
 const MAX_STORED_SESSIONS = 50;
+const CLEARED_COMPLETIONS_KEY = 'ringReadyClearedWorkoutCompletions';
 
 function makeLocalId() {
   if (window.crypto && typeof window.crypto.randomUUID === 'function') {
@@ -91,6 +92,44 @@ export function getWorkoutCompletion(weekIndex, workoutIndex) {
   return getWorkoutCompletions()[key] || null;
 }
 
+export function getClearedWorkoutCompletions() {
+  return readJSON(CLEARED_COMPLETIONS_KEY, {});
+}
+
+export function isWorkoutCompletionCleared(weekIndexOrKey, workoutIndex, cloudUpdatedAt = '') {
+  const key = typeof weekIndexOrKey === 'string' && String(weekIndexOrKey).includes(':')
+    ? String(weekIndexOrKey)
+    : getWorkoutCompletionKey(weekIndexOrKey, workoutIndex);
+  if (!key) return false;
+  const cleared = getClearedWorkoutCompletions()[key];
+  if (!cleared) return false;
+  if (!cloudUpdatedAt) return true;
+  const clearedTime = new Date(cleared).getTime();
+  const compareTime = new Date(cloudUpdatedAt).getTime();
+  if (!Number.isFinite(clearedTime)) return true;
+  if (!Number.isFinite(compareTime)) return true;
+  return clearedTime >= compareTime;
+}
+
+export function markWorkoutCompletionCleared(weekIndex, workoutIndex) {
+  const key = getWorkoutCompletionKey(weekIndex, workoutIndex);
+  if (!key) return '';
+  const cleared = getClearedWorkoutCompletions();
+  const stamp = new Date().toISOString();
+  cleared[key] = stamp;
+  writeJSON(CLEARED_COMPLETIONS_KEY, cleared);
+  return stamp;
+}
+
+export function clearWorkoutCompletionClearedMarker(weekIndex, workoutIndex) {
+  const key = getWorkoutCompletionKey(weekIndex, workoutIndex);
+  if (!key) return;
+  const cleared = getClearedWorkoutCompletions();
+  if (!(key in cleared)) return;
+  delete cleared[key];
+  writeJSON(CLEARED_COMPLETIONS_KEY, cleared);
+}
+
 export function saveWorkoutCompletion(record) {
   const key = getCompletionKeyFromRecord(record);
   if (!key) return null;
@@ -103,6 +142,8 @@ export function saveWorkoutCompletion(record) {
   };
   completions[key] = completed;
   writeJSON(WORKOUT_COMPLETIONS_STORAGE_KEY, completions);
+  const context = record?.workoutContext || record?.cfg?.workoutContext || {};
+  clearWorkoutCompletionClearedMarker(context.weekIndex, context.workoutIndex);
   return completed;
 }
 

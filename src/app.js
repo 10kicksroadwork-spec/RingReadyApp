@@ -825,7 +825,7 @@ export function clearResultWorkoutCompletion() {
     return;
   }
 
-  if (!window.confirm('Mark this workout incomplete on this device?')) return;
+  if (!window.confirm('Clear this workout from this device and your account?')) return;
 
   const attachmentId = activeResultRecord?.attachment?.id;
   const removed = removeWorkoutCompletion(context.weekIndex, context.workoutIndex);

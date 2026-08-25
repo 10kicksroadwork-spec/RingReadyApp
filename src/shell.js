@@ -36,7 +36,7 @@ import {
   getAthleteProfile,
   saveAthleteProfile,
 } from './sync.js';
-import { getWorkoutCompletion, removeWorkoutCompletion, saveWorkoutCompletion } from './storage.js';
+import { getWorkoutCompletion, isWorkoutCompletionCleared, markWorkoutCompletionCleared, removeWorkoutCompletion, saveWorkoutCompletion } from './storage.js';
 import { sanitizeDurationInput } from './workout.js';
 import {
   buildWorkoutLogModalityFields,
@@ -198,10 +198,10 @@ function getCloudTimestamp(record) {
   return Number.isNaN(date.getTime()) ? 0 : date.getTime();
 }
 function clearAccountLocalData() {
-  [PROFILE_STORAGE_KEY, STORAGE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY, HR_INFO_STORAGE_KEY, MILE_TEST_STORAGE_KEY, PROFILE_FORM_COLLAPSED_KEY, PROGRAM_GUIDE_COLLAPSED_KEY, WORKOUT_NOTES_STORAGE_KEY, CAMP_RESET_SEEN_KEY].forEach((key) => localStorage.removeItem(key));
+  [PROFILE_STORAGE_KEY, STORAGE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY, HR_INFO_STORAGE_KEY, MILE_TEST_STORAGE_KEY, PROFILE_FORM_COLLAPSED_KEY, PROGRAM_GUIDE_COLLAPSED_KEY, WORKOUT_NOTES_STORAGE_KEY, CAMP_RESET_SEEN_KEY, 'ringReadyClearedWorkoutCompletions'].forEach((key) => localStorage.removeItem(key));
 }
 function clearLocalTrainingData({ markResetAt = '' } = {}) {
-  [STORAGE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY, MILE_TEST_STORAGE_KEY, WORKOUT_NOTES_STORAGE_KEY, SYNC_QUEUE_KEY, WEEK_INDEX_KEY, SC_WEEK_STORAGE_KEY].forEach((key) => localStorage.removeItem(key));
+  [STORAGE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY, MILE_TEST_STORAGE_KEY, WORKOUT_NOTES_STORAGE_KEY, SYNC_QUEUE_KEY, WEEK_INDEX_KEY, SC_WEEK_STORAGE_KEY, 'ringReadyClearedWorkoutCompletions'].forEach((key) => localStorage.removeItem(key));
   activeWeekIndex = 0;
   scWeek = 1;
   saveWeek(0);
@@ -225,10 +225,31 @@ function prepareCoachSession() {
 function mergeWorkoutCompletions(localCompletions = {}, cloudCompletions = {}) {
   const merged = { ...localCompletions };
   Object.entries(cloudCompletions || {}).forEach(([key, cloudRecord]) => {
+    const cloudStamp = cloudRecord?.updatedAt || cloudRecord?.completedAt || cloudRecord?.updated_at || cloudRecord?.date || '';
+    if (isWorkoutCompletionCleared(key, null, cloudStamp)) {
+      delete merged[key];
+      return;
+    }
     const localRecord = merged[key];
     if (!localRecord || getCloudTimestamp(cloudRecord) >= getCloudTimestamp(localRecord)) merged[key] = cloudRecord;
   });
+  Object.keys(merged).forEach((key) => {
+    if (isWorkoutCompletionCleared(key)) delete merged[key];
+  });
   return merged;
+}
+function completionsNeedingCloudBackfill(localCompletions = {}, cloudCompletions = {}) {
+  const out = {};
+  Object.entries(localCompletions || {}).forEach(([key, record]) => {
+    if (!record || isWorkoutCompletionCleared(key)) return;
+    const cloud = cloudCompletions?.[key];
+    if (!cloud) {
+      out[key] = record;
+      return;
+    }
+    if (getCloudTimestamp(record) > getCloudTimestamp(cloud)) out[key] = record;
+  });
+  return out;
 }
 function mergeSprintSessions(localSessions = [], cloudSessions = []) {
   const byId = new Map();
@@ -387,7 +408,27 @@ async function hydrateCloudData() {
   if (latestMileTest) writeJSON(MILE_TEST_STORAGE_KEY, latestMileTest);
   else localStorage.removeItem(MILE_TEST_STORAGE_KEY);
 
-  await saveTrainingDataToCloud({ completions: mergedCompletions, sessions: mergedSessions, mileTest: latestMileTest });
+  // Re-attempt cloud deletes for workouts cleared on this device that still exist remotely.
+  const staleCloudClears = Object.keys(cloudCompletions || {}).filter((key) => {
+    const cloudStamp = cloudCompletions[key]?.updatedAt || cloudCompletions[key]?.completedAt || '';
+    return isWorkoutCompletionCleared(key, null, cloudStamp);
+  });
+  if (staleCloudClears.length) {
+    await Promise.allSettled(staleCloudClears.map((key) => {
+      const [weekIndex, workoutIndex] = key.split(':').map(Number);
+      return deleteCloudWorkoutCompletion(weekIndex, workoutIndex);
+    }));
+  }
+
+  const backfillCompletions = completionsNeedingCloudBackfill(mergedCompletions, cloudCompletions);
+  await saveTrainingDataToCloud({
+    completions: backfillCompletions,
+    sessions: mergedSessions.filter((session) => {
+      const id = String(session?.id || '');
+      return id && !(cloudSessions || []).some((row) => String(row?.id || '') === id);
+    }),
+    mileTest: cloudMileTest ? null : latestMileTest,
+  });
 }
 async function handleAuthSubmit(event) {
   event.preventDefault();
@@ -1164,17 +1205,26 @@ async function clearCompletionFromDetail(weekIndex, workoutIndex) {
   const safeWorkoutIndex = Number(workoutIndex);
   if (!Number.isFinite(safeWeekIndex) || !Number.isFinite(safeWorkoutIndex)) return;
   const existing = getWorkoutCompletion(safeWeekIndex, safeWorkoutIndex);
-  const label = isSkippedCompletion(existing) ? 'Clear this skipped workout on this device?' : 'Mark this workout incomplete on this device?';
+  const label = isSkippedCompletion(existing)
+    ? 'Clear this skipped workout from this device and your account?'
+    : 'Clear this workout log from this device and your account?';
   if (!window.confirm(label)) return;
+
+  markWorkoutCompletionCleared(safeWeekIndex, safeWorkoutIndex);
   const removed = removeWorkoutCompletion(safeWeekIndex, safeWorkoutIndex);
   if (!removed) { shellHooks?.showToast?.('NO COMPLETION TO CLEAR'); return; }
-  await deleteWorkoutCompletionFromCloud(safeWeekIndex, safeWorkoutIndex);
+
+  let cloudCleared = true;
+  if (isSupabaseConfigured && getCurrentUser()) {
+    cloudCleared = await deleteWorkoutCompletionFromCloud(safeWeekIndex, safeWorkoutIndex);
+  }
   markWorkoutProofCleared(existing?.attachment?.id, true).catch((error) => console.warn('Could not mark proof cleared', error));
   setDetailSkipCard(false);
   renderShell();
   renderAthleteProfileDashboard();
   openWorkoutDetail(safeWeekIndex, safeWorkoutIndex);
-  shellHooks?.showToast?.(isSkippedCompletion(existing) ? 'SKIP CLEARED' : 'WORKOUT MARKED INCOMPLETE');
+  if (!cloudCleared) shellHooks?.showToast?.('CLEARED HERE · CLOUD DELETE FAILED');
+  else shellHooks?.showToast?.(isSkippedCompletion(existing) ? 'SKIP CLEARED' : 'WORKOUT CLEARED');
 }
 
 const SKIP_REASON_LABELS = {
@@ -1358,7 +1408,7 @@ function renderAthleteProfilePage() {
 }
 function clearLocalTestData() {
   if (!window.confirm('Clear local test data on this device? This resets profile, HR info, mile test, completed workouts, sprint history, pending sync, and onboarding.')) return;
-  [PROFILE_STORAGE_KEY, STORAGE_KEY, SYNC_QUEUE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY, HR_INFO_STORAGE_KEY, MILE_TEST_STORAGE_KEY, AUTH_USER_STORAGE_KEY, SC_MODE_STORAGE_KEY, SC_WEEK_STORAGE_KEY, WEEK_INDEX_KEY, PROFILE_FORM_COLLAPSED_KEY, PROGRAM_GUIDE_COLLAPSED_KEY, ONBOARDING_DISMISSED_KEY, WORKOUT_NOTES_STORAGE_KEY, CAMP_RESET_SEEN_KEY].forEach((key) => localStorage.removeItem(key));
+  [PROFILE_STORAGE_KEY, STORAGE_KEY, SYNC_QUEUE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY, HR_INFO_STORAGE_KEY, MILE_TEST_STORAGE_KEY, AUTH_USER_STORAGE_KEY, SC_MODE_STORAGE_KEY, SC_WEEK_STORAGE_KEY, WEEK_INDEX_KEY, PROFILE_FORM_COLLAPSED_KEY, PROGRAM_GUIDE_COLLAPSED_KEY, ONBOARDING_DISMISSED_KEY, WORKOUT_NOTES_STORAGE_KEY, CAMP_RESET_SEEN_KEY, 'ringReadyClearedWorkoutCompletions'].forEach((key) => localStorage.removeItem(key));
   activeWeekIndex = 0;
   scMode = 'Gym Machines';
   scWeek = 1;
@@ -1916,7 +1966,16 @@ export async function initAthleteShell(hooks) {
   window.addEventListener('ringready:workout-completion-cleared', (event) => {
     renderShell();
     renderAthleteProfileDashboard();
-    if (event.detail) deleteWorkoutCompletionFromCloud(event.detail.weekIndex, event.detail.workoutIndex);
+    if (!event.detail) return;
+    const weekIndex = Number(event.detail.weekIndex);
+    const workoutIndex = Number(event.detail.workoutIndex);
+    if (!Number.isFinite(weekIndex) || !Number.isFinite(workoutIndex)) return;
+    markWorkoutCompletionCleared(weekIndex, workoutIndex);
+    deleteWorkoutCompletionFromCloud(weekIndex, workoutIndex).then((ok) => {
+      if (!ok && isSupabaseConfigured && getCurrentUser()) {
+        shellHooks?.showToast?.('CLEARED HERE · CLOUD DELETE FAILED');
+      }
+    });
   });
   window.addEventListener('ringready:sprint-session-saved', (event) => {
     if (event.detail) saveSprintSessionToCloud(event.detail);
