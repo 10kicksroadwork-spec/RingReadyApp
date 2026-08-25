@@ -98,6 +98,11 @@ function mergeProfile(localProfile, cloudProfile, metadata) {
       String(cloudProfile?.campLength || localProfile?.campLength || '7') === '4'
         ? '4'
         : '7',
+    defaultModality: choose(
+      cloudProfile?.defaultModality,
+      localProfile?.defaultModality,
+      'running'
+    ) || 'running',
   };
 }
 

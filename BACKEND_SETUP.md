@@ -125,6 +125,16 @@ scripts/supabase-coach-camp-start.sql
 
 On the athlete detail screen, set a start date (for example `2026-08-24`). Missing-workout flags then follow the program calendar: Week 1 Monday is the start date, Tuesday is the next day, and so on. Sessions that have not reached their day yet stay off the missing list.
 
+## 4e. Athlete default modality
+
+Run this so profiles can store a camp default modality (Running by default):
+
+```text
+scripts/supabase-athlete-default-modality.sql
+```
+
+Athletes can change Default Modality on their profile. Anything other than running should be coach-approved before camp starts. Until this SQL runs, local profile saves still work; cloud profile saves with a non-default modality may fail.
+
 ## 5. Private workout proof
 
 Run this second migration in Supabase SQL Editor:

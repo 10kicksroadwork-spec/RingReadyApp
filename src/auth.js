@@ -1,4 +1,5 @@
 import { isCoachEmail } from './coach-access.js';
+import { MODALITY_RUNNING, normalizeModality } from './modality.js';
 import { isSupabaseConfigured, supabase } from './supabase-client.js';
 
 let currentSession = null;
@@ -69,6 +70,7 @@ function mapCloudProfile(row) {
     weightClass: '',
     fightDate: row.fight_date || '',
     campLength: String(normalizeCampLength(row.camp_length)),
+    defaultModality: normalizeModality(row.default_modality || MODALITY_RUNNING),
   };
 }
 
@@ -82,6 +84,7 @@ function toCloudProfile(profile, userId) {
     training_tenure: textOrEmpty(profile.trainingTenure),
     fight_date: profile.fightDate || null,
     camp_length: normalizeCampLength(profile.campLength),
+    default_modality: normalizeModality(profile.defaultModality || MODALITY_RUNNING),
     updated_at: new Date().toISOString(),
   };
 }

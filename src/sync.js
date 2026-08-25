@@ -6,6 +6,7 @@ import {
 } from './constants.js';
 import { calculateAvgDrop, calculatePeakHR } from './workout.js';
 import { hrState } from './hr-service.js';
+import { MODALITY_RUNNING, normalizeModality } from './modality.js';
 
 const MAX_QUEUE_ITEMS = 50;
 
@@ -19,6 +20,7 @@ const PROFILE_DEFAULTS = {
   weightClass: '',
   fightDate: '',
   campLength: '7',
+  defaultModality: MODALITY_RUNNING,
 };
 
 function normalizeCampLength(value) {
@@ -36,6 +38,7 @@ function cleanProfile(profile = {}) {
     weightClass: '',
     fightDate: String(profile.fightDate || '').trim(),
     campLength: normalizeCampLength(profile.campLength || PROFILE_DEFAULTS.campLength),
+    defaultModality: normalizeModality(profile.defaultModality || PROFILE_DEFAULTS.defaultModality),
   };
 }
 

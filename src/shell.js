@@ -1028,7 +1028,12 @@ function setDetailWorkoutLog(isVisible, completion = null, workout = null) {
   setInputValue('detail-avg-bpm-input', log.avgBpm ?? '');
   setInputValue('detail-max-bpm-input', log.maxBpm ?? '');
   const output = readOutputFromWorkoutLog(log);
-  setDetailModality(output.modality || MODALITY_RUNNING, { clearOutput: false, announce: false, keepNote: true });
+  const hasSavedOutput = Number.isFinite(Number(output.outputValue)) && Number(output.outputValue) > 0;
+  const profileDefault = normalizeModality(getAthleteProfile().defaultModality || MODALITY_RUNNING);
+  const modality = hasSavedOutput || completion
+    ? (output.modality || profileDefault || MODALITY_RUNNING)
+    : profileDefault;
+  setDetailModality(modality, { clearOutput: false, announce: false, keepNote: true });
   setInputValue('detail-output-input', output.outputValue ?? '');
   card.querySelectorAll('input').forEach((input) => { input.disabled = false; });
   const note = document.getElementById('detail-modality-note');
@@ -1171,6 +1176,16 @@ function isProfileFormCollapsed(profile = getAthleteProfile()) {
   return stored === null ? true : stored === '1';
 }
 function setProfileFormCollapsed(isCollapsed) { localStorage.setItem(PROFILE_FORM_COLLAPSED_KEY, isCollapsed ? '1' : '0'); renderAthleteProfilePage(); }
+function syncProfileModalityNote() {
+  const note = document.getElementById('profile-modality-note');
+  const select = document.getElementById('profile-default-modality-select');
+  if (!note || !select) return;
+  const modality = normalizeModality(select.value || MODALITY_RUNNING);
+  note.textContent = modality === MODALITY_RUNNING
+    ? 'Running is the default. Anything other than running must be approved by Gene or Daniel before camp starts.'
+    : `${formatModalityLabel(modality)} selected. Anything other than running must be approved by Gene or Daniel before camp starts.`;
+  note.classList.toggle('is-non-running', modality !== MODALITY_RUNNING);
+}
 function syncProfileFormCollapse(profile = getAthleteProfile()) {
   const panel = document.getElementById('profile-form-panel');
   const content = document.getElementById('profile-form-content');
@@ -1191,6 +1206,8 @@ function renderAthleteProfilePage() {
   setInputValue('profile-tenure-select', profile.trainingTenure);
   setInputValue('profile-fight-date-input', profile.fightDate);
   setInputValue('profile-camp-length-select', profile.campLength || '7');
+  setInputValue('profile-default-modality-select', normalizeModality(profile.defaultModality || MODALITY_RUNNING));
+  syncProfileModalityNote();
   renderHeaderProfile();
   renderAthleteProfileDashboard();
   syncProfileFormCollapse(profile);
@@ -1222,6 +1239,7 @@ async function saveAthleteProfileFromInputs() {
     weightClass: '',
     fightDate: readInputValue('profile-fight-date-input'),
     campLength: readInputValue('profile-camp-length-select') || '7',
+    defaultModality: normalizeModality(readInputValue('profile-default-modality-select') || MODALITY_RUNNING),
   });
 
   let cloudSaved = false;
@@ -1634,6 +1652,7 @@ function bindShellEvents() {
   document.querySelectorAll('#mile-test-page input').forEach((input) => input.addEventListener('input', updateMileCompletionState));
   document.getElementById('drawer-week-list')?.addEventListener('click', (event) => { const btn = event.target.closest('.drawer-week-btn'); if (!btn) return; saveWeek(Number(btn.dataset.weekIndex)); scWeek = activeWeekIndex + 1; renderShell(); renderSCPage(); navigateTo('home'); });
   document.getElementById('save-athlete-profile-btn')?.addEventListener('click', saveAthleteProfileFromInputs);
+  document.getElementById('profile-default-modality-select')?.addEventListener('change', syncProfileModalityNote);
   document.getElementById('clear-test-data-btn')?.addEventListener('click', clearLocalTestData);
   document.getElementById('profile-form-toggle-btn')?.addEventListener('click', () => setProfileFormCollapsed(!isProfileFormCollapsed()));
   document.getElementById('program-guide-toggle-btn')?.addEventListener('click', () => setProgramGuideCollapsed(!isProgramGuideCollapsed()));
