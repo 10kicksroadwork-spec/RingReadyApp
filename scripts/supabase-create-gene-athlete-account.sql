@@ -18,6 +18,23 @@
 -- Safe to re-run: if the auth user already exists, it resets the password,
 -- confirms the email, and refreshes the athlete profile name.
 
+-- Needed if scripts/supabase-athlete-default-modality.sql has not been run yet.
+alter table public.athlete_profiles
+  add column if not exists default_modality text not null default 'running';
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'athlete_profiles_default_modality_check'
+  ) then
+    alter table public.athlete_profiles
+      add constraint athlete_profiles_default_modality_check
+      check (default_modality in ('running', 'assault_bike', 'rower', 'stationary_bike'));
+  end if;
+end $$;
+
 do $$
 declare
   athlete_email text := '10kicksmuaythai@gmail.com';
