@@ -39,6 +39,14 @@ import {
 import { getWorkoutCompletion, removeWorkoutCompletion, saveWorkoutCompletion } from './storage.js';
 import { sanitizeDurationInput } from './workout.js';
 import {
+  buildWorkoutLogModalityFields,
+  formatModalityLabel,
+  getModalityMeta,
+  MODALITY_RUNNING,
+  normalizeModality,
+  readOutputFromWorkoutLog,
+} from './modality.js';
+import {
   canAccessCoachScreens,
   initCoachPreview,
   isCoachScreen,
@@ -85,6 +93,7 @@ const ONBOARDING_DISMISSED_KEY = 'ringReadyOnboardingDismissed';
 const AUTH_USER_STORAGE_KEY = 'ringReadyAuthUserId';
 const WORKOUT_NOTES_STORAGE_KEY = 'ringReadyWorkoutNotes';
 const WORKOUT_NOTE_MAX_LENGTH = 200;
+const DETAIL_MODALITY_NOTE_KEY = 'ringReadyModalitySwitchNoteSeen';
 
 let activeWeekIndex = Number(localStorage.getItem(WEEK_INDEX_KEY) || 0);
 let scMode = localStorage.getItem(SC_MODE_STORAGE_KEY) || 'Gym Machines';
@@ -92,6 +101,8 @@ let scWeek = Number(localStorage.getItem(SC_WEEK_STORAGE_KEY) || activeWeekIndex
 let shellHooks = null;
 let authMode = 'sign-in';
 let activeMileTestContext = { testKey: 'mile-test:baseline', workoutContext: null };
+let detailModality = MODALITY_RUNNING;
+let detailModalityInitialized = false;
 
 function readJSON(key, fallback) {
   try { return JSON.parse(localStorage.getItem(key) || JSON.stringify(fallback)); }
@@ -891,17 +902,78 @@ function getWorkoutDurationPlaceholder(workout = {}) {
   return minuteMatch ? formatMinutesAsDuration(minuteMatch[1]) : 'MM:SS';
 }
 function parseThreeDigitHR(id) { const value = readInputValue(id); return /^\d{1,3}$/.test(value) ? Number(value) : NaN; }
+
+function syncDetailModalityChrome(options = {}) {
+  const clearOutput = !!options.clearOutput;
+  const meta = getModalityMeta(detailModality);
+  document.querySelectorAll('[data-detail-modality]').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.detailModality === meta.id);
+  });
+  const label = document.getElementById('detail-output-label');
+  const input = document.getElementById('detail-output-input');
+  if (label) label.textContent = meta.outputLabel;
+  if (input) {
+    input.step = meta.outputType === 'watts' ? '1' : '0.01';
+    input.placeholder = meta.outputType === 'watts' ? '184' : '3.35';
+    input.inputMode = meta.outputInputMode || 'decimal';
+    if (clearOutput) input.value = '';
+  }
+}
+
+function showDetailModalitySwitchNote(modality) {
+  const note = document.getElementById('detail-modality-note');
+  if (!note) return;
+  if (normalizeModality(modality) === MODALITY_RUNNING) {
+    note.hidden = true;
+    return;
+  }
+  const seen = readJSON(DETAIL_MODALITY_NOTE_KEY, {});
+  if (seen[modality]) {
+    note.hidden = true;
+    return;
+  }
+  note.textContent = `Modality changed to ${formatModalityLabel(modality)}. Ring Ready will establish a new performance baseline so your camp progress continues without resetting.`;
+  note.hidden = false;
+  writeJSON(DETAIL_MODALITY_NOTE_KEY, { ...seen, [modality]: true });
+}
+
+function setDetailModality(nextModality, options = {}) {
+  const modality = normalizeModality(nextModality);
+  const changed = modality !== detailModality;
+  detailModality = modality;
+  syncDetailModalityChrome({ clearOutput: !!options.clearOutput && changed });
+  if (changed && options.announce) showDetailModalitySwitchNote(modality);
+  else if (!options.keepNote) {
+    const note = document.getElementById('detail-modality-note');
+    if (note && modality === MODALITY_RUNNING) note.hidden = true;
+  }
+  updateDetailCompletionState();
+}
+
 function readDetailWorkoutLog(options = {}) {
   const silent = !!options.silent;
   const duration = parseWorkoutDuration(readInputValue('detail-total-minutes-input'));
   const avgBpm = parseThreeDigitHR('detail-avg-bpm-input');
   const maxBpm = parseThreeDigitHR('detail-max-bpm-input');
-  const distance = parseNumberInput('detail-distance-input', NaN);
-  if (!duration || ![avgBpm, maxBpm, distance].every((value) => Number.isFinite(value) && value > 0)) { if (!silent) shellHooks?.showToast?.('FILL OUT WORKOUT LOG'); return null; }
+  const outputValue = parseNumberInput('detail-output-input', NaN);
+  const modalityFields = buildWorkoutLogModalityFields(detailModality, outputValue);
+  if (!duration || ![avgBpm, maxBpm, modalityFields.outputValue].every((value) => Number.isFinite(value) && value > 0)) {
+    if (!silent) shellHooks?.showToast?.('FILL OUT WORKOUT LOG');
+    return null;
+  }
   if (avgBpm > 999 || maxBpm > 999) { if (!silent) shellHooks?.showToast?.('HR MUST BE 3 DIGITS OR LESS'); return null; }
   if (maxBpm < avgBpm) { if (!silent) shellHooks?.showToast?.('MAX HR SHOULD BE AVG OR HIGHER'); return null; }
   const note = sanitizeWorkoutNote(readInputValue('detail-note-input'));
-  return { totalMinutes: duration.totalMinutes, totalSeconds: duration.totalSeconds, totalTimeDisplay: duration.totalTimeDisplay, avgBpm, maxBpm, distance, note, completedAt: new Date().toISOString() };
+  return {
+    totalMinutes: duration.totalMinutes,
+    totalSeconds: duration.totalSeconds,
+    totalTimeDisplay: duration.totalTimeDisplay,
+    avgBpm,
+    maxBpm,
+    note,
+    completedAt: new Date().toISOString(),
+    ...modalityFields,
+  };
 }
 function sanitizeWorkoutDurationInput(value, previousValue = '') {
   return sanitizeDurationInput(value, previousValue);
@@ -955,8 +1027,12 @@ function setDetailWorkoutLog(isVisible, completion = null, workout = null) {
   if (timeInput) timeInput.dataset.prevDuration = timeValue;
   setInputValue('detail-avg-bpm-input', log.avgBpm ?? '');
   setInputValue('detail-max-bpm-input', log.maxBpm ?? '');
-  setInputValue('detail-distance-input', log.distance ?? '');
+  const output = readOutputFromWorkoutLog(log);
+  setDetailModality(output.modality || MODALITY_RUNNING, { clearOutput: false, announce: false, keepNote: true });
+  setInputValue('detail-output-input', output.outputValue ?? '');
   card.querySelectorAll('input').forEach((input) => { input.disabled = false; });
+  const note = document.getElementById('detail-modality-note');
+  if (note) note.hidden = true;
   updateDetailExpectedStatus();
 }
 function flushQueuedEvent(syncMessage) {
@@ -1075,7 +1151,13 @@ function renderAthleteProfileDashboard() {
   });
   const nextWorkout = slots.find((slot) => !getWorkoutCompletion(slot.weekIndex, slot.workoutIndex));
   const nextCopy = nextWorkout ? `${nextWorkout.week.label} / ${nextWorkout.workout.day} / ${nextWorkout.workout.type}` : 'Camp complete';
-  const latestRunCopy = latestRun ? `${latestRun.week.label} / ${latestRun.workout.type} / ${formatDistance(latestRun.log.distance)} mi` : 'No run logged yet';
+  const latestRunCopy = latestRun
+    ? `${latestRun.week.label} / ${latestRun.workout.type} / ${
+      normalizeModality(latestRun.log.modality) !== MODALITY_RUNNING && Number(latestRun.log.avgWatts || latestRun.log.outputValue) > 0
+        ? `${formatWholeNumber(latestRun.log.avgWatts || latestRun.log.outputValue)} W · ${formatModalityLabel(latestRun.log.modality)}`
+        : `${formatDistance(latestRun.log.distance ?? latestRun.log.outputValue)} mi`
+    }`
+    : 'No run logged yet';
   const mileCopy = mileTest ? `${formatWholeNumber(mileTest.totalMinutes)} min / ${formatWholeNumber(mileTest.maxBpm)} max bpm` : 'No Mile Test saved yet';
   root.innerHTML = `
     <article class="dash-card dash-progress-card"><div><div class="info-kicker">Progress Dashboard</div><h3>${escapeHTML(profile.athleteName || 'Fighter')} is ${completionPct}% through camp.</h3><p>${completedWorkouts} of ${totalWorkouts} roadwork sessions completed across the ${getCampWeekLimit()} week plan.</p></div><div class="dash-ring" style="--progress:${completionPct * 3.6}deg" aria-label="${completionPct}% complete"><strong>${completionPct}%</strong><span>${completedWorkouts}/${totalWorkouts}</span></div></article>
@@ -1502,6 +1584,15 @@ function bindShellEvents() {
   document.getElementById('setup-back-btn')?.addEventListener('click', () => navigateTo('home'));
   document.getElementById('detail-back-btn')?.addEventListener('click', () => navigateTo('home'));
   document.querySelectorAll('#detail-log-card input').forEach((input) => input.addEventListener('input', handleDetailLogInput));
+  if (!detailModalityInitialized) {
+    detailModalityInitialized = true;
+    document.getElementById('detail-modality-row')?.addEventListener('click', (event) => {
+      const btn = event.target.closest('[data-detail-modality]');
+      if (!btn) return;
+      event.preventDefault();
+      setDetailModality(btn.dataset.detailModality, { clearOutput: true, announce: true });
+    });
+  }
   window.addEventListener('ringready:proof-state-changed', (event) => {
     if (event.detail?.surface === 'detail') updateDetailCompletionState();
     if (event.detail?.surface === 'mile') updateMileCompletionState();

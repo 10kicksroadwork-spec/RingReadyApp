@@ -12,6 +12,14 @@ import {
   saveCoachCampStartDate,
   saveCoachNote,
 } from './auth.js';
+import {
+  buildPerformanceContinuity,
+  formatModalityLabel,
+  formatPerformanceIndex,
+  MODALITY_RUNNING,
+  normalizeModality,
+  readOutputFromWorkoutLog,
+} from './modality.js';
 
 const NOTES_KEY = 'ringReadyCoachPreviewNotes';
 const COACH_SCREENS = new Set(['coach-dashboard', 'coach-athlete']);
@@ -280,7 +288,12 @@ function collectBenchmarkPoints(config, sessions) {
     }).filter((row) => Number.isFinite(row.equiv));
   }
   return sessions
-    .filter((session) => session.status === 'logged' && isBenchmarkType(session.type) && Number(session.distance) > 0)
+    .filter((session) =>
+      session.status === 'logged'
+      && isBenchmarkType(session.type)
+      && normalizeModality(session.modality) === MODALITY_RUNNING
+      && Number(session.distance) > 0
+    )
     .map((session) => ({
       weekIndex: session.weekIndex,
       distance: Number(session.distance),
@@ -401,6 +414,34 @@ function buildPaceSignal(sessions) {
   };
 }
 
+function buildPerformanceSignal(performance) {
+  if (!performance?.index) {
+    return emptySignal('performance', 'Needs HR-valid cardio sessions');
+  }
+  const index = Number(performance.index);
+  let tone = 'amber';
+  if (index >= 100) tone = 'green';
+  else if (index < 95) tone = 'red';
+  const modalityLabel = performance.latestModality
+    ? formatModalityLabel(performance.latestModality)
+    : 'camp';
+  const switchNote = performance.modalityCount > 1
+    ? ` · ${performance.modalityCount} modalities, score kept continuous`
+    : '';
+  return {
+    key: 'performance',
+    tone,
+    value: formatPerformanceIndex(index),
+    short: formatPerformanceIndex(index),
+    detail: `Camp index on ${modalityLabel}${switchNote}`,
+    points: (performance.points || []).map((row) => ({
+      weekIndex: row.weekIndex,
+      pct: row.index,
+    })),
+    index,
+  };
+}
+
 function hasEasyHotFlag(config) {
   return Object.values(config.flags || {}).some((flag) => /easy/i.test(String(flag)));
 }
@@ -439,12 +480,18 @@ function buildHeadline(athlete) {
   } else if (scan.recovery.tone === 'green') {
     bits.push(`Drop ${Math.round(scan.recovery.first)}→${Math.round(scan.recovery.latest)}.`);
   }
+  if (scan.performance?.index && athlete.performance?.modalityCount > 1) {
+    bits.push(`Index ${formatPerformanceIndex(scan.performance.index)} after modality switch.`);
+  } else if (scan.performance?.index && !bits.some((bit) => /Index /.test(bit))) {
+    bits.push(`Index ${formatPerformanceIndex(scan.performance.index)}.`);
+  }
 
   return bits.join(' ');
 }
 
 function applyPaceWeeks(session, config) {
   const next = { ...session };
+  if (normalizeModality(next.modality) !== MODALITY_RUNNING) return next;
   const bucket = paceBucket(session.type);
   if (!bucket || session.status !== 'logged') return next;
   const series = config.paceWeeks?.[bucket];
@@ -526,7 +573,15 @@ function buildAthleteRecord(config) {
         minutes: config.minutes?.[key] ?? null,
         distance: config.distances?.[key] ?? null,
         drop: config.drops?.[key] ?? null,
+        modality: normalizeModality(config.modalities?.[key] || MODALITY_RUNNING),
+        avgWatts: config.watts?.[key] ?? null,
+        outputValue: config.outputValues?.[key] ?? null,
       }, config);
+      const override = config.sessionOverrides?.[key];
+      if (override) Object.assign(session, override);
+      if (session.outputValue == null) {
+        session.outputValue = session.avgWatts ?? session.distance ?? null;
+      }
       sessions.push(session);
       return session;
     });
@@ -552,11 +607,13 @@ function buildAthleteRecord(config) {
 
   const benchPoints = collectBenchmarkPoints(config, sessions);
   const sprintPoints = collectSprintPoints(config, sessions);
+  const performance = buildPerformanceContinuity(sessions);
   const scan = {
     bench: buildBenchSignal(benchPoints),
     zone: buildZoneSignal(sessions),
     recovery: buildRecoverySignal(sprintPoints),
     pace: buildPaceSignal(sessions),
+    performance: buildPerformanceSignal(performance),
   };
 
   const athlete = {
@@ -572,12 +629,75 @@ function buildAthleteRecord(config) {
     weekRows,
     sessions,
     scan,
+    performance,
   };
   athlete.headline = buildHeadline(athlete);
   return athlete;
 }
 
 const MOCK_ATHLETES = [
+  buildAthleteRecord({
+    id: 'alex',
+    name: 'Alex Rivera',
+    campLength: 7,
+    currentWeekIndex: 4,
+    campStartDate: '2026-07-27',
+    fightDate: '2026-09-14',
+    tenure: '1-3 years',
+    maxHr: 186,
+    restingHr: 54,
+    lastSession: 'Tue · Benchmark (Assault Bike)',
+    missing: [],
+    missingProofs: [],
+    sessionNotes: {
+      '3:1': 'Ankle flare-up. Coach approved Assault Bike for cardio.',
+      '4:1': 'Second week on bike. Watts climbing, index still continuous.',
+    },
+    benchmarks: [
+      { weekIndex: 0, distance: 2.85, avgBpm: 137 },
+      { weekIndex: 1, distance: 2.98, avgBpm: 136 },
+      { weekIndex: 2, distance: 3.10, avgBpm: 137 },
+    ],
+    sprints: [
+      { weekIndex: 0, first5Avg: 31 },
+      { weekIndex: 1, first5Avg: 33 },
+      { weekIndex: 2, first5Avg: 34 },
+    ],
+    paceWeeks: {
+      zone2: [9.1, 8.85, 8.6],
+      threshold: [7.15, 7.0, 6.9],
+    },
+    modalities: {
+      '0:0': 'running', '0:1': 'running', '0:2': 'running', '0:3': 'running', '0:4': 'running',
+      '1:0': 'running', '1:1': 'running', '1:2': 'running', '1:3': 'running', '1:4': 'running',
+      '2:0': 'running', '2:1': 'running', '2:2': 'running', '2:3': 'running', '2:4': 'running',
+      '3:0': 'running', '3:1': 'assault_bike', '3:2': 'assault_bike', '3:3': 'assault_bike', '3:4': 'assault_bike',
+      '4:0': 'running', '4:1': 'assault_bike', '4:2': 'assault_bike', '4:3': 'assault_bike', '4:4': 'assault_bike',
+    },
+    minutes: {
+      '0:1': 30, '0:2': 16, '0:3': 20, '0:4': 45,
+      '1:1': 30, '1:2': 22, '1:3': 20, '1:4': 50,
+      '2:1': 30, '2:2': 28, '2:3': 30, '2:4': 60,
+      '3:1': 30, '3:2': 20, '3:3': 20, '3:4': 45,
+      '4:1': 30, '4:2': 20, '4:3': 20, '4:4': 45,
+    },
+    distances: {
+      '0:1': 2.85, '0:3': 2.20, '0:4': 4.90,
+      '1:1': 2.98, '1:3': 2.28, '1:4': 5.55,
+      '2:1': 3.10, '2:3': 3.45, '2:4': 6.80,
+    },
+    watts: {
+      '3:1': 179, '3:2': 210, '3:3': 185, '3:4': 168,
+      '4:1': 191, '4:2': 218, '4:3': 190, '4:4': 176,
+    },
+    avgs: {
+      '0:1': 137, '0:2': 163, '0:3': 138, '0:4': 139,
+      '1:1': 136, '1:2': 164, '1:3': 137, '1:4': 138,
+      '2:1': 137, '2:2': 163, '2:3': 138, '2:4': 137,
+      '3:1': 137, '3:2': 164, '3:3': 138, '3:4': 136,
+      '4:1': 136, '4:2': 163, '4:3': 137, '4:4': 135,
+    },
+  }),
   buildAthleteRecord({
     id: 'maya',
     name: 'Maya Chen',
@@ -813,6 +933,8 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, note, email = '
   const maxes = {};
   const minutes = {};
   const distances = {};
+  const watts = {};
+  const modalities = {};
   const drops = {};
   const sprintPoints = [];
 
@@ -827,12 +949,27 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, note, email = '
         return;
       }
       if (!row.attachment_id) missingProofs.push(key);
+      const record = row.record_json && typeof row.record_json === 'object' ? row.record_json : {};
+      const log = record.workoutLog || {};
+      const output = readOutputFromWorkoutLog({
+        modality: log.modality,
+        outputType: log.outputType,
+        outputValue: log.outputValue,
+        distance: log.distance ?? row.distance,
+        avgWatts: log.avgWatts,
+      });
+      modalities[key] = output.modality;
+      if (output.outputType === 'watts' && Number.isFinite(output.outputValue)) watts[key] = output.outputValue;
       const avg = Number(row.avg_bpm);
       const tgt = Number(row.target_bpm || workout.targetBPM);
       if (Number.isFinite(avg) && avg > 0) avgs[key] = avg;
       if (Number.isFinite(Number(row.max_bpm)) && Number(row.max_bpm) > 0) maxes[key] = Number(row.max_bpm);
       if (Number.isFinite(Number(row.total_minutes)) && Number(row.total_minutes) > 0) minutes[key] = Number(row.total_minutes);
-      if (Number.isFinite(Number(row.distance)) && Number(row.distance) > 0) distances[key] = Number(row.distance);
+      if (output.outputType === 'distance' && Number.isFinite(output.outputValue) && output.outputValue > 0) {
+        distances[key] = output.outputValue;
+      } else if (Number.isFinite(Number(row.distance)) && Number(row.distance) > 0) {
+        distances[key] = Number(row.distance);
+      }
       if (Number.isFinite(avg) && Number.isFinite(tgt) && tgt > 0 && avg > tgt + 10 && !isSprintType(workout.type)) {
         flags[key] = `${workout.type} avg ${Math.round(avg)} · target ${Math.round(tgt)}`;
       }
@@ -867,6 +1004,8 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, note, email = '
     maxes,
     minutes,
     distances,
+    watts,
+    modalities,
     drops,
     sprints: sprintPoints,
     coachNote: note || '',
@@ -1001,15 +1140,21 @@ function syncCoachHeroCopy() {
   if (copy) {
     copy.textContent = live
       ? 'Every fighter with a Ring Ready account. Sheets stays available for the deeper charts.'
-      : 'Mock fighters only. Sign in as a coach on the live site to see the real roster.';
+      : 'Mock fighters for local preview. Open Alex Rivera to walk the mid-camp Assault Bike switch and continuous Performance Index.';
   }
   const rosterLabel = document.querySelector('#coach-roster-count')?.parentElement?.querySelector('em');
   if (rosterLabel) rosterLabel.textContent = live ? 'fighters with accounts' : 'fighters in preview';
 }
 
 function renderSignalPills(athlete) {
-  const keys = ['bench', 'zone', 'recovery', 'pace'];
-  const labels = { bench: 'Bench', zone: 'Zone', recovery: 'Drop', pace: 'Pace' };
+  const keys = ['performance', 'bench', 'zone', 'recovery', 'pace'];
+  const labels = {
+    performance: 'Index',
+    bench: 'Bench',
+    zone: 'Zone',
+    recovery: 'Drop',
+    pace: 'Pace',
+  };
   return `<div class="coach-signal-row">${keys.map((key) => {
     const signal = athlete.scan[key];
     return `<span class="coach-signal is-${signal.tone}">${labels[key]} ${escapeHTML(signal.short)}</span>`;
@@ -1136,12 +1281,15 @@ function renderMetricCard(id, title, signal, clickable) {
   const clickAttrs = clickable
     ? `type="button" data-coach-drill="${id}" aria-expanded="${athleteDrill === id ? 'true' : 'false'}"`
     : '';
+  const unit = signal.key === 'recovery' && signal.value !== '--'
+    ? ' bpm'
+    : '';
   return `<${tag} class="coach-metric-card is-${signal.tone}${clickable ? ' is-clickable' : ''}${athleteDrill === id ? ' is-open' : ''}" ${clickAttrs}>
     <div class="coach-metric-card-head">
       <span>${escapeHTML(title)}</span>
       ${clickable ? '<em>Open sessions</em>' : ''}
     </div>
-    <strong>${escapeHTML(signal.value)}${signal.key === 'recovery' && signal.value !== '--' ? ' bpm' : ''}</strong>
+    <strong>${escapeHTML(signal.value)}${unit}</strong>
     <p>${escapeHTML(signal.detail)}</p>
     ${spark}
   </${tag}>`;
@@ -1149,6 +1297,7 @@ function renderMetricCard(id, title, signal, clickable) {
 
 function renderMetricCards(athlete) {
   return [
+    renderMetricCard('performance', 'Performance Index', athlete.scan.performance, false),
     renderMetricCard('benchmark', 'Benchmark Run', athlete.scan.bench, true),
     renderMetricCard('zone', 'HR Zone Adherence', athlete.scan.zone, false),
     renderMetricCard('sprint', 'Recovery Trend', athlete.scan.recovery, true),
@@ -1162,11 +1311,17 @@ function sessionDetail(session) {
   if (session.proof === 'missing') return 'Logged, but workout proof is missing.';
   if (session.status === 'missing') return 'Assigned work not logged yet.';
   const bits = [];
+  const modality = normalizeModality(session.modality);
+  if (modality !== MODALITY_RUNNING) bits.push(formatModalityLabel(modality));
   if (session.minutes) bits.push(`${formatNumber(session.minutes)} min`);
-  if (session.distance) bits.push(`${formatDecimal(session.distance)} mi`);
+  if (modality !== MODALITY_RUNNING && Number(session.avgWatts || session.outputValue) > 0) {
+    bits.push(`${formatNumber(session.avgWatts || session.outputValue)} W`);
+  } else if (session.distance) {
+    bits.push(`${formatDecimal(session.distance)} mi`);
+  }
   if (session.avgBpm) bits.push(`${formatNumber(session.avgBpm)} avg bpm`);
   if (session.drop) bits.push(`${formatNumber(session.drop)} drop`);
-  if (isBenchmarkType(session.type) && session.distance) {
+  if (isBenchmarkType(session.type) && session.distance && modality === MODALITY_RUNNING) {
     const equiv = getEquivDistance(session.distance, session.avgBpm, session.targetBPM);
     if (equiv) bits.push(`${formatDecimal(equiv)} equiv mi`);
   }

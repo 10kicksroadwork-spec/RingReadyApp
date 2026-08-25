@@ -562,6 +562,16 @@
       </div>
       <section class="detail-card detail-log-card" id="detail-log-card" hidden>
         <div class="field-label">Workout Log</div>
+        <div class="detail-modality-block">
+          <div class="summary-label">Modality</div>
+          <div class="segmented-row detail-modality-row" id="detail-modality-row" aria-label="Workout modality">
+            <button type="button" class="segmented-btn active" data-detail-modality="running">Running</button>
+            <button type="button" class="segmented-btn" data-detail-modality="assault_bike">Assault Bike</button>
+            <button type="button" class="segmented-btn" data-detail-modality="rower">Rower</button>
+            <button type="button" class="segmented-btn" data-detail-modality="stationary_bike">Stationary Bike</button>
+          </div>
+          <p class="detail-modality-note" id="detail-modality-note" hidden>Modality changed. Ring Ready will establish a new performance baseline so your camp progress continues without resetting.</p>
+        </div>
         <div class="input-grid compact-inputs">
           <label class="app-input-wrap" for="detail-total-minutes-input">
             <span>Total Time (MM:SS)</span>
@@ -575,9 +585,9 @@
             <span>Max HR</span>
             <input type="text" id="detail-max-bpm-input" inputmode="numeric" maxlength="3" pattern="[0-9]*" autocomplete="off">
           </label>
-          <label class="app-input-wrap" for="detail-distance-input">
-            <span>Distance (mi)</span>
-            <input type="number" id="detail-distance-input" inputmode="decimal" step="0.01">
+          <label class="app-input-wrap" for="detail-output-input" id="detail-output-wrap">
+            <span id="detail-output-label">Distance (mi)</span>
+            <input type="number" id="detail-output-input" inputmode="decimal" step="0.01">
           </label>
         </div>
       </section>

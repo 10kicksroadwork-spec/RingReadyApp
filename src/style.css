@@ -1038,6 +1038,22 @@
   .detail-week { color: rgba(0,0,0,0.55); margin-top: 28px; }
   .detail-card.primary { border-color: var(--gold); }
   .detail-log-card[hidden] { display: none; }
+  .detail-modality-block {
+    margin: 0 0 14px;
+  }
+  .detail-modality-row {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin-top: 8px;
+  }
+  .detail-modality-note {
+    margin-top: 10px;
+    color: #cfcfcf;
+    font-size: 12px;
+    line-height: 1.4;
+  }
+  .detail-modality-note[hidden] { display: none; }
   .detail-log-card .app-input-wrap {
     min-height: 84px;
     background: rgba(255,255,255,0.035);
