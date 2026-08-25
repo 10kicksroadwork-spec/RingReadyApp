@@ -57,6 +57,7 @@ import {
   syncCoachPreviewChrome,
 } from './coach-preview.js';
 import {
+  archiveAndResetCamp,
   deleteCloudWorkoutCompletion,
   getCurrentUser,
   initSupabaseAuth,
@@ -92,6 +93,7 @@ const PROGRAM_GUIDE_COLLAPSED_KEY = 'ringReadyProgramGuideCollapsed';
 const ONBOARDING_DISMISSED_KEY = 'ringReadyOnboardingDismissed';
 const AUTH_USER_STORAGE_KEY = 'ringReadyAuthUserId';
 const WORKOUT_NOTES_STORAGE_KEY = 'ringReadyWorkoutNotes';
+const CAMP_RESET_SEEN_KEY = 'ringReadyCampResetAtSeen';
 const WORKOUT_NOTE_MAX_LENGTH = 200;
 const DETAIL_MODALITY_NOTE_KEY = 'ringReadyModalitySwitchNoteSeen';
 
@@ -196,7 +198,23 @@ function getCloudTimestamp(record) {
   return Number.isNaN(date.getTime()) ? 0 : date.getTime();
 }
 function clearAccountLocalData() {
-  [PROFILE_STORAGE_KEY, STORAGE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY, HR_INFO_STORAGE_KEY, MILE_TEST_STORAGE_KEY, PROFILE_FORM_COLLAPSED_KEY, PROGRAM_GUIDE_COLLAPSED_KEY, WORKOUT_NOTES_STORAGE_KEY].forEach((key) => localStorage.removeItem(key));
+  [PROFILE_STORAGE_KEY, STORAGE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY, HR_INFO_STORAGE_KEY, MILE_TEST_STORAGE_KEY, PROFILE_FORM_COLLAPSED_KEY, PROGRAM_GUIDE_COLLAPSED_KEY, WORKOUT_NOTES_STORAGE_KEY, CAMP_RESET_SEEN_KEY].forEach((key) => localStorage.removeItem(key));
+}
+function clearLocalTrainingData({ markResetAt = '' } = {}) {
+  [STORAGE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY, MILE_TEST_STORAGE_KEY, WORKOUT_NOTES_STORAGE_KEY, SYNC_QUEUE_KEY, WEEK_INDEX_KEY, SC_WEEK_STORAGE_KEY].forEach((key) => localStorage.removeItem(key));
+  activeWeekIndex = 0;
+  scWeek = 1;
+  saveWeek(0);
+  localStorage.setItem(SC_WEEK_STORAGE_KEY, '1');
+  if (markResetAt) localStorage.setItem(CAMP_RESET_SEEN_KEY, String(markResetAt));
+}
+function applyCampResetIfNeeded(cloudProfile) {
+  const resetAt = String(cloudProfile?.campResetAt || '').trim();
+  if (!resetAt) return false;
+  const seen = String(localStorage.getItem(CAMP_RESET_SEEN_KEY) || '').trim();
+  if (seen === resetAt) return false;
+  clearLocalTrainingData({ markResetAt: resetAt });
+  return true;
 }
 function prepareCoachSession() {
   if (!isCoachUser()) return;
@@ -337,6 +355,7 @@ async function hydrateCloudData() {
   const cloudMileTest = readCloudResult(cloudResults[4], null, 'mile test');
 
   if (cloudProfile && hasProfileData(cloudProfile)) {
+    applyCampResetIfNeeded(cloudProfile);
     saveAthleteProfile(cloudProfile);
   } else if (hasProfileData(localProfile)) {
     try {
@@ -356,13 +375,17 @@ async function hydrateCloudData() {
     }
   }
 
-  const mergedCompletions = mergeWorkoutCompletions(localCompletions, cloudCompletions);
-  const mergedSessions = mergeSprintSessions(localSessions, cloudSessions);
-  const latestMileTest = chooseLatestMileResult(localMileTest, cloudMileTest);
+  const freshLocalCompletions = readJSON(WORKOUT_COMPLETIONS_STORAGE_KEY, {});
+  const freshLocalSessions = getSessionHistory();
+  const freshLocalMileTest = getMileTestResult();
+  const mergedCompletions = mergeWorkoutCompletions(freshLocalCompletions, cloudCompletions);
+  const mergedSessions = mergeSprintSessions(freshLocalSessions, cloudSessions);
+  const latestMileTest = chooseLatestMileResult(freshLocalMileTest, cloudMileTest);
 
   writeJSON(WORKOUT_COMPLETIONS_STORAGE_KEY, mergedCompletions);
   writeJSON(STORAGE_KEY, mergedSessions);
   if (latestMileTest) writeJSON(MILE_TEST_STORAGE_KEY, latestMileTest);
+  else localStorage.removeItem(MILE_TEST_STORAGE_KEY);
 
   await saveTrainingDataToCloud({ completions: mergedCompletions, sessions: mergedSessions, mileTest: latestMileTest });
 }
@@ -1335,7 +1358,7 @@ function renderAthleteProfilePage() {
 }
 function clearLocalTestData() {
   if (!window.confirm('Clear local test data on this device? This resets profile, HR info, mile test, completed workouts, sprint history, pending sync, and onboarding.')) return;
-  [PROFILE_STORAGE_KEY, STORAGE_KEY, SYNC_QUEUE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY, HR_INFO_STORAGE_KEY, MILE_TEST_STORAGE_KEY, AUTH_USER_STORAGE_KEY, SC_MODE_STORAGE_KEY, SC_WEEK_STORAGE_KEY, WEEK_INDEX_KEY, PROFILE_FORM_COLLAPSED_KEY, PROGRAM_GUIDE_COLLAPSED_KEY, ONBOARDING_DISMISSED_KEY].forEach((key) => localStorage.removeItem(key));
+  [PROFILE_STORAGE_KEY, STORAGE_KEY, SYNC_QUEUE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY, HR_INFO_STORAGE_KEY, MILE_TEST_STORAGE_KEY, AUTH_USER_STORAGE_KEY, SC_MODE_STORAGE_KEY, SC_WEEK_STORAGE_KEY, WEEK_INDEX_KEY, PROFILE_FORM_COLLAPSED_KEY, PROGRAM_GUIDE_COLLAPSED_KEY, ONBOARDING_DISMISSED_KEY, WORKOUT_NOTES_STORAGE_KEY, CAMP_RESET_SEEN_KEY].forEach((key) => localStorage.removeItem(key));
   activeWeekIndex = 0;
   scMode = 'Gym Machines';
   scWeek = 1;
@@ -1348,6 +1371,41 @@ function clearLocalTestData() {
   renderMileTestPage();
   maybeShowOnboarding();
   shellHooks?.showToast?.('LOCAL TEST DATA CLEARED');
+}
+
+async function startCleanSlateCamp() {
+  const signedIn = !!(isSupabaseConfigured && getCurrentUser());
+  const message = signedIn
+    ? 'Start a clean slate?\n\nThis saves the current camp to archives, then clears workouts, sprints, mile test, and camp start date.\n\nProfile name and HR info stay. Update Fight Date before the next camp.'
+    : 'Start a clean slate on this device?\n\nThis clears workouts, sprints, and mile test locally. Sign in to also archive the camp in your account.';
+  if (!window.confirm(message)) return;
+  if (!window.confirm('Confirm clean slate. This cannot be undone from the app.')) return;
+
+  const btn = document.getElementById('clean-slate-btn');
+  if (btn) btn.disabled = true;
+  try {
+    let resetAt = new Date().toISOString();
+    if (signedIn) {
+      const profile = getAthleteProfile();
+      const label = [profile.athleteName, profile.fightDate ? `Fight ${profile.fightDate}` : '', new Date().toLocaleDateString('en-US')].filter(Boolean).join(' · ');
+      await archiveAndResetCamp({ label });
+      try {
+        const cloudProfile = await loadCloudProfile();
+        if (cloudProfile?.campResetAt) resetAt = cloudProfile.campResetAt;
+        if (cloudProfile && hasProfileData(cloudProfile)) saveAthleteProfile(cloudProfile);
+      } catch (error) {
+        console.warn('Could not reload profile after clean slate', error);
+      }
+    }
+    clearLocalTrainingData({ markResetAt: resetAt });
+    renderAllPages();
+    shellHooks?.showToast?.(signedIn ? 'CAMP ARCHIVED · CLEAN SLATE READY' : 'LOCAL CLEAN SLATE READY');
+  } catch (error) {
+    console.warn('Clean slate failed', error);
+    shellHooks?.showToast?.(String(error?.message || error || 'CLEAN SLATE FAILED').toUpperCase());
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 async function saveAthleteProfileFromInputs() {
   let profile = saveAthleteProfile({
@@ -1823,6 +1881,7 @@ function bindShellEvents() {
   document.getElementById('save-athlete-profile-btn')?.addEventListener('click', saveAthleteProfileFromInputs);
   document.getElementById('profile-default-modality-select')?.addEventListener('change', syncProfileModalityNote);
   document.getElementById('clear-test-data-btn')?.addEventListener('click', clearLocalTestData);
+  document.getElementById('clean-slate-btn')?.addEventListener('click', startCleanSlateCamp);
   document.getElementById('profile-form-toggle-btn')?.addEventListener('click', () => setProfileFormCollapsed(!isProfileFormCollapsed()));
   document.getElementById('program-guide-toggle-btn')?.addEventListener('click', () => setProgramGuideCollapsed(!isProgramGuideCollapsed()));
   document.getElementById('save-hr-info-btn')?.addEventListener('click', saveHRInfoFromInputs);

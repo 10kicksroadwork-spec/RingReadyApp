@@ -39,6 +39,7 @@ function cleanProfile(profile = {}) {
     fightDate: String(profile.fightDate || '').trim(),
     campLength: normalizeCampLength(profile.campLength || PROFILE_DEFAULTS.campLength),
     defaultModality: normalizeModality(profile.defaultModality || PROFILE_DEFAULTS.defaultModality),
+    campResetAt: String(profile.campResetAt || '').trim(),
   };
 }
 

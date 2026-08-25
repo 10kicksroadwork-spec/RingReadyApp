@@ -135,6 +135,16 @@ scripts/supabase-athlete-default-modality.sql
 
 Athletes can change Default Modality on their profile. Anything other than running should be coach-approved before camp starts. Until this SQL runs, local profile saves still work; cloud profile saves with a non-default modality may fail.
 
+## 4f. Clean slate (archive camp + reset)
+
+Run this so athletes and coaches can archive a finished camp and clear live workouts for the next one:
+
+```text
+scripts/supabase-camp-clean-slate.sql
+```
+
+That creates `camp_archives`, adds `camp_reset_at` on profiles, and the `archive_and_reset_camp` RPC. Profile → **Start New Camp (Clean Slate)** archives then clears workouts (keeps name + HR). Coaches can also run it from an athlete’s detail screen. Until this SQL runs, the buttons will fail with a database error.
+
 ## 5. Private workout proof
 
 Run this second migration in Supabase SQL Editor:

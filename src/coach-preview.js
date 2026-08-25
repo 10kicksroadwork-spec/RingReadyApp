@@ -6,6 +6,7 @@ import {
 } from './coach-camp-schedule.js';
 import { buildCoachUserIdSet, buildRosterExclusionSet, isCoachEmail, isLocalCoachPreviewHost as isLocalHost, isRosterExcludedEmail, normalizeUserId } from './coach-access.js';
 import {
+  archiveAndResetCamp,
   getCurrentUser,
   isCoachUser,
   loadCoachRosterPayload,
@@ -1499,6 +1500,36 @@ async function saveOpenStartDate() {
   coachHooks?.showToast?.('START DATE SAVED LOCALLY');
 }
 
+async function cleanSlateOpenAthlete() {
+  if (!selectedAthleteId) return;
+  const athlete = getAthlete(selectedAthleteId);
+  const name = athlete?.name || 'this fighter';
+  if (rosterSource !== 'live') {
+    coachHooks?.showToast?.('CLEAN SLATE NEEDS LIVE COACH LOGIN');
+    return;
+  }
+  if (!window.confirm(`Archive ${name}'s current camp and start a clean slate?\n\nWorkouts, sprints, mile test, and camp start date clear. Name, HR, and coach note stay.`)) return;
+  if (!window.confirm('Confirm clean slate. This cannot be undone from the app.')) return;
+
+  const btn = document.getElementById('coach-clean-slate-btn');
+  if (btn) btn.disabled = true;
+  try {
+    const label = [name, athlete?.fightDate ? `Fight ${athlete.fightDate}` : '', new Date().toLocaleDateString('en-US')].filter(Boolean).join(' · ');
+    await archiveAndResetCamp({ athleteUserId: selectedAthleteId, label });
+    await loadLiveRoster();
+    renderAthlete();
+    renderRoster();
+    const startInput = document.getElementById('coach-athlete-start-date');
+    if (startInput) startInput.value = '';
+    coachHooks?.showToast?.('CAMP ARCHIVED · CLEAN SLATE READY');
+  } catch (error) {
+    console.warn('Coach clean slate failed', error);
+    coachHooks?.showToast?.(String(error?.message || error || 'CLEAN SLATE FAILED').toUpperCase());
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 async function saveOpenNote() {
   if (!selectedAthleteId) return;
   const input = document.getElementById('coach-athlete-note');
@@ -1636,6 +1667,7 @@ export function initCoachPreview(hooks) {
   });
   document.getElementById('coach-note-save-btn')?.addEventListener('click', saveOpenNote);
   document.getElementById('coach-start-save-btn')?.addEventListener('click', saveOpenStartDate);
+  document.getElementById('coach-clean-slate-btn')?.addEventListener('click', cleanSlateOpenAthlete);
 
   refreshCoachPreview().then(() => {
     const screen = document.querySelector('.screen.active')?.id;

@@ -623,6 +623,20 @@
     width: 100%;
   }
 
+  .clean-slate-btn {
+    background: rgba(245, 200, 66, 0.1);
+    border-color: rgba(245, 200, 66, 0.5);
+    color: var(--gold);
+    margin-top: 10px;
+  }
+
+  .clean-slate-copy {
+    margin: 8px 0 14px;
+    color: rgba(240, 240, 240, 0.62);
+    font-size: 12px;
+    line-height: 1.4;
+  }
+
   .secondary-danger-btn[hidden] { display: none; }
   .detail-skip-card[hidden],
   .detail-skipped-card[hidden] { display: none; }

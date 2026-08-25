@@ -71,6 +71,7 @@ function mapCloudProfile(row) {
     fightDate: row.fight_date || '',
     campLength: String(normalizeCampLength(row.camp_length)),
     defaultModality: normalizeModality(row.default_modality || MODALITY_RUNNING),
+    campResetAt: row.camp_reset_at || '',
   };
 }
 
@@ -348,6 +349,27 @@ export async function saveCoachNote(athleteUserId, note) {
     }, { onConflict: 'athlete_user_id' });
   if (error) throw error;
   return true;
+}
+
+/**
+ * Archive the current camp snapshot, then clear live training data.
+ * Pass athleteUserId only when a coach is resetting another fighter.
+ */
+export async function archiveAndResetCamp({ athleteUserId = null, label = '' } = {}) {
+  const user = getCurrentUser();
+  if (!isSupabaseConfigured || !supabase || !user) {
+    throw new Error('Sign in before starting a clean slate.');
+  }
+  const targetId = athleteUserId || user.id;
+  if (athleteUserId && athleteUserId !== user.id && !isCoachUser()) {
+    throw new Error('Only coaches can reset another athlete.');
+  }
+  const { data, error } = await supabase.rpc('archive_and_reset_camp', {
+    target_user_id: athleteUserId && athleteUserId !== user.id ? athleteUserId : null,
+    p_label: String(label || '').trim() || null,
+  });
+  if (error) throw error;
+  return { archiveId: data, userId: targetId };
 }
 
 export async function signInWithEmail(email, password) {

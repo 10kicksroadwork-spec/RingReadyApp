@@ -226,6 +226,8 @@
           </p>
           </div>
           <button type="button" class="start-btn page-save-btn" id="save-athlete-profile-btn">SAVE PROFILE</button>
+          <button type="button" class="profile-reset-btn clean-slate-btn" id="clean-slate-btn">START NEW CAMP (CLEAN SLATE)</button>
+          <p class="clean-slate-copy">Archives the current camp, then clears workouts so Week 1 is empty. Keeps your name and HR info. Update Fight Date after.</p>
           <button type="button" class="profile-reset-btn" id="clear-test-data-btn">CLEAR LOCAL TEST DATA</button>
           <button type="button" class="profile-reset-btn logout-btn" data-logout hidden>SIGN OUT</button>
         </div>
@@ -469,6 +471,11 @@
           <input type="date" id="coach-athlete-start-date">
         </label>
         <button type="button" class="start-btn page-save-btn" id="coach-start-save-btn">SAVE START DATE</button>
+      </section>
+      <section class="page-panel">
+        <div class="info-kicker">Clean slate</div>
+        <p class="coach-note-copy">Archives this fighter’s current camp, then clears live workouts so the next camp starts empty. Profile name, HR, and coach note stay.</p>
+        <button type="button" class="secondary-danger-btn" id="coach-clean-slate-btn">ARCHIVE CAMP &amp; CLEAN SLATE</button>
       </section>
       <section class="page-panel">
         <div class="info-kicker">Coach Note</div>
