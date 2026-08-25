@@ -24,7 +24,6 @@ import {
   confirmHR,
   cancelSession,
   sessionCancelRequiresHold,
-  copyResults,
   completeWorkout,
   clearResultWorkoutCompletion,
   newSession,
@@ -329,7 +328,6 @@ async function init() {
   bindHoldToCancel(document.getElementById('modal-cancel-btn'), () => cancelSession(), {
     requiresHold: sessionCancelRequiresHold,
   });
-  bindClick('copy-results-btn', () => copyResults());
   bindClick('complete-workout-btn', () => completeWorkout());
   bindClick('clear-result-completion-btn', () => clearResultWorkoutCompletion());
   bindClick('new-session-btn', () => newSession());
