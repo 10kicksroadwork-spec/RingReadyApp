@@ -174,6 +174,7 @@ function syncSignupNameVisibility() {
   const isSignUp = isCreateAccountMode();
   wrap.hidden = !isSignUp;
   input.required = isSignUp;
+  if (!isSignUp) input.value = '';
 }
 
 function ensureSignupNameField() {
@@ -279,6 +280,9 @@ export function installSignupNameCapture() {
     window.setTimeout(syncSignupNameVisibility, 0);
   });
   document.getElementById('auth-forgot-btn')?.addEventListener('click', () => {
+    window.setTimeout(syncSignupNameVisibility, 0);
+  });
+  window.addEventListener('ringready:auth-mode-changed', () => {
     window.setTimeout(syncSignupNameVisibility, 0);
   });
 

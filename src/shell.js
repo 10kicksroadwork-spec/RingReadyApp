@@ -370,6 +370,7 @@ function renderAuthUI() {
     if (!isUpdate) confirmInput.value = '';
   }
   if (forgotBtn) forgotBtn.hidden = isSignUp || isForgot || isUpdate;
+  window.dispatchEvent(new CustomEvent('ringready:auth-mode-changed', { detail: { mode: authMode } }));
 }
 function enterPasswordRecoveryMode(message = 'Choose a new password to finish resetting your account.') {
   passwordRecoveryPending = true;

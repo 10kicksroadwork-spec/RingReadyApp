@@ -199,8 +199,10 @@
   .auth-switch-btn[hidden],
   #auth-email-wrap[hidden],
   #auth-password-wrap[hidden],
-  #auth-password-confirm-wrap[hidden] {
-    display: none;
+  #auth-password-confirm-wrap[hidden],
+  #auth-name-wrap[hidden],
+  .auth-form .app-input-wrap[hidden] {
+    display: none !important;
   }
 
   .auth-status {
