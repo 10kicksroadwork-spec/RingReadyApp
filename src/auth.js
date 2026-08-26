@@ -389,6 +389,42 @@ export async function signUpWithEmail(email, password) {
   return data;
 }
 
+export async function requestPasswordReset(email) {
+  const client = requireSupabase();
+  const redirectTo = `${window.location.origin}${window.location.pathname || '/'}`;
+  const { data, error } = await client.auth.resetPasswordForEmail(email, { redirectTo });
+  if (error) throw error;
+  return data;
+}
+
+export async function updatePassword(newPassword) {
+  const client = requireSupabase();
+  const { data, error } = await client.auth.updateUser({ password: newPassword });
+  if (error) throw error;
+  currentSession = data.session || currentSession;
+  return data;
+}
+
+export function isPasswordRecoveryRedirect() {
+  const hash = String(window.location.hash || '');
+  const search = String(window.location.search || '');
+  return /[?&#]type=recovery(?:&|$)/i.test(`${search}${hash}`)
+    || /type=recovery/i.test(hash);
+}
+
+export function clearAuthRedirectParams() {
+  try {
+    const url = new URL(window.location.href);
+    url.hash = '';
+    ['type', 'access_token', 'refresh_token', 'expires_in', 'token_type', 'error', 'error_code', 'error_description'].forEach((key) => {
+      url.searchParams.delete(key);
+    });
+    window.history.replaceState({}, document.title, `${url.pathname}${url.search}`);
+  } catch (error) {
+    // Ignore history cleanup failures.
+  }
+}
+
 export async function signOut() {
   if (!isSupabaseConfigured || !supabase) return;
   const { error } = await supabase.auth.signOut();

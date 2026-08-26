@@ -38,16 +38,21 @@
       <h1>Ring Ready</h1>
       <p id="auth-copy">Sign in to save your profile and training history to your account.</p>
       <form id="auth-form" class="auth-form">
-        <label class="app-input-wrap" for="auth-email-input">
+        <label class="app-input-wrap" for="auth-email-input" id="auth-email-wrap">
           <span>Email</span>
           <input type="email" id="auth-email-input" autocomplete="email" placeholder="fighter@email.com" required>
         </label>
-        <label class="app-input-wrap" for="auth-password-input">
-          <span>Password</span>
+        <label class="app-input-wrap" for="auth-password-input" id="auth-password-wrap">
+          <span id="auth-password-label">Password</span>
           <input type="password" id="auth-password-input" autocomplete="current-password" placeholder="8+ characters" minlength="8" required>
+        </label>
+        <label class="app-input-wrap" for="auth-password-confirm-input" id="auth-password-confirm-wrap" hidden>
+          <span>Confirm Password</span>
+          <input type="password" id="auth-password-confirm-input" autocomplete="new-password" placeholder="Re-enter password" minlength="8">
         </label>
         <button type="submit" class="start-btn auth-submit-btn" id="auth-submit-btn">SIGN IN</button>
       </form>
+      <button type="button" class="auth-switch-btn" id="auth-forgot-btn">Forgot password?</button>
       <button type="button" class="auth-switch-btn" id="auth-mode-toggle-btn">Create an account instead</button>
       <button type="button" class="auth-switch-btn" id="coach-preview-auth-btn" data-coach-preview data-page-target="coach-dashboard" hidden>Coach dashboard</button>
       <div class="auth-status" id="auth-status" role="status"></div>

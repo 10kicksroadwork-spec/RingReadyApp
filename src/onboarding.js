@@ -278,6 +278,9 @@ export function installSignupNameCapture() {
   document.getElementById('auth-mode-toggle-btn')?.addEventListener('click', () => {
     window.setTimeout(syncSignupNameVisibility, 0);
   });
+  document.getElementById('auth-forgot-btn')?.addEventListener('click', () => {
+    window.setTimeout(syncSignupNameVisibility, 0);
+  });
 
   const submit = document.getElementById('auth-submit-btn');
   if (submit) {

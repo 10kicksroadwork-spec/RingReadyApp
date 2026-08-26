@@ -98,6 +98,8 @@ Until that file is run, coaches will sign in but the roster will be empty (or sh
 
 If a coach account was created with **Add user** and cannot sign in on a new device, run `scripts/supabase-set-coach-password.sql` after replacing the password placeholder.
 
+Password reset from the app sign-in screen uses Supabase Auth email links. In Supabase → Authentication → URL Configuration, set **Site URL** to `https://ring-ready-app.vercel.app` and add that same origin under **Redirect URLs** so “Forgot password?” links open the app’s set-new-password screen.
+
 ## 4c. Coach roster exclusions
 
 Run this after the coach access script to hide specific test or personal fighter accounts from the coach roster:

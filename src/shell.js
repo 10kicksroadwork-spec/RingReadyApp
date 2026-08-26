@@ -58,15 +58,18 @@ import {
 } from './coach-preview.js';
 import {
   archiveAndResetCamp,
+  clearAuthRedirectParams,
   deleteCloudWorkoutCompletion,
   getCurrentUser,
   initSupabaseAuth,
   isCoachUser,
+  isPasswordRecoveryRedirect,
   loadCloudHRInfo,
   loadCloudMileTest,
   loadCloudProfile,
   loadCloudSprintSessions,
   loadCloudWorkoutCompletions,
+  requestPasswordReset,
   saveCloudHRInfo,
   saveCloudMileTest,
   saveCloudProfile,
@@ -75,6 +78,7 @@ import {
   signInWithEmail,
   signOut,
   signUpWithEmail,
+  updatePassword,
 } from './auth.js';
 import { isSupabaseConfigured } from './supabase-client.js';
 import {
@@ -102,6 +106,7 @@ let scMode = localStorage.getItem(SC_MODE_STORAGE_KEY) || 'Gym Machines';
 let scWeek = Number(localStorage.getItem(SC_WEEK_STORAGE_KEY) || activeWeekIndex + 1);
 let shellHooks = null;
 let authMode = 'sign-in';
+let passwordRecoveryPending = false;
 let activeMileTestContext = { testKey: 'mile-test:baseline', workoutContext: null };
 let detailModality = MODALITY_RUNNING;
 let detailModalityInitialized = false;
@@ -181,6 +186,9 @@ function cleanAuthError(error) {
   const message = String(error?.message || error || 'Account action failed.');
   if (/invalid login credentials/i.test(message)) return 'Email or password did not match.';
   if (/email not confirmed/i.test(message)) return 'Check your email to confirm this account, then sign in.';
+  if (/user not found/i.test(message)) return 'No account found for that email.';
+  if (/for security purposes/i.test(message)) return 'Please wait a moment before requesting another reset email.';
+  if (/same password/i.test(message)) return 'Choose a password you have not used recently.';
   return message;
 }
 function hasProfileData(profile = {}) {
@@ -315,11 +323,58 @@ function setAuthStatus(message = '', isError = false) {
 }
 function renderAuthUI() {
   const isSignUp = authMode === 'sign-up';
-  setText('auth-copy', isSignUp ? 'Create your Ring Ready account so your profile can follow you across devices.' : 'Sign in to save your profile and training history to your account.');
-  setText('auth-submit-btn', isSignUp ? 'CREATE ACCOUNT' : 'SIGN IN');
-  setText('auth-mode-toggle-btn', isSignUp ? 'Already have an account? Sign in' : 'Create an account instead');
+  const isForgot = authMode === 'forgot';
+  const isUpdate = authMode === 'update-password';
+
+  if (isUpdate) {
+    setText('auth-copy', 'Choose a new password for your Ring Ready account.');
+    setText('auth-submit-btn', 'SAVE NEW PASSWORD');
+    setText('auth-mode-toggle-btn', 'Back to sign in');
+  } else if (isForgot) {
+    setText('auth-copy', 'Enter your account email and we will send a reset link.');
+    setText('auth-submit-btn', 'SEND RESET LINK');
+    setText('auth-mode-toggle-btn', 'Back to sign in');
+  } else {
+    setText('auth-copy', isSignUp ? 'Create your Ring Ready account so your profile can follow you across devices.' : 'Sign in to save your profile and training history to your account.');
+    setText('auth-submit-btn', isSignUp ? 'CREATE ACCOUNT' : 'SIGN IN');
+    setText('auth-mode-toggle-btn', isSignUp ? 'Already have an account? Sign in' : 'Create an account instead');
+  }
+
+  const emailWrap = document.getElementById('auth-email-wrap');
+  const emailInput = document.getElementById('auth-email-input');
+  const passwordWrap = document.getElementById('auth-password-wrap');
   const password = document.getElementById('auth-password-input');
-  if (password) password.autocomplete = isSignUp ? 'new-password' : 'current-password';
+  const passwordLabel = document.getElementById('auth-password-label');
+  const confirmWrap = document.getElementById('auth-password-confirm-wrap');
+  const confirmInput = document.getElementById('auth-password-confirm-input');
+  const forgotBtn = document.getElementById('auth-forgot-btn');
+
+  if (emailWrap) emailWrap.hidden = isUpdate;
+  if (emailInput) {
+    emailInput.required = !isUpdate;
+    emailInput.disabled = isUpdate;
+  }
+  if (passwordWrap) passwordWrap.hidden = isForgot;
+  if (password) {
+    password.required = !isForgot;
+    password.disabled = isForgot;
+    password.value = isForgot ? '' : password.value;
+    password.autocomplete = isSignUp || isUpdate ? 'new-password' : 'current-password';
+    password.placeholder = isUpdate ? 'New password (8+ characters)' : '8+ characters';
+  }
+  if (passwordLabel) passwordLabel.textContent = isUpdate ? 'New Password' : 'Password';
+  if (confirmWrap) confirmWrap.hidden = !isUpdate;
+  if (confirmInput) {
+    confirmInput.required = isUpdate;
+    confirmInput.disabled = !isUpdate;
+    if (!isUpdate) confirmInput.value = '';
+  }
+  if (forgotBtn) forgotBtn.hidden = isSignUp || isForgot || isUpdate;
+}
+function enterPasswordRecoveryMode(message = 'Choose a new password to finish resetting your account.') {
+  passwordRecoveryPending = true;
+  authMode = 'update-password';
+  showAuthScreen(message);
 }
 function renderAllPages() {
   renderShell();
@@ -437,14 +492,65 @@ async function handleAuthSubmit(event) {
     openCoachPreviewIfRequested();
     return;
   }
+
   const email = readInputValue('auth-email-input');
   const password = readInputValue('auth-password-input');
+  const confirmPassword = readInputValue('auth-password-confirm-input');
+  const submit = document.getElementById('auth-submit-btn');
+
+  if (authMode === 'forgot') {
+    if (!email) {
+      setAuthStatus('Enter the email for your account.', true);
+      return;
+    }
+    if (submit) submit.disabled = true;
+    setAuthStatus('Sending reset link...');
+    try {
+      await requestPasswordReset(email);
+      authMode = 'sign-in';
+      renderAuthUI();
+      setAuthStatus('Reset link sent. Check your email, then open the link on this device.');
+      shellHooks?.showToast?.('RESET LINK SENT');
+    } catch (error) {
+      setAuthStatus(cleanAuthError(error), true);
+    } finally {
+      if (submit) submit.disabled = false;
+    }
+    return;
+  }
+
+  if (authMode === 'update-password') {
+    if (password.length < 8) {
+      setAuthStatus('Enter a new password with at least 8 characters.', true);
+      return;
+    }
+    if (password !== confirmPassword) {
+      setAuthStatus('New password and confirmation did not match.', true);
+      return;
+    }
+    if (submit) submit.disabled = true;
+    setAuthStatus('Saving new password...');
+    try {
+      await updatePassword(password);
+      passwordRecoveryPending = false;
+      clearAuthRedirectParams();
+      if (!isCoachUser()) await hydrateCloudData();
+      else prepareCoachSession();
+      enterAppHome();
+      shellHooks?.showToast?.('PASSWORD UPDATED');
+    } catch (error) {
+      setAuthStatus(cleanAuthError(error), true);
+    } finally {
+      if (submit) submit.disabled = false;
+    }
+    return;
+  }
+
   if (!email || password.length < 8) {
     setAuthStatus('Enter an email and password with at least 8 characters.', true);
     return;
   }
 
-  const submit = document.getElementById('auth-submit-btn');
   if (submit) submit.disabled = true;
   setAuthStatus(authMode === 'sign-up' ? 'Creating account...' : 'Signing in...');
   try {
@@ -466,14 +572,27 @@ async function handleAuthSubmit(event) {
   }
 }
 function toggleAuthMode() {
-  authMode = authMode === 'sign-up' ? 'sign-in' : 'sign-up';
+  if (authMode === 'forgot' || authMode === 'update-password') {
+    passwordRecoveryPending = false;
+    authMode = 'sign-in';
+  } else {
+    authMode = authMode === 'sign-up' ? 'sign-in' : 'sign-up';
+  }
   renderAuthUI();
   setAuthStatus('');
+}
+function openForgotPassword() {
+  authMode = 'forgot';
+  renderAuthUI();
+  setAuthStatus('');
+  document.getElementById('auth-email-input')?.focus();
 }
 async function handleLogout() {
   try {
     closeWeekDrawer();
     await signOut();
+    passwordRecoveryPending = false;
+    authMode = 'sign-in';
     clearAccountLocalData();
     localStorage.removeItem(AUTH_USER_STORAGE_KEY);
     syncSignOutControls();
@@ -493,7 +612,15 @@ function syncSignOutControls() {
   if (drawerAccount) drawerAccount.hidden = !signedIn;
 }
 function handleAuthStateChange(session, event) {
-  if (event === 'SIGNED_OUT' && isSupabaseConfigured) showAuthScreen();
+  if (event === 'PASSWORD_RECOVERY') {
+    enterPasswordRecoveryMode();
+    return;
+  }
+  if (event === 'SIGNED_OUT' && isSupabaseConfigured) {
+    passwordRecoveryPending = false;
+    authMode = 'sign-in';
+    showAuthScreen();
+  }
 }
 function formatDistance(value) { const num = Number(value); if (!Number.isFinite(num) || num <= 0) return '--'; return num >= 10 ? num.toFixed(1) : num.toFixed(2); }
 function formatDashboardDate(value) {
@@ -1858,6 +1985,7 @@ function openWorkoutDetail(weekIndex, workoutIndex) {
 function bindShellEvents() {
   document.getElementById('auth-form')?.addEventListener('submit', handleAuthSubmit);
   document.getElementById('auth-mode-toggle-btn')?.addEventListener('click', toggleAuthMode);
+  document.getElementById('auth-forgot-btn')?.addEventListener('click', openForgotPassword);
   document.querySelectorAll('[data-logout]').forEach((btn) => btn.addEventListener('click', handleLogout));
   document.getElementById('week-prev-btn')?.addEventListener('click', () => { saveWeek(activeWeekIndex - 1); scWeek = activeWeekIndex + 1; renderShell(); renderSCPage(); });
   document.getElementById('week-next-btn')?.addEventListener('click', () => { saveWeek(activeWeekIndex + 1); scWeek = activeWeekIndex + 1; renderShell(); renderSCPage(); });
@@ -1991,7 +2119,13 @@ export async function initAthleteShell(hooks) {
   }
 
   try {
+    const recovering = isPasswordRecoveryRedirect();
     const session = await initSupabaseAuth(handleAuthStateChange);
+    if (recovering || passwordRecoveryPending) {
+      enterPasswordRecoveryMode();
+      openCoachPreviewIfRequested();
+      return;
+    }
     if (!session) {
       showAuthScreen();
       openCoachPreviewIfRequested();

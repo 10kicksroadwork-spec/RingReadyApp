@@ -196,6 +196,13 @@
     text-transform: uppercase;
   }
 
+  .auth-switch-btn[hidden],
+  #auth-email-wrap[hidden],
+  #auth-password-wrap[hidden],
+  #auth-password-confirm-wrap[hidden] {
+    display: none;
+  }
+
   .auth-status {
     min-height: 18px;
     color: rgba(240, 240, 240, 0.68);
