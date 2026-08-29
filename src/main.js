@@ -4,7 +4,7 @@ import { initAthleteShell } from './shell.js';
 import { enforceAthleteOnboarding, installSignupNameCapture } from './onboarding.js';
 import { openCoachPreviewIfRequested } from './coach-preview.js';
 import { MILE_TEST_STORAGE_KEY } from './app-content.js';
-import { sanitizeDurationInput } from './workout.js';
+import { parseDurationMinutes, sanitizeDurationInput } from './workout.js';
 import { getHRMonitorSetupCopy } from './platform.js';
 import { initSyncControls } from './sync.js';
 import {
@@ -92,37 +92,6 @@ function bindClick(id, handler) {
   if (el) el.addEventListener('click', handler);
 }
 
-function parseDuration(value) {
-  const raw = String(value || '').trim();
-  if (!raw) return null;
-
-  const colonMatch = raw.match(/^(\d{1,3}):([0-5]?\d)$/);
-  if (colonMatch) {
-    const minutes = Number(colonMatch[1]);
-    const seconds = Number(colonMatch[2]);
-    const totalSeconds = minutes * 60 + seconds;
-
-    if (!Number.isFinite(totalSeconds) || totalSeconds <= 0) return null;
-
-    return {
-      totalSeconds,
-      totalMinutes: Number((totalSeconds / 60).toFixed(4)),
-      display: `${minutes}:${String(seconds).padStart(2, '0')}`,
-    };
-  }
-
-  const decimalMinutes = Number(raw);
-  if (!Number.isFinite(decimalMinutes) || decimalMinutes <= 0) return null;
-
-  const totalSeconds = Math.round(decimalMinutes * 60);
-
-  return {
-    totalSeconds,
-    totalMinutes: Number((totalSeconds / 60).toFixed(4)),
-    display: `${Math.floor(totalSeconds / 60)}:${String(totalSeconds % 60).padStart(2, '0')}`,
-  };
-}
-
 function sanitizeDuration(value, previousValue = '') {
   return sanitizeDurationInput(value, previousValue);
 }
@@ -154,13 +123,13 @@ function getSavedMileResult() {
 
 function getSavedMileDuration(result) {
   if (!result) return null;
-  if (result.totalTimeDisplay) return parseDuration(result.totalTimeDisplay);
+  if (result.totalTimeDisplay) return parseDurationMinutes(result.totalTimeDisplay);
 
   if (Number.isFinite(Number(result.totalSeconds)) && Number(result.totalSeconds) > 0) {
-    return parseDuration(Number(result.totalSeconds) / 60);
+    return parseDurationMinutes(Number(result.totalSeconds) / 60);
   }
 
-  return parseDuration(result.totalMinutes);
+  return parseDurationMinutes(result.totalMinutes);
 }
 
 function refreshMileResultCopy() {
@@ -221,7 +190,7 @@ function configureMileTimeInput() {
     input.addEventListener('blur', () => {
       if (mileSaveInProgress) return;
 
-      const parsed = parseDuration(input.value);
+      const parsed = parseDurationMinutes(input.value);
       if (parsed) {
         input.value = parsed.display;
         input.dataset.prevDuration = parsed.display;
@@ -235,7 +204,7 @@ function configureMileTimeInput() {
     input.value &&
     !input.value.includes(':')
   ) {
-    const parsed = parseDuration(input.value);
+    const parsed = parseDurationMinutes(input.value);
     if (parsed) input.value = parsed.display;
   }
 
@@ -246,7 +215,7 @@ function prepareMileValueForSave() {
   const input = document.getElementById('mile-time-input');
   if (!input) return;
 
-  const parsed = parseDuration(input.value);
+  const parsed = parseDurationMinutes(input.value);
   if (!parsed) return;
 
   /*

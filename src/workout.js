@@ -61,3 +61,31 @@ export function sanitizeDurationInput(value, previousValue = '') {
   if (digits.length === 2) return isDeleting ? digits : `${digits}:`;
   return `${digits.slice(0, 2)}:${digits.slice(2, 4)}`;
 }
+
+/** Parse MM:SS or decimal minutes into normalized mile-test duration fields. */
+export function parseDurationMinutes(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return null;
+
+  const colonMatch = raw.match(/^(\d{1,3}):([0-5]?\d)$/);
+  if (colonMatch) {
+    const minutes = Number(colonMatch[1]);
+    const seconds = Number(colonMatch[2]);
+    const totalSeconds = minutes * 60 + seconds;
+    if (!Number.isFinite(totalSeconds) || totalSeconds <= 0) return null;
+    return {
+      totalSeconds,
+      totalMinutes: Number((totalSeconds / 60).toFixed(4)),
+      display: `${minutes}:${String(seconds).padStart(2, '0')}`,
+    };
+  }
+
+  const decimalMinutes = Number(raw);
+  if (!Number.isFinite(decimalMinutes) || decimalMinutes <= 0) return null;
+  const totalSeconds = Math.round(decimalMinutes * 60);
+  return {
+    totalSeconds,
+    totalMinutes: Number((totalSeconds / 60).toFixed(4)),
+    display: `${Math.floor(totalSeconds / 60)}:${String(totalSeconds % 60).padStart(2, '0')}`,
+  };
+}

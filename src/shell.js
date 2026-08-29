@@ -37,7 +37,7 @@ import {
   saveAthleteProfile,
 } from './sync.js';
 import { getWorkoutCompletion, isWorkoutCompletionCleared, markWorkoutCompletionCleared, removeWorkoutCompletion, saveWorkoutCompletion } from './storage.js';
-import { sanitizeDurationInput } from './workout.js';
+import { parseDurationMinutes, sanitizeDurationInput } from './workout.js';
 import {
   buildWorkoutLogModalityFields,
   formatModalityLabel,
@@ -180,6 +180,14 @@ function parseNumberInput(id, fallback) {
   if (!el || el.value === '') return fallback;
   const parsed = Number(el.value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+function parseMileTimeInput(fallback = NaN) {
+  const parsed = parseDurationMinutes(readInputValue('mile-time-input'));
+  return parsed ? parsed.totalMinutes : fallback;
+}
+function formatSavedMileDuration(result) {
+  if (!result) return null;
+  return parseDurationMinutes(result.totalTimeDisplay || result.totalMinutes || (Number(result.totalSeconds) > 0 ? Number(result.totalSeconds) / 60 : ''));
 }
 function formatWholeNumber(value, fallback = '--') { const num = Number(value); return Number.isFinite(num) && num > 0 ? String(Math.round(num)) : fallback; }
 function cleanAuthError(error) {
@@ -1764,13 +1772,15 @@ function renderMileTestPage() {
     legacy: !!(matchesActiveTest && !result.proofPolicyVersion),
   });
   if (result) {
+    const savedDuration = formatSavedMileDuration(result);
     setInputValue('mile-distance-input', result.distance);
-    setInputValue('mile-time-input', result.totalMinutes);
+    setInputValue('mile-time-input', savedDuration?.display || result.totalMinutes);
     setInputValue('mile-avg-bpm-input', result.avgBpm);
     setInputValue('mile-max-bpm-input', result.maxBpm);
   }
   const last = document.getElementById('mile-last-result');
-  if (last) last.textContent = result ? `Last saved: ${formatDistance(result.distance)} mi / ${formatWholeNumber(result.totalMinutes)} min / ${formatWholeNumber(result.maxBpm)} max bpm / ${formatDashboardDate(result.savedAt)}` : 'No Mile Test saved yet.';
+  const savedDuration = formatSavedMileDuration(result);
+  if (last) last.textContent = result ? `Last saved: ${formatDistance(result.distance)} mi / ${savedDuration?.display || '--'} / ${formatWholeNumber(result.maxBpm)} max bpm / ${formatDashboardDate(result.savedAt)}` : 'No Mile Test saved yet.';
   const locations = document.getElementById('mile-location-list');
   if (locations) locations.innerHTML = MILE_TEST_INFO.locations.map((location) => `<div>${escapeHTML(location)}</div>`).join('');
   const guidanceList = document.getElementById('mile-test-guidance-list');
@@ -1782,7 +1792,7 @@ function updateMileCompletionState() {
   if (!button) return;
   const values = [
     parseNumberInput('mile-distance-input', NaN),
-    parseNumberInput('mile-time-input', NaN),
+    parseMileTimeInput(NaN),
     parseNumberInput('mile-avg-bpm-input', NaN),
     parseNumberInput('mile-max-bpm-input', NaN),
   ];
@@ -1793,14 +1803,15 @@ function updateMileCompletionState() {
 }
 async function saveMileTestResult() {
   const distance = parseNumberInput('mile-distance-input', NaN);
-  const totalMinutes = parseNumberInput('mile-time-input', NaN);
+  const duration = parseDurationMinutes(readInputValue('mile-time-input'));
+  const totalMinutes = duration?.totalMinutes ?? NaN;
   const avgBpm = parseNumberInput('mile-avg-bpm-input', 0);
   const maxBpm = parseNumberInput('mile-max-bpm-input', 0);
   if (![distance, totalMinutes, avgBpm, maxBpm].every((value) => Number.isFinite(value) && value > 0)) { shellHooks?.showToast?.('FILL OUT MILE TEST RESULTS'); return; }
   if (avgBpm > 999 || maxBpm > 999) { shellHooks?.showToast?.('HR MUST BE 3 DIGITS OR LESS'); return; }
   if (maxBpm < avgBpm) { shellHooks?.showToast?.('MAX HR SHOULD BE AVG OR HIGHER'); return; }
   const proofContext = getActiveMileProofContext();
-  const result = { id: makeWorkoutCompletionId(), testKey: proofContext.testKey, distance, totalMinutes, totalSeconds: Math.round(totalMinutes * 60), avgBpm, maxBpm, paceMinPerMile: distance > 0 ? totalMinutes / distance : '', savedAt: new Date().toISOString() };
+  const result = { id: makeWorkoutCompletionId(), testKey: proofContext.testKey, distance, totalMinutes, totalSeconds: duration?.totalSeconds ?? Math.round(totalMinutes * 60), totalTimeDisplay: duration?.display || '', avgBpm, maxBpm, paceMinPerMile: distance > 0 ? totalMinutes / distance : '', savedAt: new Date().toISOString() };
   const isNewProof = hasPendingWorkoutProof('mile');
   try {
     result.attachment = await ensureWorkoutProofUploaded('mile', result.id);
