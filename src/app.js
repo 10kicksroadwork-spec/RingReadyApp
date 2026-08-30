@@ -15,6 +15,11 @@ import {
 } from './workout.js';
 import { removeWorkoutCompletion, saveSessionToHistory, saveWorkoutCompletion } from './storage.js';
 import {
+  applyCompletionActionState,
+  buildProofChecklistItem,
+  renderCompletionHints,
+} from './completion-hints.js';
+import {
   enqueueSessionForSync,
   enqueueWorkoutProofForSync,
   flushSyncQueue,
@@ -674,22 +679,37 @@ function formatResultDate(record) {
 function updateCompleteWorkoutButton(record) {
   const btn = document.getElementById('complete-workout-btn');
   const clearBtn = document.getElementById('clear-result-completion-btn');
+  const hints = document.getElementById('sprint-completion-hints');
   if (!btn) return;
 
   const canComplete = isProgramWorkoutRecord(record);
   btn.hidden = !canComplete;
   if (clearBtn) clearBtn.hidden = !canComplete || !record?.completedAt;
-  if (!canComplete) return;
+  if (!canComplete) {
+    renderCompletionHints(hints, []);
+    return;
+  }
 
   const isCompleted = !!record?.completedAt;
   const canReplace = hasPendingWorkoutProof('sprint');
-  btn.disabled = !hasWorkoutProof('sprint') || (isCompleted && !canReplace);
   btn.classList.toggle('completed', isCompleted);
   btn.textContent = isCompleted ? (canReplace ? 'SAVE REPLACEMENT PROOF' : 'WORKOUT COMPLETE') : 'COMPLETE WORKOUT';
   btn.setAttribute(
     'aria-label',
     isCompleted ? 'Workout already complete' : 'Mark workout complete'
   );
+
+  if (isCompleted && !canReplace) {
+    renderCompletionHints(hints, []);
+    btn.disabled = true;
+    return;
+  }
+
+  const items = [buildProofChecklistItem(hasWorkoutProof('sprint'))];
+  applyCompletionActionState(btn, items, {
+    hintsRoot: hints,
+    hintsId: 'sprint-completion-hints',
+  });
 }
 export function buildResults(record = activeResultRecord) {
   const resultRecord = record || { date: new Date().toISOString(), cfg: { ...cfg }, data: state.data };

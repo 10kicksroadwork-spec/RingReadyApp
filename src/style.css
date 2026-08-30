@@ -1303,6 +1303,62 @@
     opacity: 1;
   }
 
+  .completion-hints {
+    width: 100%;
+    margin-bottom: 10px;
+    padding: 12px 14px;
+    border: 1px solid rgba(240, 138, 42, 0.35);
+    border-radius: 10px;
+    background: rgba(240, 138, 42, 0.08);
+  }
+
+  .completion-hints-title {
+    color: #ffb066;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.4px;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+
+  .completion-hints-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 6px;
+  }
+
+  .completion-hints-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    line-height: 1.35;
+  }
+
+  .completion-hints-item.is-done {
+    color: #8fd6a8;
+  }
+
+  .completion-hints-item.is-pending {
+    color: #f4f4f4;
+  }
+
+  .completion-hints-mark {
+    width: 14px;
+    flex: 0 0 14px;
+    text-align: center;
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  .results-actions .completion-hints,
+  .detail-actions .completion-hints,
+  #mile-test-page .completion-hints {
+    margin-bottom: 12px;
+  }
+
   @media (min-width: 720px) {
     .home-body, .detail-body { max-width: 720px; width: 100%; margin: 0 auto; }
     .detail-grid { grid-template-columns: 1fr 1fr 0.8fr; }

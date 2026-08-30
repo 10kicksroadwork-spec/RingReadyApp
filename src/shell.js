@@ -39,6 +39,13 @@ import {
 import { getWorkoutCompletion, isWorkoutCompletionCleared, markWorkoutCompletionCleared, removeWorkoutCompletion, saveWorkoutCompletion } from './storage.js';
 import { parseDurationMinutes, sanitizeDurationInput } from './workout.js';
 import {
+  applyCompletionActionState,
+  buildHrChecklistItem,
+  buildNumericChecklistItem,
+  buildProofChecklistItem,
+  renderCompletionHints,
+} from './completion-hints.js';
+import {
   buildWorkoutLogModalityFields,
   formatModalityLabel,
   getModalityMeta,
@@ -1146,6 +1153,47 @@ function getWorkoutDurationPlaceholder(workout = {}) {
 }
 function parseThreeDigitHR(id) { const value = readInputValue(id); return /^\d{1,3}$/.test(value) ? Number(value) : NaN; }
 
+function hideCompletionHints(id) {
+  renderCompletionHints(document.getElementById(id), []);
+}
+
+function getDetailCompletionItems() {
+  const duration = parseWorkoutDuration(readInputValue('detail-total-minutes-input'));
+  const avgBpm = parseThreeDigitHR('detail-avg-bpm-input');
+  const maxBpm = parseThreeDigitHR('detail-max-bpm-input');
+  const outputValue = parseNumberInput('detail-output-input', NaN);
+  const outputMeta = getModalityMeta(detailModality);
+  const items = [
+    { label: 'Total time', done: !!duration },
+    buildHrChecklistItem('Average HR', avgBpm),
+    buildHrChecklistItem('Max HR', maxBpm),
+    buildNumericChecklistItem(outputMeta.outputLabel, outputValue),
+    buildProofChecklistItem(hasWorkoutProof('detail')),
+  ];
+  if (Number.isFinite(avgBpm) && avgBpm > 0 && Number.isFinite(maxBpm) && maxBpm > 0 && maxBpm < avgBpm) {
+    items.push({ label: 'Max HR must be at least average HR', done: false });
+  }
+  return items;
+}
+
+function getMileCompletionItems() {
+  const distance = parseNumberInput('mile-distance-input', NaN);
+  const totalMinutes = parseMileTimeInput(NaN);
+  const avgBpm = parseNumberInput('mile-avg-bpm-input', NaN);
+  const maxBpm = parseNumberInput('mile-max-bpm-input', NaN);
+  const items = [
+    buildNumericChecklistItem('Distance (mi)', distance),
+    buildNumericChecklistItem('Total time', totalMinutes),
+    buildHrChecklistItem('Average HR', avgBpm),
+    buildHrChecklistItem('Max BPM', maxBpm),
+    buildProofChecklistItem(hasWorkoutProof('mile')),
+  ];
+  if (Number.isFinite(avgBpm) && avgBpm > 0 && Number.isFinite(maxBpm) && maxBpm > 0 && maxBpm < avgBpm) {
+    items.push({ label: 'Max HR must be at least average HR', done: false });
+  }
+  return items;
+}
+
 function syncDetailModalityChrome(options = {}) {
   const clearOutput = !!options.clearOutput;
   const meta = getModalityMeta(detailModality);
@@ -1224,11 +1272,22 @@ function sanitizeWorkoutDurationInput(value, previousValue = '') {
 function sanitizeThreeDigitInput(value) { return String(value || '').replace(/\D/g, '').slice(0, 3); }
 function updateDetailCompletionState() {
   const action = document.getElementById('detail-action-btn');
-  if (!action || action.dataset.action !== 'complete-workout') return;
+  const hints = document.getElementById('detail-completion-hints');
+  if (!action || action.dataset.action !== 'complete-workout') {
+    hideCompletionHints('detail-completion-hints');
+    return;
+  }
   const completion = getWorkoutCompletion(action.dataset.weekIndex, action.dataset.workoutIndex);
-  if (isSkippedCompletion(completion) || action.hidden) return;
+  if (isSkippedCompletion(completion) || action.hidden) {
+    hideCompletionHints('detail-completion-hints');
+    return;
+  }
   action.textContent = completion ? 'SAVE CHANGES' : 'COMPLETE WORKOUT';
-  action.disabled = !readDetailWorkoutLog({ silent: true }) || !hasWorkoutProof('detail');
+  const items = getDetailCompletionItems();
+  applyCompletionActionState(action, items, {
+    hintsRoot: hints,
+    hintsId: 'detail-completion-hints',
+  });
   action.classList.toggle('completed', false);
   const clearBtn = document.getElementById('detail-clear-completion-btn');
   if (clearBtn) {
@@ -1789,17 +1848,13 @@ function renderMileTestPage() {
 }
 function updateMileCompletionState() {
   const button = document.getElementById('save-mile-test-btn');
+  const hints = document.getElementById('mile-completion-hints');
   if (!button) return;
-  const values = [
-    parseNumberInput('mile-distance-input', NaN),
-    parseMileTimeInput(NaN),
-    parseNumberInput('mile-avg-bpm-input', NaN),
-    parseNumberInput('mile-max-bpm-input', NaN),
-  ];
-  const [distance, totalMinutes, avgBpm, maxBpm] = values;
-  const fieldsValid = values.every((value) => Number.isFinite(value) && value > 0)
-    && distance > 0 && totalMinutes > 0 && avgBpm <= 999 && maxBpm <= 999 && maxBpm >= avgBpm;
-  button.disabled = !fieldsValid || !hasWorkoutProof('mile');
+  const items = getMileCompletionItems();
+  applyCompletionActionState(button, items, {
+    hintsRoot: hints,
+    hintsId: 'mile-completion-hints',
+  });
 }
 async function saveMileTestResult() {
   const distance = parseNumberInput('mile-distance-input', NaN);
@@ -1969,12 +2024,20 @@ function openWorkoutDetail(weekIndex, workoutIndex) {
       : actionType === 'view-results'
         ? false
         : isLoggedWorkout
-          ? (!readDetailWorkoutLog({ silent: true }) || !hasWorkoutProof('detail'))
+          ? false
           : isCompleted;
     action.classList.toggle('completed', isCompleted && !isLoggedWorkout && actionType !== 'view-results');
     action.dataset.action = actionType;
     action.dataset.weekIndex = String(safeWeekIndex);
     action.dataset.workoutIndex = String(safeWorkoutIndex);
+    if (isLoggedWorkout && actionType === 'complete-workout' && !skipped) {
+      updateDetailCompletionState();
+    } else {
+      hideCompletionHints('detail-completion-hints');
+      if (!skipped && actionType !== 'view-results' && !isLoggedWorkout) {
+        action.disabled = isCompleted;
+      }
+    }
   }
 
   const skipBtn = document.getElementById('detail-skip-workout-btn');
