@@ -157,6 +157,14 @@ scripts/supabase-workout-proof.sql
 
 It creates the private staging bucket, attachment records and RLS policies, then adds proof fields to workout, sprint and Mile Test records. Do not make the bucket public.
 
+If proof uploads fail on iPhone with a MIME type error, also run:
+
+```text
+scripts/supabase-workout-proof-mime-fix.sql
+```
+
+That allows JPEG and PNG in the staging bucket (iOS Safari cannot encode WebP from canvas).
+
 Add `scripts/RingReadyWorkoutProof.gs` as a new file in the existing master-sheet Apps Script project. Keep the existing receiver and legacy extraction functions. In the current `doPost` dispatcher, pass proof events to the add-on:
 
 ```js
