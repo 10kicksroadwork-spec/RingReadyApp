@@ -1,8 +1,8 @@
--- List workout proof attachments with athlete names.
--- Run in Supabase SQL Editor (Dashboard → SQL → New query).
+-- Ad-hoc query: list current workout proofs with athlete names.
+-- For Table Editor support, run instead:
+--   scripts/supabase-workout-attachments-athlete-name-column.sql
 --
--- Joins workout_attachments → athlete_profiles for the display name.
--- Falls back to auth.users.email when profile name is missing.
+-- That adds an athlete_name column directly on workout_attachments (visible in Table Editor).
 
 -- Current proof files only (one per proof_key per athlete)
 select
