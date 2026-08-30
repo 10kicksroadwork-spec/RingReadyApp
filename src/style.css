@@ -2679,6 +2679,66 @@
     line-height: 1.4;
   }
 
+  .coach-hr-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 0 0 12px;
+  }
+
+  .coach-hr-chip {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 6px;
+    padding: 6px 10px;
+    border-radius: 999px;
+    border: 1px solid rgba(245, 200, 66, 0.28);
+    background: rgba(245, 200, 66, 0.08);
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .coach-hr-chip em {
+    color: var(--light-grey);
+    font-style: normal;
+    font-weight: 700;
+  }
+
+  .coach-hr-chip strong {
+    color: var(--white);
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+  }
+
+  .coach-hr-chip.is-missing {
+    border-color: rgba(240, 138, 42, 0.45);
+    background: rgba(240, 138, 42, 0.1);
+  }
+
+  .coach-hr-chip.is-missing strong {
+    color: #ffb066;
+  }
+
+  .coach-hr-panel {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
+  .coach-hr-note {
+    margin: 8px 0 0;
+    color: #ffb066;
+    font-size: 12px;
+    line-height: 1.4;
+  }
+
+  .coach-athlete-hr {
+    margin-top: 12px;
+  }
+
   .coach-roster-meta span:not(:last-child)::after {
     content: ' ·';
   }

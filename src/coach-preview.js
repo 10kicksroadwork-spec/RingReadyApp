@@ -1132,6 +1132,45 @@ function toneCopy(tone) {
   return 'On track';
 }
 
+function parseAthleteHrValue(value) {
+  const num = Number(value);
+  return Number.isFinite(num) && num > 0 ? Math.round(num) : null;
+}
+
+function getAthleteHrProfile(athlete) {
+  const maxHr = parseAthleteHrValue(athlete?.maxHr);
+  const restingHr = parseAthleteHrValue(athlete?.restingHr);
+  return {
+    maxHr,
+    restingHr,
+    hasMaxHr: maxHr !== null,
+    hasRestingHr: restingHr !== null,
+    isComplete: maxHr !== null && restingHr !== null,
+  };
+}
+
+function renderAthleteHrChip(label, value, hasValue) {
+  if (hasValue) {
+    return `<span class="coach-hr-chip is-set"><em>${escapeHTML(label)}</em><strong>${value} bpm</strong></span>`;
+  }
+  return `<span class="coach-hr-chip is-missing" title="${escapeHTML(label)} HR not entered"><em>${escapeHTML(label)}</em><strong>Not set</strong></span>`;
+}
+
+function renderAthleteHrProfile(athlete, { compact = false } = {}) {
+  const hr = getAthleteHrProfile(athlete);
+  const chips = [
+    renderAthleteHrChip('Max HR', hr.maxHr, hr.hasMaxHr),
+    renderAthleteHrChip('Resting HR', hr.restingHr, hr.hasRestingHr),
+  ].join('');
+  if (compact) {
+    return `<div class="coach-hr-row${hr.isComplete ? '' : ' is-incomplete'}" aria-label="Athlete heart rate profile">${chips}</div>`;
+  }
+  return `<div class="coach-hr-panel${hr.isComplete ? '' : ' is-incomplete'}" aria-label="Athlete heart rate profile">
+    <div class="coach-hr-row">${chips}</div>
+    ${hr.isComplete ? '' : '<p class="coach-hr-note">Athlete has not entered full HR info yet.</p>'}
+  </div>`;
+}
+
 function statusCopy(status) {
   if (status === 'missing') return 'Missing';
   if (status === 'upcoming') return 'Upcoming';
@@ -1253,6 +1292,7 @@ function renderRoster() {
         <span class="coach-status-chip">${escapeHTML(toneCopy(athlete.tone))}</span>
       </div>
       <p>${escapeHTML(athlete.headline)}</p>
+      ${renderAthleteHrProfile(athlete, { compact: true })}
       ${renderSignalPills(athlete)}
       <div class="coach-roster-meta">
         <span>${athlete.logged}/${athlete.due} logged</span>
@@ -1415,6 +1455,8 @@ function renderAthlete() {
     athlete.tenure,
   ].filter(Boolean).join(' · '));
   setText('coach-athlete-verdict', athlete.headline);
+  const hrRoot = document.getElementById('coach-athlete-hr');
+  if (hrRoot) hrRoot.innerHTML = renderAthleteHrProfile(athlete);
   const chip = document.getElementById('coach-athlete-status');
   if (chip) {
     chip.textContent = toneCopy(athlete.tone);
