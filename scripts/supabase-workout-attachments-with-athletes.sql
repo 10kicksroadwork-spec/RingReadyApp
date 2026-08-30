@@ -1,8 +1,8 @@
 -- Ad-hoc query: list current workout proofs with athlete names.
--- For Table Editor support, run instead:
---   scripts/supabase-workout-attachments-athlete-name-column.sql
+-- For Table Editor columns on all tables, run instead:
+--   scripts/supabase-athlete-name-all-tables.sql
 --
--- That adds an athlete_name column directly on workout_attachments (visible in Table Editor).
+-- That adds athlete_name on every fighter-linked table (visible in Table Editor).
 
 -- Current proof files only (one per proof_key per athlete)
 select

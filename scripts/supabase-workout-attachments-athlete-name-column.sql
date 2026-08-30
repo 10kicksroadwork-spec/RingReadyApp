@@ -1,4 +1,7 @@
 -- Add athlete_name to workout_attachments for Supabase Table Editor.
+-- DEPRECATED: use scripts/supabase-athlete-name-all-tables.sql instead
+-- (covers workout_attachments and every other fighter-linked table).
+--
 -- Run once in Supabase SQL Editor after scripts/supabase-workout-proof.sql.
 --
 -- After this, open Table Editor → workout_attachments and you'll see athlete_name
