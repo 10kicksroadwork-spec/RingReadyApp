@@ -8,9 +8,47 @@ export const PROOF_BUCKET = 'workout-proof-staging';
 const SOURCE_LIMIT_BYTES = 10 * 1024 * 1024;
 const PROCESSED_LIMIT_BYTES = Math.round(2.5 * 1024 * 1024);
 const MAX_EDGE = 1600;
-const ACCEPTED_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
+const ACCEPTED_TYPES = new Set(['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/heic', 'image/heif']);
+const EXTENSION_TYPES = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  webp: 'image/webp',
+  heic: 'image/heic',
+  heif: 'image/heif',
+};
+const IMAGE_EXTENSION_PATTERN = /\.(jpe?g|png|webp|heic|heif)$/i;
 const states = new Map();
 let listenersBound = false;
+let cachedCanvasOutputMimeType = '';
+
+function resolveImageMimeType(file) {
+  const type = String(file?.type || '').toLowerCase();
+  if (ACCEPTED_TYPES.has(type)) return type === 'image/jpg' ? 'image/jpeg' : type;
+  const extension = String(file?.name || '').split('.').pop()?.toLowerCase() || '';
+  return EXTENSION_TYPES[extension] || '';
+}
+
+function isAcceptedImageFile(file) {
+  if (!file) return false;
+  if (resolveImageMimeType(file)) return true;
+  return !file.type && IMAGE_EXTENSION_PATTERN.test(String(file.name || ''));
+}
+
+function getCanvasOutputMimeType() {
+  if (cachedCanvasOutputMimeType) return cachedCanvasOutputMimeType;
+  const canvas = document.createElement('canvas');
+  canvas.width = 1;
+  canvas.height = 1;
+  cachedCanvasOutputMimeType = canvas.toDataURL('image/webp').startsWith('data:image/webp') ? 'image/webp' : 'image/jpeg';
+  return cachedCanvasOutputMimeType;
+}
+
+function extensionForMimeType(mimeType) {
+  if (mimeType === 'image/jpeg') return 'jpg';
+  if (mimeType === 'image/png') return 'png';
+  return 'webp';
+}
 
 function escapeHTML(value) {
   return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
@@ -86,7 +124,7 @@ function render(surface) {
           <span>${escapeHTML(statusText)}</span>
         </div>
         <label class="proof-picker-btn">
-          <input type="file" accept="image/png,image/jpeg,image/webp" data-proof-input="${surface}">
+          <input type="file" accept="image/png,image/jpeg,image/webp,image/heic,image/heif,.heic,.heif,.jpg,.jpeg,.png,.webp" data-proof-input="${surface}">
           ${existing || selected ? 'REPLACE' : 'CHOOSE IMAGE'}
         </label>
       </div>
@@ -104,12 +142,18 @@ async function loadImage(file) {
   });
 }
 
-async function canvasToBlob(canvas, quality) {
-  return new Promise((resolve) => canvas.toBlob(resolve, 'image/webp', quality));
+async function canvasToBlob(canvas, mimeType, quality) {
+  return new Promise((resolve) => {
+    if (mimeType === 'image/png') {
+      canvas.toBlob(resolve, mimeType);
+      return;
+    }
+    canvas.toBlob(resolve, mimeType, quality);
+  });
 }
 
 async function processImage(file) {
-  if (!ACCEPTED_TYPES.has(file.type)) throw new Error('Use a PNG, JPEG, or WebP screenshot.');
+  if (!isAcceptedImageFile(file)) throw new Error('Use a PNG, JPEG, or WebP screenshot.');
   if (file.size > SOURCE_LIMIT_BYTES) throw new Error('Screenshot must be 10 MB or smaller.');
   const image = await loadImage(file);
   const sourceWidth = image.width || image.naturalWidth;
@@ -125,15 +169,17 @@ async function processImage(file) {
   context.fillRect(0, 0, width, height);
   context.drawImage(image, 0, 0, width, height);
   image.close?.();
-  let quality = 0.88;
-  let blob = await canvasToBlob(canvas, quality);
-  while (blob && blob.size > PROCESSED_LIMIT_BYTES && quality > 0.5) {
+  const outputMimeType = getCanvasOutputMimeType();
+  let quality = outputMimeType === 'image/jpeg' ? 0.88 : 0.88;
+  let blob = await canvasToBlob(canvas, outputMimeType, quality);
+  while (blob && outputMimeType !== 'image/png' && blob.size > PROCESSED_LIMIT_BYTES && quality > 0.5) {
     quality -= 0.08;
-    blob = await canvasToBlob(canvas, quality);
+    blob = await canvasToBlob(canvas, outputMimeType, quality);
   }
   if (!blob) throw new Error('This browser could not process the screenshot.');
   if (blob.size > PROCESSED_LIMIT_BYTES) throw new Error('Processed screenshot is still over 2.5 MB. Try a smaller image.');
-  return { blob, width, height };
+  const mimeType = blob.type || outputMimeType;
+  return { blob, width, height, mimeType };
 }
 
 async function handleFile(surface, file) {
@@ -211,9 +257,11 @@ export async function ensureWorkoutProofUploaded(surface, linkedRecordId = '') {
   emitState(surface);
   const user = getCurrentUser();
   const attachmentId = makeId();
-  const storagePath = `${user.id}/${safePathPart(state.proofKey)}/${Date.now()}-${attachmentId}.webp`;
+  const uploadMimeType = state.processed.blob.type || state.processed.mimeType || getCanvasOutputMimeType();
+  const uploadExtension = extensionForMimeType(uploadMimeType);
+  const storagePath = `${user.id}/${safePathPart(state.proofKey)}/${Date.now()}-${attachmentId}.${uploadExtension}`;
   try {
-    const { error: uploadError } = await supabase.storage.from(PROOF_BUCKET).upload(storagePath, state.processed.blob, { contentType: 'image/webp', upsert: false, cacheControl: '3600' });
+    const { error: uploadError } = await supabase.storage.from(PROOF_BUCKET).upload(storagePath, state.processed.blob, { contentType: uploadMimeType, upsert: false, cacheControl: '3600' });
     if (uploadError) throw uploadError;
     const { error: currentError } = await supabase.from('workout_attachments').update({ is_current: false, updated_at: new Date().toISOString() }).eq('user_id', user.id).eq('proof_key', state.proofKey).eq('is_current', true);
     if (currentError) throw currentError;
@@ -223,8 +271,8 @@ export async function ensureWorkoutProofUploaded(surface, linkedRecordId = '') {
       week_index: Number.isFinite(Number(state.context.weekIndex)) ? Number(state.context.weekIndex) : null,
       workout_index: Number.isFinite(Number(state.context.workoutIndex)) ? Number(state.context.workoutIndex) : null,
       workout_type: String(state.context.workoutType || 'Workout'), day_of_week: String(state.context.dayOfWeek || ''),
-      storage_bucket: PROOF_BUCKET, storage_path: storagePath, original_filename: state.filename || 'workout-proof.webp',
-      mime_type: 'image/webp', file_size: state.processed.blob.size, width: state.processed.width, height: state.processed.height,
+      storage_bucket: PROOF_BUCKET, storage_path: storagePath, original_filename: state.filename || `workout-proof.${uploadExtension}`,
+      mime_type: uploadMimeType, file_size: state.processed.blob.size, width: state.processed.width, height: state.processed.height,
       transfer_status: 'pending', is_current: true, completion_cleared: false,
       uploaded_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     };

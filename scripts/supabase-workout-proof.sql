@@ -7,7 +7,7 @@ values (
   'workout-proof-staging',
   false,
   2621440,
-  array['image/webp']::text[]
+  array['image/webp', 'image/jpeg', 'image/png']::text[]
 )
 on conflict (id) do update set
   public = false,
