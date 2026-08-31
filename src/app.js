@@ -55,7 +55,6 @@ import {
 import { getCurrentUser, saveCloudSprintSession, clearCloudWorkoutCompletionWithProof } from './auth.js';
 import { isSupabaseConfigured } from './supabase-client.js';
 import {
-  getAutoCapturedHR,
   isHRConnected,
   hasFreshHRSample,
   clearHRBufferForInterval,
