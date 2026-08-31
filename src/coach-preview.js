@@ -897,6 +897,43 @@ function completionKeyFromRow(row) {
   return '';
 }
 
+function mileTestKeyFromRow(row) {
+  const ctx = row.test_context_json && typeof row.test_context_json === 'object' ? row.test_context_json : {};
+  if (Number.isFinite(Number(ctx.weekIndex)) && Number.isFinite(Number(ctx.workoutIndex))) {
+    return sessionKey(Number(ctx.weekIndex), Number(ctx.workoutIndex));
+  }
+  const match = String(row.test_key || '').match(/^program:\d+:(\d+):(\d+)$/);
+  if (match) return sessionKey(Number(match[1]), Number(match[2]));
+  return '';
+}
+
+function synthesizeCompletionFromMileTest(mileRow, workout) {
+  const ctx = mileRow.test_context_json && typeof mileRow.test_context_json === 'object' ? mileRow.test_context_json : {};
+  let weekIndex = Number(ctx.weekIndex);
+  let workoutIndex = Number(ctx.workoutIndex);
+  if (!Number.isFinite(weekIndex) || !Number.isFinite(workoutIndex)) {
+    const match = String(mileRow.test_key || '').match(/^program:\d+:(\d+):(\d+)$/);
+    if (match) {
+      weekIndex = Number(match[1]);
+      workoutIndex = Number(match[2]);
+    }
+  }
+  return {
+    completion_key: sessionKey(weekIndex, workoutIndex),
+    week_index: weekIndex,
+    workout_index: workoutIndex,
+    workout_type: ctx.workoutType || workout.type,
+    avg_bpm: mileRow.avg_bpm,
+    max_bpm: mileRow.max_bpm,
+    total_minutes: mileRow.total_minutes,
+    distance: mileRow.distance,
+    attachment_id: mileRow.attachment_id || null,
+    completed_at: mileRow.saved_at || mileRow.updated_at,
+    updated_at: mileRow.updated_at || mileRow.saved_at,
+    record_json: mileRow.result_json && typeof mileRow.result_json === 'object' ? mileRow.result_json : {},
+  };
+}
+
 function sprintDropFromRow(row) {
   const json = row.session_json && typeof row.session_json === 'object' ? row.session_json : {};
   const data = Array.isArray(json.data) ? json.data : [];
@@ -943,6 +980,7 @@ function synthesizeCompletionFromSprint(sprintRow, workout) {
     workout_index: workoutIndex,
     workout_type: sprintRow.workout_type || workout.type,
     target_bpm: Number(sprintRow.target_bpm || context.targetBPM || workout.targetBPM),
+    max_bpm: Number(sprintRow.peak_hr) || null,
     attachment_id: sprintRow.attachment_id || null,
     completed_at: sprintRow.session_at || sprintRow.updated_at,
     updated_at: sprintRow.updated_at || sprintRow.session_at,
@@ -977,13 +1015,18 @@ function isSkippedCloudCompletion(row, record = {}) {
     || log.status === 'skipped';
 }
 
-function liveAthleteConfig(profile, hrRow, completions, sprints, note, email = '', campStartDate = '') {
+function liveAthleteConfig(profile, hrRow, completions, sprints, mileTests, note, email = '', campStartDate = '') {
   const campLength = Number(profile.camp_length) === 4 ? 4 : 7;
   const weeks = campWeeks(campLength);
   const byKey = new Map();
   completions.forEach((row) => {
     const key = completionKeyFromRow(row);
     if (key) byKey.set(key, row);
+  });
+  const mileTestByKey = new Map();
+  (mileTests || []).forEach((row) => {
+    const key = mileTestKeyFromRow(row);
+    if (key) mileTestByKey.set(key, row);
   });
   const sprintsByKey = new Map();
   sprints.forEach((row) => {
@@ -1016,9 +1059,13 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, note, email = '
       if (weekIndex > currentWeekIndex) return;
       if (campStartDate && !isSessionDueYet(campStartDate, weekIndex, workout.day)) return;
       let row = byKey.get(key);
-      if (!row && isSprintType(workout.type)) {
-        const sprintRow = sprintsByKey.get(key);
-        if (sprintRow) row = synthesizeCompletionFromSprint(sprintRow, workout);
+      const sprintRow = sprintsByKey.get(key);
+      if (!row && isSprintType(workout.type) && sprintRow) {
+        row = synthesizeCompletionFromSprint(sprintRow, workout);
+      }
+      if (!row && isMileTestType(workout.type)) {
+        const mileRow = mileTestByKey.get(key);
+        if (mileRow) row = synthesizeCompletionFromMileTest(mileRow, workout);
       }
       if (!row) {
         missing.push(key);
@@ -1033,7 +1080,7 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, note, email = '
         sessionNotes[key] = skipNote || (reason ? `Skipped · ${reason}` : 'Coach-approved skip.');
         return;
       }
-      if (!row.attachment_id) missingProofs.push(key);
+      if (!row.attachment_id && !sprintRow?.attachment_id) missingProofs.push(key);
       const log = record.workoutLog || {};
       const output = readOutputFromWorkoutLog({
         modality: log.modality,
@@ -1113,6 +1160,12 @@ function buildLiveRoster(payload) {
     list.push(row);
     sprintsByUser.set(row.user_id, list);
   });
+  const mileTestsByUser = new Map();
+  (payload.mileTests || []).forEach((row) => {
+    const list = mileTestsByUser.get(row.user_id) || [];
+    list.push(row);
+    mileTestsByUser.set(row.user_id, list);
+  });
   const notesByUser = new Map((payload.notes || []).map((row) => [row.athlete_user_id, row.note || '']));
   const metaByUser = new Map((payload.meta || []).map((row) => [row.athlete_user_id, row]));
   const emailByUser = new Map();
@@ -1135,6 +1188,7 @@ function buildLiveRoster(payload) {
       hrByUser.get(profile.user_id),
       completionsByUser.get(profile.user_id) || [],
       sprintsByUser.get(profile.user_id) || [],
+      mileTestsByUser.get(profile.user_id) || [],
       notesByUser.get(profile.user_id) || '',
       emailByUser.get(normalizeUserId(profile.user_id)) || '',
       metaByUser.get(profile.user_id)?.camp_start_date || ''
