@@ -9,7 +9,13 @@ The PWA now queues four backend event types:
 
 ## 1. Add the Apps Script receiver
 
-Copy `Updated 7 Week with Mile Test/Master Code/RingReadyWebApp.gs` into the Apps Script project bound to the coach/master Google Sheet.
+Copy the **live receiver** from your bound Apps Script project (the full file with `RR_SHEET_NAMES`, `rrImportPwaReceiverToAthleteRawData`, and Athlete Raw Data bridge). The slim `scripts/RingReadyWebApp.gs` in this repo is an older alternate layout — **do not replace your live receiver with it**.
+
+For sprint drop fixes on the live receiver, add `scripts/RingReadySprintDropPatch.gs` to the same Apps Script project. It overrides the sprint/import functions to include negative drops in averages and `BPM Drop (Sprint)`.
+
+Legacy reference path (external, not in repo):
+
+`Updated 7 Week with Mile Test/Master Code/RingReadyWebApp.gs`
 
 In Apps Script, run:
 
