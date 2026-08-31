@@ -1,116 +1,90 @@
-# 10 Kicks Roadwork -- Capacitor App (Phase 2)
+# 10 Kicks: Ring Ready
 
-Native iOS/Android wrapper for the Sprint Session trainer. The standalone web/PWA version remains at `../sprint-trainer.html`.
+Installable PWA for fight-camp roadwork: sprint intervals, threshold runs, mile tests, workout proof, coach dashboard, and Supabase-backed athlete accounts.
+
+## Architecture (2026)
+
+```text
+Athlete PWA  →  Supabase (authoritative)  →  Coach dashboard
+                         ↓
+              optional Google Sheets export (legacy sync)
+```
+
+| Layer | Role |
+|-------|------|
+| **Athlete app** | Vite PWA — local-first storage, BLE HR, session checkpoint/resume, proof upload |
+| **Supabase** | Auth, RLS-scoped athlete data, private proof staging, clean-slate RPC |
+| **Coach app** | In-app roster dashboard for coach accounts (live Supabase reads) |
+| **Sheets bridge** | Optional `no-cors` dispatch for reporting — not authoritative sync |
 
 ## Project layout
 
 ```
-Sprint Tracker/
-  sprint-trainer.html     <- standalone web/PWA (Phase 1)
-  sprint-trainer/         <- this Capacitor + Vite project
-    src/
-      main.js             <- boot, event wiring, HR transport init
-      app.js              <- session flow (same behavior as Phase 1)
-      ui.js               <- DOM, toast, audio, ring
-      workout.js          <- HR validation, rest copy, stats
-      platform.js         <- Capacitor vs web BLE routing
-      hr-service.js       <- HR facade (connect, capture, stale checks)
-      ble-web.js          <- Web Bluetooth (Android/desktop)
-      ble-native.js       <- @capacitor-community/bluetooth-le (iOS/Android app)
-      ble-adapter.js      <- UUIDs, HR parsing, buffer
-      storage.js          <- localStorage history
-      constants.js
-    ios/ android/         <- native projects (after cap add)
+src/
+  app.js                 Sprint session state machine + checkpoint resume
+  session-checkpoint.js  Account-scoped in-progress session persistence
+  shell.js               Athlete shell, hydration, workout completion
+  shell-cloud-merge.js   Timestamp-aware cloud merge helpers
+  sync.js                User-scoped Sheets queue + honest delivery states
+  auth.js                Supabase auth and cloud CRUD
+  coach-preview.js       Coach roster dashboard
+  hr-analytics.js        Shared threshold/zone scoring
+  proof.js               Workout proof upload
+scripts/
+  migrations/            Canonical Supabase migration chain (see MIGRATIONS.md)
+  legacy/                Deprecated one-off SQL (reference only)
 ```
 
 ## Requirements
 
-- Node.js 18+
-- For iOS builds: macOS with Xcode
-- For Android builds: Android Studio
+- Node.js 20+
+- Supabase project with migrations from `scripts/migrations/`
+- Optional: Google Apps Script endpoint for Sheets export
 
-## Web dev (browser)
+## Environment
 
-From this folder:
+Copy `.env.example` to `.env.local`:
+
+```bash
+VITE_SUPABASE_URL=https://your-project.supabase.co
+VITE_SUPABASE_ANON_KEY=your-anon-key
+VITE_RING_READY_SYNC_URL=https://script.google.com/macros/s/.../exec
+```
+
+The service-role key must **never** ship in the client bundle.
+
+## Development
 
 ```bash
 npm install
 npm run dev
 ```
 
-Open the URL Vite prints (usually `http://localhost:5173`). Web Bluetooth works on Android Chrome and desktop Chromium -- not iPhone Safari.
-
-## Production web build
+## Quality gates
 
 ```bash
-npm run build
-npm run preview
-```
-
-Output goes to `dist/`.
-
-### Windows path note
-
-If the project lives under a path with an apostrophe (e.g. `P&C's`), `npm run` may fail because of broken `.cmd` shims. Scripts in `package.json` call Vite/Capacitor via `node node_modules/...` directly to avoid that. If issues persist, map a drive letter:
-
-```bat
-subst Z: "e:\P&C's\Coding Projects\10 Kicks App\Updated 7 Week with Mile Test\Sprint Tracker\sprint-trainer"
-Z:
+npm run lint
+npm test
 npm run build
 ```
 
-## Native app workflow
+CI runs the same commands on push/PR (`.github/workflows/ci.yml`).
 
-1. Build web assets and sync to native projects:
+## Database setup
 
-   ```bash
-   npm run cap:sync
-   ```
+Run migrations in order — see [scripts/MIGRATIONS.md](scripts/MIGRATIONS.md).
 
-2. Open in IDE:
-
-   ```bash
-   npm run cap:ios      # Xcode (Mac only)
-   npm run cap:android  # Android Studio
-   ```
-
-3. Run on a physical device (recommended for BLE). Connect a chest strap from the setup screen -- native BLE is enabled automatically in the Capacitor app on iOS and Android.
-
-## BLE behavior by platform
-
-| Platform | BLE |
-|----------|-----|
-| Capacitor iOS/Android app | Native BLE via `@capacitor-community/bluetooth-le` |
-| Android Chrome (web) | Web Bluetooth |
-| Desktop Chrome/Edge | Web Bluetooth |
-| iPhone/iPad Safari | Manual HR entry only |
-
-## Sync CSS from Phase 1 HTML
-
-If you change styles in `../sprint-trainer.html`:
+## Native Capacitor (optional)
 
 ```bash
-npm run extract-css
-npm run build
+npm run cap:sync
+npm run cap:ios      # macOS + Xcode
+npm run cap:android  # Android Studio
 ```
 
-## Permissions (already configured)
-
-- **iOS** `Info.plist`: `NSBluetoothAlwaysUsageDescription`, `NSBluetoothPeripheralUsageDescription`
-- **Android** `AndroidManifest.xml`: `BLUETOOTH_SCAN`, `BLUETOOTH_CONNECT`, `ACCESS_FINE_LOCATION`
+Native builds improve BLE on iOS; the PWA remains the primary distribution path.
 
 ## App ID
 
 - Bundle ID: `com.tenkicks.roadwork`
-- Display name: `10 Kicks Roadwork`
-## PWA-first direction
-
-The main athlete-facing product is now **10 Kicks: Ring Ready**, an installable Progressive Web App. The Android and iOS Capacitor projects can stay available later for native BLE improvements, but the PWA is the primary path for sharing the app by link and Add to Home Screen.
-
-Completed sessions are saved locally first and added to an offline sync queue. When the Google Apps Script endpoint is ready, set it at build time with:
-
-```bash
-VITE_RING_READY_SYNC_URL="https://script.google.com/macros/s/.../exec" npm run build
-```
-
-The submitted payload is designed for a master-sheet intake tab such as `Ring Ready Submissions`, which can then be merged into the existing `Athlete Raw Data` pipeline.
+- Display name: `10 Kicks: Ring Ready`

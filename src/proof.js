@@ -263,7 +263,9 @@ export async function ensureWorkoutProofUploaded(surface, linkedRecordId = '') {
   try {
     const { error: uploadError } = await supabase.storage.from(PROOF_BUCKET).upload(storagePath, state.processed.blob, { contentType: uploadMimeType, upsert: false, cacheControl: '3600' });
     if (uploadError) throw uploadError;
-    const { error: currentError } = await supabase.from('workout_attachments').update({ is_current: false, updated_at: new Date().toISOString() }).eq('user_id', user.id).eq('proof_key', state.proofKey).eq('is_current', true);
+    const { error: currentError } = await supabase.rpc('prepare_workout_proof_upload', {
+      proof_key: state.proofKey,
+    });
     if (currentError) throw currentError;
     const row = {
       id: attachmentId, user_id: user.id, proof_key: state.proofKey, linked_record_id: String(linkedRecordId || ''),
@@ -297,7 +299,10 @@ export async function ensureWorkoutProofUploaded(surface, linkedRecordId = '') {
 
 export async function markWorkoutProofCleared(attachmentId, isCleared = true) {
   if (!attachmentId || !supabase || !getCurrentUser()) return false;
-  const { error } = await supabase.from('workout_attachments').update({ completion_cleared: !!isCleared, updated_at: new Date().toISOString() }).eq('id', attachmentId).eq('user_id', getCurrentUser().id);
+  const { error } = await supabase.rpc('set_workout_proof_cleared', {
+    attachment_id: attachmentId,
+    cleared: !!isCleared,
+  });
   if (error) throw error;
   return true;
 }

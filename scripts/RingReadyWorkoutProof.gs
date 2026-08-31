@@ -27,17 +27,59 @@ function rrSetupWorkoutProofs() {
  * }
  */
 function rrHandleWorkoutProofEvent(payload) {
-  if (!payload || payload.eventType !== 'workout_proof' || !payload.attachment) {
+  if (!payload || payload.eventType !== 'workout_proof') {
     throw new Error('Invalid workout_proof event.');
   }
-  return rrTransferWorkoutProof_(payload);
+  var attachmentId = String(payload.attachmentId || (payload.attachment && payload.attachment.id) || '');
+  if (!attachmentId) throw new Error('Workout proof is missing its attachment ID.');
+  return rrTransferWorkoutProof_(attachmentId, payload.linkedRecordId || '');
 }
 
-function rrTransferWorkoutProof_(payload) {
+function rrFetchAttachmentRow_(attachmentId) {
+  var response = rrSupabaseFetch_(
+    '/rest/v1/workout_attachments?select=*&id=eq.' + encodeURIComponent(attachmentId) + '&limit=1',
+    { method: 'get' }
+  );
+  var rows = JSON.parse(response.getContentText() || '[]');
+  if (!rows.length) throw new Error('Workout proof attachment not found: ' + attachmentId);
+  return rows[0];
+}
+
+function rrBuildProofPayloadFromRow_(row, linkedRecordId) {
+  var profileName = rrLookupAthleteName_(row.user_id);
+  return {
+    eventType: 'workout_proof',
+    athleteName: profileName || 'Unknown Athlete',
+    userId: row.user_id,
+    proofKey: row.proof_key,
+    linkedRecordId: String(linkedRecordId || row.linked_record_id || ''),
+    workoutContext: {
+      campLength: row.camp_length,
+      weekIndex: row.week_index,
+      workoutIndex: row.workout_index,
+      workoutType: row.workout_type,
+      dayOfWeek: row.day_of_week
+    },
+    attachment: {
+      id: row.id,
+      storageBucket: row.storage_bucket,
+      storagePath: row.storage_path,
+      originalFilename: row.original_filename,
+      mimeType: row.mime_type,
+      fileSize: row.file_size,
+      width: row.width,
+      height: row.height,
+      uploadedAt: row.uploaded_at
+    }
+  };
+}
+
+function rrTransferWorkoutProof_(attachmentId, linkedRecordId) {
+  var row = rrFetchAttachmentRow_(attachmentId);
+  var payload = rrBuildProofPayloadFromRow_(row, linkedRecordId);
   var attachment = payload.attachment || {};
-  var attachmentId = String(attachment.id || '');
   var storagePath = String(attachment.storagePath || '');
-  if (!attachmentId || !storagePath) throw new Error('Workout proof is missing its attachment ID or storage path.');
+  if (!storagePath) throw new Error('Workout proof is missing its storage path.');
 
   try {
     rrPatchAttachment_(attachmentId, {
@@ -130,7 +172,7 @@ function rrSyncPendingWorkoutProofs() {
         uploadedAt: row.uploaded_at
       }
     };
-    try { rrTransferWorkoutProof_(payload); }
+    try { rrTransferWorkoutProof_(row.id, row.linked_record_id); }
     catch (error) { console.error('Workout proof retry failed for ' + row.id, error); }
   });
 }

@@ -72,6 +72,7 @@ function mapCloudProfile(row) {
     campLength: String(normalizeCampLength(row.camp_length)),
     defaultModality: normalizeModality(row.default_modality || MODALITY_RUNNING),
     campResetAt: row.camp_reset_at || '',
+    updatedAt: row.updated_at || row.created_at || '',
   };
 }
 
@@ -97,6 +98,7 @@ function mapCloudHRInfo(row) {
     targetDate: row.target_date || '',
     maxHr: row.max_hr ?? '',
     restingHr: row.resting_hr ?? '',
+    updatedAt: row.updated_at || row.created_at || '',
   };
 }
 
@@ -282,9 +284,9 @@ export function isCoachUser(user = getCurrentUser()) {
   return isCoachEmail(user?.email);
 }
 
-async function loadCoachTable(table) {
+async function loadCoachTable(table, columns = '*') {
   const client = requireSupabase();
-  const { data, error } = await client.from(table).select('*');
+  const { data, error } = await client.from(table).select(columns);
   if (error) throw error;
   return data || [];
 }
@@ -293,15 +295,33 @@ function settledRows(result) {
   return result.status === 'fulfilled' ? (result.value || []) : [];
 }
 
+function settledError(result) {
+  if (result.status === 'fulfilled') return '';
+  const message = String(result.reason?.message || result.reason || 'Load failed');
+  return message;
+}
+
+const COACH_ROSTER_TABLES = [
+  ['profiles', 'athlete_profiles'],
+  ['hrRows', 'hr_info'],
+  ['completions', 'workout_completions'],
+  ['sprints', 'sprint_sessions'],
+  ['mileTests', 'mile_tests'],
+  ['notes', 'coach_notes'],
+  ['exclusions', 'coach_roster_exclusions'],
+  ['meta', 'coach_athlete_meta'],
+];
+
 export async function loadCoachRosterPayload() {
   if (!isSupabaseConfigured || !supabase || !isCoachUser()) return null;
   const client = requireSupabase();
-  const [profilesResult, hrResult, completionsResult, sprintsResult, notesResult, identitiesResult, exclusionsResult, metaResult] = await Promise.allSettled([
-    loadCoachTable('athlete_profiles'),
-    loadCoachTable('hr_info'),
-    loadCoachTable('workout_completions'),
-    loadCoachTable('sprint_sessions'),
-    loadCoachTable('coach_notes'),
+  const [profilesResult, hrResult, completionsResult, sprintsResult, mileTestsResult, notesResult, identitiesResult, exclusionsResult, metaResult] = await Promise.allSettled([
+    loadCoachTable('athlete_profiles', 'user_id,athlete_name,fight_date,camp_length,training_tenure,camp_reset_at,default_modality,updated_at'),
+    loadCoachTable('hr_info', 'user_id,max_hr,resting_hr,goal_weight,target_date,updated_at'),
+    loadCoachTable('workout_completions', 'user_id,completion_key,week_index,workout_index,week_label,week_title,day_of_week,workout_type,description,warmup,target_zone,target_bpm,total_minutes,total_seconds,avg_bpm,max_bpm,distance,completed_at,attachment_id,record_json,updated_at'),
+    loadCoachTable('sprint_sessions', 'user_id,session_id,session_at,week_index,workout_index,workout_type,avg_drop,peak_hr,intervals_completed,attachment_id,session_json,updated_at'),
+    loadCoachTable('mile_tests', 'user_id,test_key,saved_at,distance,total_minutes,avg_bpm,max_bpm,attachment_id,result_json,updated_at'),
+    loadCoachTable('coach_notes', 'athlete_user_id,note,updated_at'),
     client.rpc('coach_roster_identities').then(({ data, error }) => {
       if (error) throw error;
       return data || [];
@@ -309,16 +329,35 @@ export async function loadCoachRosterPayload() {
     loadCoachTable('coach_roster_exclusions'),
     loadCoachTable('coach_athlete_meta'),
   ]);
+  const sourceErrors = {};
+  const results = {
+    profiles: profilesResult,
+    hrRows: hrResult,
+    completions: completionsResult,
+    sprints: sprintsResult,
+    mileTests: mileTestsResult,
+    notes: notesResult,
+    identities: identitiesResult,
+    exclusions: exclusionsResult,
+    meta: metaResult,
+  };
+  COACH_ROSTER_TABLES.forEach(([key]) => {
+    const err = settledError(results[key]);
+    if (err) sourceErrors[key] = err;
+  });
+  if (identitiesResult.status === 'rejected') sourceErrors.identities = settledError(identitiesResult);
   if (profilesResult.status === 'rejected') throw profilesResult.reason;
   return {
     profiles: settledRows(profilesResult),
     hrRows: settledRows(hrResult),
     completions: settledRows(completionsResult),
     sprints: settledRows(sprintsResult),
+    mileTests: settledRows(mileTestsResult),
     notes: settledRows(notesResult),
     identities: settledRows(identitiesResult),
     exclusions: settledRows(exclusionsResult),
     meta: settledRows(metaResult),
+    sourceErrors,
   };
 }
 
@@ -575,20 +614,28 @@ export async function saveCloudSprintSession(record) {
   return record;
 }
 
-export async function loadCloudMileTest() {
+export async function loadCloudMileTest(testKey = '') {
   const user = getCurrentUser();
   if (!isSupabaseConfigured || !supabase || !user) return null;
 
-  const { data, error } = await supabase
+  let query = supabase
     .from('mile_tests')
     .select('*')
-    .eq('user_id', user.id)
+    .eq('user_id', user.id);
+
+  if (testKey) query = query.eq('test_key', testKey);
+
+  const { data, error } = await query
     .order('saved_at', { ascending: false })
     .limit(1)
     .maybeSingle();
 
   if (error) throw error;
   return mapCloudMileTest(data);
+}
+
+export async function loadCloudMileTestByKey(testKey) {
+  return loadCloudMileTest(String(testKey || '').trim());
 }
 
 export async function saveCloudMileTest(result, hrInfo, testContext) {
