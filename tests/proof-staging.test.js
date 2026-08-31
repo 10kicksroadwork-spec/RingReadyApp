@@ -9,6 +9,7 @@ import {
   isVisibleCompletionRow,
   planMileTestIdentityStaging,
   planWorkoutIdentityStaging,
+  resolveCanonicalClientRecordId,
 } from '../src/proof-staging.js';
 
 describe('proof staging plans', () => {
@@ -105,6 +106,54 @@ describe('mile proof staging plans', () => {
     expect(plan.action).toBe('noop');
     expect(plan.created).toBe(false);
     expect(canRollbackProvisionalStaging(plan, existing)).toBe(false);
+  });
+
+  it('uses the cloud canonical id when the form generates a new local id', () => {
+    const existing = {
+      client_record_id: 'mile-old',
+      attachment_id: 'old-proof',
+      proof_pending: false,
+    };
+    const replacementResult = { id: 'mile-new', testKey: 'mile-test:week-2' };
+    const plan = planMileTestIdentityStaging(existing, replacementResult, testContext);
+    const canonicalId = resolveCanonicalClientRecordId(
+      { clientRecordId: plan.clientRecordId, created: plan.created },
+      replacementResult.id,
+    );
+
+    expect(plan.clientRecordId).toBe('mile-old');
+    expect(canonicalId).toBe('mile-old');
+    expect(canonicalId).not.toBe('mile-new');
+  });
+});
+
+describe('canonical client record id resolution', () => {
+  it('prefers staging clientRecordId over a newly generated local id', () => {
+    expect(resolveCanonicalClientRecordId({ clientRecordId: 'mile-old', created: false }, 'mile-new')).toBe('mile-old');
+  });
+
+  it('falls back to the local id for brand-new records', () => {
+    expect(resolveCanonicalClientRecordId({ clientRecordId: 'mile-new', created: true }, 'mile-new')).toBe('mile-new');
+    expect(resolveCanonicalClientRecordId(null, 'mile-new')).toBe('mile-new');
+  });
+
+  it('models mile replacement orchestration: staging noop + id rewrite before proof', () => {
+    const testContext = { testKey: 'mile-test:baseline' };
+    const existingCloud = {
+      client_record_id: 'mile-old',
+      attachment_id: 'proof-1',
+      proof_pending: false,
+    };
+    const formResult = { id: 'mile-new', testKey: 'mile-test:baseline' };
+    const staging = planMileTestIdentityStaging(existingCloud, formResult, testContext);
+    const proofLinkedId = resolveCanonicalClientRecordId(staging, formResult.id);
+    formResult.id = proofLinkedId;
+
+    expect(staging.action).toBe('noop');
+    expect(staging.created).toBe(false);
+    expect(proofLinkedId).toBe('mile-old');
+    expect(formResult.id).toBe('mile-old');
+    expect(canRollbackProvisionalStaging(staging, existingCloud)).toBe(false);
   });
 });
 

@@ -74,6 +74,13 @@ export function isVisibleCompletionRow(row) {
   return !!row && row.proof_pending !== true;
 }
 
+/** Prefer the server-established client_record_id over a freshly generated local id. */
+export function resolveCanonicalClientRecordId(identityStaging, localId) {
+  const stagedId = textOrEmpty(identityStaging?.clientRecordId);
+  const fallbackId = textOrEmpty(localId);
+  return stagedId || fallbackId;
+}
+
 export {
   buildProvisionalMileTestCloudPayload,
   buildProvisionalWorkoutCloudPayload,

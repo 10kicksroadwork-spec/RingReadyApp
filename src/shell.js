@@ -116,6 +116,7 @@ import {
   initWorkoutProof,
   markWorkoutProofCleared,
 } from './proof.js';
+import { resolveCanonicalClientRecordId } from './proof-staging.js';
 
 const WEEK_INDEX_KEY = 'ringReadyActiveWeekIndex';
 const PROFILE_FORM_COLLAPSED_KEY = 'ringReadyProfileFormCollapsed';
@@ -1360,6 +1361,7 @@ async function completeWorkoutFromDetail(weekIndex, workoutIndex) {
   try {
     if (isSupabaseConfigured && getCurrentUser()) {
       identityStaging = await ensureCloudWorkoutIdentity(record);
+      record.id = resolveCanonicalClientRecordId(identityStaging, record.id);
     }
     const attachment = await ensureWorkoutProofUploaded('detail', record.id);
     if (attachment) {
@@ -1867,13 +1869,18 @@ async function saveMileTestResult() {
   if (avgBpm > 999 || maxBpm > 999) { shellHooks?.showToast?.('HR MUST BE 3 DIGITS OR LESS'); return; }
   if (maxBpm < avgBpm) { shellHooks?.showToast?.('MAX HR SHOULD BE AVG OR HIGHER'); return; }
   const proofContext = getActiveMileProofContext();
+  const existingMile = getMileTestResult();
   const result = { id: makeWorkoutCompletionId(), testKey: proofContext.testKey, distance, totalMinutes, totalSeconds: duration?.totalSeconds ?? Math.round(totalMinutes * 60), totalTimeDisplay: duration?.display || '', avgBpm, maxBpm, paceMinPerMile: distance > 0 ? totalMinutes / distance : '', savedAt: new Date().toISOString() };
+  if (existingMile?.id && existingMile.testKey === proofContext.testKey) {
+    result.id = existingMile.id;
+  }
   const testContext = { ...proofContext, weekTab: proofContext.weekIndex == null ? 'Mile Test' : `Week ${Number(proofContext.weekIndex) + 1}`, workoutType: proofContext.workoutType, dayOfWeek: proofContext.dayOfWeek, description: activeMileTestContext.workoutContext?.description || MILE_TEST_INFO.description, warmup: activeMileTestContext.workoutContext?.warmup || MILE_TEST_INFO.warmup };
   const isNewProof = hasPendingWorkoutProof('mile');
   let identityStaging = null;
   try {
     if (isSupabaseConfigured && getCurrentUser()) {
       identityStaging = await ensureCloudMileTestIdentity(result, getHRInfo(), testContext);
+      result.id = resolveCanonicalClientRecordId(identityStaging, result.id);
     }
     result.attachment = await ensureWorkoutProofUploaded('mile', result.id);
     if (result.attachment) result.proofPolicyVersion = PROOF_POLICY_VERSION;
