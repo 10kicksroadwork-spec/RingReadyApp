@@ -36,3 +36,7 @@ export function getHRMonitorSetupCopy() {
   }
   return 'Optional. Works with most BLE chest straps. ANT+ is not supported. On iPhone/iPad, use the Bluefy browser for BLE support; manual HR entry is always available.';
 }
+
+export function getSprintHRMonitorDisclaimer() {
+  return 'For auto HR capture, connect your chest strap here only. Disconnect it from Wahoo, Strava, or other fitness apps first — most straps can only talk to one app at a time.';
+}

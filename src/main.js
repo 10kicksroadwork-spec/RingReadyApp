@@ -5,7 +5,7 @@ import { enforceAthleteOnboarding, installSignupNameCapture } from './onboarding
 import { openCoachPreviewIfRequested } from './coach-preview.js';
 import { MILE_TEST_STORAGE_KEY } from './app-content.js';
 import { parseDurationMinutes, sanitizeDurationInput } from './workout.js';
-import { getHRMonitorSetupCopy } from './platform.js';
+import { getHRMonitorSetupCopy, getSprintHRMonitorDisclaimer } from './platform.js';
 import { initSyncControls } from './sync.js';
 import {
   initHRService,
@@ -288,6 +288,8 @@ async function init() {
 
   const setupCopy = document.getElementById('hr-setup-copy');
   if (setupCopy) setupCopy.textContent = getHRMonitorSetupCopy();
+  const setupDisclaimer = document.getElementById('hr-setup-disclaimer');
+  if (setupDisclaimer) setupDisclaimer.textContent = getSprintHRMonitorDisclaimer();
 
   bindClick('ble-btn', () => connectHR());
   bindClick('start-session-btn', () => startSession());
