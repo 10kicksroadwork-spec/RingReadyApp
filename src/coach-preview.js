@@ -464,7 +464,7 @@ function buildHeadline(athlete) {
     bits.push('On track.');
   }
 
-  if (tone === 'behind' && scan.recovery.tone === 'neutral') {
+  if (tone === 'behind' && scan.recovery.tone === 'neutral' && !scan.recovery.points?.length) {
     bits.push('No sprint yet.');
   } else if (scan.zone.tone === 'red') {
     bits.push(`Zone ${scan.zone.value}.`);
@@ -911,12 +911,56 @@ function sprintDropFromRow(row) {
   return Number.isFinite(avg) && avg > 0 ? avg : null;
 }
 
-function formatLastSession(completions) {
-  const dated = [...completions]
-    .map((row) => ({
+function sprintContextFromRow(row) {
+  const json = row.session_json && typeof row.session_json === 'object' ? row.session_json : {};
+  return json.cfg?.workoutContext || json.workoutContext || {};
+}
+
+function sessionKeyFromSprintRow(row) {
+  let weekIndex = Number(row.week_index);
+  let workoutIndex = Number(row.workout_index);
+  const context = sprintContextFromRow(row);
+  if (!Number.isFinite(weekIndex)) weekIndex = Number(context.weekIndex);
+  if (!Number.isFinite(workoutIndex)) workoutIndex = Number(context.workoutIndex);
+  if (!Number.isFinite(weekIndex)) return '';
+  if (!Number.isFinite(workoutIndex)) workoutIndex = 0;
+  return sessionKey(weekIndex, workoutIndex);
+}
+
+function synthesizeCompletionFromSprint(sprintRow, workout) {
+  const json = sprintRow.session_json && typeof sprintRow.session_json === 'object' ? sprintRow.session_json : {};
+  const context = sprintContextFromRow(sprintRow);
+  const weekIndex = Number.isFinite(Number(sprintRow.week_index))
+    ? Number(sprintRow.week_index)
+    : Number(context.weekIndex);
+  const workoutIndex = Number.isFinite(Number(sprintRow.workout_index))
+    ? Number(sprintRow.workout_index)
+    : (Number.isFinite(Number(context.workoutIndex)) ? Number(context.workoutIndex) : 0);
+
+  return {
+    completion_key: sessionKeyFromSprintRow(sprintRow),
+    week_index: weekIndex,
+    workout_index: workoutIndex,
+    workout_type: sprintRow.workout_type || workout.type,
+    target_bpm: Number(sprintRow.target_bpm || context.targetBPM || workout.targetBPM),
+    attachment_id: sprintRow.attachment_id || null,
+    completed_at: sprintRow.session_at || sprintRow.updated_at,
+    updated_at: sprintRow.updated_at || sprintRow.session_at,
+    record_json: json,
+  };
+}
+
+function formatLastSession(completions, sprints = []) {
+  const dated = [
+    ...completions.map((row) => ({
       at: new Date(row.completed_at || row.updated_at || 0).getTime(),
       type: row.workout_type || 'Session',
-    }))
+    })),
+    ...sprints.map((row) => ({
+      at: new Date(row.session_at || row.updated_at || 0).getTime(),
+      type: row.workout_type || 'Sprint Intervals',
+    })),
+  ]
     .filter((row) => Number.isFinite(row.at) && row.at > 0)
     .sort((a, b) => b.at - a.at);
   if (!dated.length) return 'No sessions yet';
@@ -940,6 +984,11 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, note, email = '
   completions.forEach((row) => {
     const key = completionKeyFromRow(row);
     if (key) byKey.set(key, row);
+  });
+  const sprintsByKey = new Map();
+  sprints.forEach((row) => {
+    const key = sessionKeyFromSprintRow(row);
+    if (key) sprintsByKey.set(key, row);
   });
   const currentWeekIndex = inferCurrentWeekIndex(
     profile.fight_date,
@@ -966,7 +1015,11 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, note, email = '
       const key = sessionKey(weekIndex, workoutIndex);
       if (weekIndex > currentWeekIndex) return;
       if (campStartDate && !isSessionDueYet(campStartDate, weekIndex, workout.day)) return;
-      const row = byKey.get(key);
+      let row = byKey.get(key);
+      if (!row && isSprintType(workout.type)) {
+        const sprintRow = sprintsByKey.get(key);
+        if (sprintRow) row = synthesizeCompletionFromSprint(sprintRow, workout);
+      }
       if (!row) {
         missing.push(key);
         return;
@@ -1009,11 +1062,12 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, note, email = '
 
   sprints.forEach((row) => {
     const drop = sprintDropFromRow(row);
-    const weekIndex = Number(row.week_index);
-    if (!Number.isFinite(drop) || !Number.isFinite(weekIndex)) return;
+    const key = sessionKeyFromSprintRow(row);
+    if (!Number.isFinite(drop) || !key) return;
+    const weekIndex = Number(key.split(':')[0]);
+    if (!Number.isFinite(weekIndex)) return;
     sprintPoints.push({ weekIndex, first5Avg: drop });
-    const workoutIndex = Number(row.workout_index);
-    if (Number.isFinite(workoutIndex)) drops[sessionKey(weekIndex, workoutIndex)] = drop;
+    drops[key] = drop;
   });
 
   return {
@@ -1027,7 +1081,7 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, note, email = '
     tenure: profile.training_tenure || '',
     maxHr: hrRow?.max_hr ?? null,
     restingHr: hrRow?.resting_hr ?? null,
-    lastSession: formatLastSession(completions),
+    lastSession: formatLastSession(completions, sprints),
     missing,
     skipped,
     missingProofs,
