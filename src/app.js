@@ -23,6 +23,7 @@ import {
   calculatePeakHR,
   getRestDuration,
   getRestCaptureCopy,
+  isLoggedDrop,
 } from './workout.js';
 import {
   clearActiveSessionCheckpoint,
@@ -1130,8 +1131,8 @@ export function buildResults(record = activeResultRecord) {
     : calculateAvgDrop(data);
   const maxSprint = Number(resultRecord.peakHR) || calculatePeakHR(data);
   const maxForBars = maxSprint > 0 ? maxSprint : 1;
-  const hasValidDrop = data.some((d) => d.drop !== null && !d.suspicious);
-  const avgDropDisplay = hasValidDrop ? String(avgDrop) : '--';
+  const hasLoggedDrop = data.some((d) => isLoggedDrop(d.drop));
+  const avgDropDisplay = hasLoggedDrop ? String(avgDrop) : '--';
 
   const summary = document.createElement('div');
   summary.className = 'summary-card';
@@ -1187,7 +1188,7 @@ export function buildResultsText(record = activeResultRecord) {
   const avgDrop = Number.isFinite(Number(resultRecord.avgDrop))
     ? Number(resultRecord.avgDrop)
     : calculateAvgDrop(data);
-  if (data.some((d) => d.drop !== null && !d.suspicious)) {
+  if (data.some((d) => isLoggedDrop(d.drop))) {
     text += `\nAvg Drop: ${avgDrop} BPM`;
   }
 

@@ -305,7 +305,7 @@ function collectBenchmarkPoints(config, sessions) {
 function hasSprintDrop(value) {
   if (value == null || value === '') return false;
   const num = Number(value);
-  return Number.isFinite(num) && num > 0;
+  return Number.isFinite(num);
 }
 
 function collectSprintPoints(config, sessions) {
@@ -936,13 +936,13 @@ function sprintDropFromRow(row) {
   const data = Array.isArray(json.data) ? json.data : [];
   const drops = data
     .map((rep) => Number(rep.drop ?? rep.bpmDrop ?? rep.hrDrop))
-    .filter((value) => Number.isFinite(value) && value > 0);
+    .filter((value) => Number.isFinite(value));
   if (drops.length) {
     const firstN = drops.slice(0, Math.min(5, drops.length));
     return firstN.reduce((sum, value) => sum + value, 0) / firstN.length;
   }
   const avg = Number(row.avg_drop ?? json.avgDrop);
-  return Number.isFinite(avg) && avg > 0 ? avg : null;
+  return Number.isFinite(avg) ? avg : null;
 }
 
 function sprintContextFromRow(row) {

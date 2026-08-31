@@ -10,9 +10,16 @@ export function validateRestHR(value) {
   return { valid: true, value: hr };
 }
 
+export function isLoggedDrop(drop) {
+  return drop !== null && drop !== undefined && Number.isFinite(Number(drop));
+}
+
 export function calculateAvgDrop(data) {
-  const validDrops = data.filter((d) => d.drop !== null && !d.suspicious).map((d) => d.drop);
-  return validDrops.length ? Math.round(validDrops.reduce((a, b) => a + b, 0) / validDrops.length) : 0;
+  const loggedDrops = data
+    .map((d) => d.drop)
+    .filter((drop) => isLoggedDrop(drop))
+    .map((drop) => Number(drop));
+  return loggedDrops.length ? Math.round(loggedDrops.reduce((a, b) => a + b, 0) / loggedDrops.length) : 0;
 }
 
 export function calculatePeakHR(data) {
