@@ -7,6 +7,7 @@ import {
   SYNC_QUEUE_KEY_PREFIX,
 } from './constants.js';
 import { calculateAvgDrop, calculatePeakHR, isLoggedDrop } from './workout.js';
+import { deriveSessionHrSource } from './sprint-ble-verification.js';
 import { hrState } from './hr-service.js';
 import { MODALITY_RUNNING, normalizeModality, readOutputFromWorkoutLog } from './modality.js';
 import { getCurrentUser, getAccessToken } from './auth.js';
@@ -373,7 +374,8 @@ export function buildSessionPayload(cfg, data, sessionRecord = null) {
     description: workoutContext.description || '',
     warmup: workoutContext.warmup || '',
     targetZone: workoutContext.targetZone || '',
-    hrSource: hrState.source || 'manual',
+    hrSource: sessionRecord?.hrSource || deriveSessionHrSource(data) || hrState.source || 'manual',
+    bleVerified: !!sessionRecord?.bleVerified,
     config: {
       reps: cfg.reps,
       restSeconds: cfg.rest,
@@ -394,6 +396,8 @@ export function buildSessionPayload(cfg, data, sessionRecord = null) {
       restHR: rep.restHR,
       drop: rep.drop,
       suspicious: !!rep.suspicious,
+      sprintCapture: rep.sprintCapture || null,
+      restCapture: rep.restCapture || null,
     })),
   };
 }

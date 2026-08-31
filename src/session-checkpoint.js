@@ -41,15 +41,14 @@ function discardCheckpoint(userId = resolveCheckpointUserId()) {
   }
 }
 
-function clonePendingRep(pendingRep) {
-  if (!pendingRep) return null;
+function cloneCaptureProvenance(capture) {
+  if (!capture || typeof capture !== 'object') return null;
   return {
-    sprintHR: pendingRep.sprintHR ?? null,
-    restHR: pendingRep.restHR ?? null,
-    drop: pendingRep.drop ?? null,
-    suspicious: !!pendingRep.suspicious,
-    needsManualSprint: !!pendingRep.needsManualSprint,
-    needsManualRest: !!pendingRep.needsManualRest,
+    mode: capture.mode,
+    source: capture.source,
+    capturedAt: capture.capturedAt ?? null,
+    sampleSequence: capture.sampleSequence ?? null,
+    windowStartSequence: capture.windowStartSequence ?? null,
   };
 }
 
@@ -59,7 +58,23 @@ function cloneSessionData(data) {
     restHR: row.restHR,
     drop: row.drop,
     suspicious: !!row.suspicious,
+    sprintCapture: cloneCaptureProvenance(row.sprintCapture),
+    restCapture: cloneCaptureProvenance(row.restCapture),
   }));
+}
+
+function clonePendingRep(pendingRep) {
+  if (!pendingRep) return null;
+  return {
+    sprintHR: pendingRep.sprintHR ?? null,
+    restHR: pendingRep.restHR ?? null,
+    drop: pendingRep.drop ?? null,
+    suspicious: !!pendingRep.suspicious,
+    needsManualSprint: !!pendingRep.needsManualSprint,
+    needsManualRest: !!pendingRep.needsManualRest,
+    sprintCapture: cloneCaptureProvenance(pendingRep.sprintCapture),
+    restCapture: cloneCaptureProvenance(pendingRep.restCapture),
+  };
 }
 
 function cloneConfig(cfg) {

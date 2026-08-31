@@ -8,12 +8,14 @@ export const hrState = {
   current: null,
   avg: null,
   lastAt: null,
+  sampleSequence: 0,
 };
 
 let transport = null;
 let webModule = null;
 let nativeModule = null;
 let uiHooks = null;
+let captureWindowStartSequence = 0;
 
 export function initHRService(hooks) {
   uiHooks = hooks;
@@ -70,6 +72,8 @@ export function setHRDisconnected() {
   hrState.current = null;
   hrState.avg = null;
   hrState.lastAt = null;
+  hrState.sampleSequence = 0;
+  captureWindowStartSequence = 0;
 
   const badge = document.getElementById('live-badge');
   if (badge) badge.style.display = 'none';
@@ -83,12 +87,37 @@ export function onHRUpdate(payload) {
   hrState.current = payload.hr;
   hrState.avg = payload.avg != null ? payload.avg : payload.hr;
   hrState.lastAt = payload.at || Date.now();
+  if (Number.isFinite(Number(payload.sampleSequence))) {
+    hrState.sampleSequence = Number(payload.sampleSequence);
+  }
 
   const el = document.getElementById('live-hr-val');
   if (el) el.textContent = payload.hr;
 
   const badge = document.getElementById('live-badge');
   if (badge) badge.style.display = 'flex';
+}
+
+export function beginCaptureWindow() {
+  captureWindowStartSequence = Number(hrState.sampleSequence) || 0;
+}
+
+export function captureFreshHR() {
+  if (!hrState.connected || !hrState.lastAt || hrState.current == null) return null;
+  if (Date.now() - hrState.lastAt > HR_STALE_MS) return null;
+  if (!Number.isFinite(hrState.sampleSequence) || hrState.sampleSequence <= captureWindowStartSequence) {
+    return null;
+  }
+
+  const hr = hrState.avg != null ? hrState.avg : hrState.current;
+  return {
+    hr,
+    source: hrState.source,
+    capturedAt: hrState.lastAt,
+    at: hrState.lastAt,
+    sampleSequence: hrState.sampleSequence,
+    windowStartSequence: captureWindowStartSequence,
+  };
 }
 
 export function getAutoCapturedHR() {

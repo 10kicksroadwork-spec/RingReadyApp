@@ -78,13 +78,15 @@ function onCharacteristic(event) {
 
   hrBuffer.push(hr);
   connected = true;
+  const sample = hrBuffer.latestSample();
 
   if (onHRCallback) {
     onHRCallback({
       hr,
       avg: hrBuffer.avgFresh(),
-      at: hrBuffer.lastAt() || Date.now(),
+      at: sample?.at || Date.now(),
       source: 'web-ble',
+      sampleSequence: sample?.sequence ?? null,
     });
   }
 }

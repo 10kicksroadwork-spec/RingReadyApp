@@ -56,13 +56,15 @@ export async function connectNativeHR() {
       if (!hr) return;
 
       hrBuffer.push(hr);
+      const sample = hrBuffer.latestSample();
 
       if (onHRCallback) {
         onHRCallback({
           hr,
           avg: hrBuffer.avgFresh(),
-          at: hrBuffer.lastAt() || Date.now(),
+          at: sample?.at || Date.now(),
           source: 'native-ble',
+          sampleSequence: sample?.sequence ?? null,
         });
       }
     }

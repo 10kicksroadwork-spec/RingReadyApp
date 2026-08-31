@@ -1,4 +1,5 @@
 import { isCoachEmail } from './coach-access.js';
+import { evaluateSprintBleVerification, deriveSessionHrSource } from './sprint-ble-verification.js';
 import {
   buildMileTestCloudPayload,
   buildProvisionalMileTestCloudPayload,
@@ -162,12 +163,16 @@ function mapCloudSprintSession(row) {
     date: row.session_at || record.date || row.created_at,
     avgDrop: record.avgDrop ?? row.avg_drop ?? null,
     peakHR: record.peakHR ?? row.peak_hr ?? null,
+    bleVerified: row.ble_verified === true || record.bleVerified === true,
+    hrSource: row.hr_source || record.hrSource || '',
   };
 }
 
 function toCloudSprintSession(record, userId) {
   const context = getRecordContext(record);
   const data = Array.isArray(record.data) ? record.data : [];
+  const verification = evaluateSprintBleVerification(record, context);
+  const hrSource = deriveSessionHrSource(data) || textOrEmpty(record.hrSource || record.cfg?.hrSource || '');
   return {
     user_id: userId,
     session_id: String(record.id || crypto.randomUUID?.() || Date.now()),
@@ -175,9 +180,9 @@ function toCloudSprintSession(record, userId) {
     week_index: integerOrNull(context.weekIndex),
     workout_index: integerOrNull(context.workoutIndex),
     workout_type: textOrEmpty(context.workoutType || 'Sprint Intervals'),
-    hr_source: textOrEmpty(record.hrSource || record.cfg?.hrSource || ''),
-    reps_planned: integerOrNull(record.cfg?.reps || context.reps),
-    rest_seconds: integerOrNull(record.cfg?.rest || context.restSeconds),
+    hr_source: hrSource,
+    reps_planned: integerOrNull(context?.sprintConfig?.reps ?? record.cfg?.reps),
+    rest_seconds: integerOrNull(record.cfg?.rest || context?.sprintConfig?.restSeconds),
     max_hr: integerOrNull(record.cfg?.maxHR),
     target_pct: numberOrNull(record.cfg?.targetPct || context.targetPct),
     target_bpm: integerOrNull(context.targetBPM),
@@ -186,7 +191,13 @@ function toCloudSprintSession(record, userId) {
     peak_hr: integerOrNull(record.peakHR),
     proof_policy_version: integerOrNull(record.proofPolicyVersion),
     attachment_id: record.attachment?.id || null,
-    session_json: record,
+    ble_verified: verification.bleVerified,
+    session_json: {
+      ...record,
+      bleVerified: verification.bleVerified,
+      hrSource,
+      bleVerificationReason: verification.reason,
+    },
     updated_at: new Date().toISOString(),
   };
 }
@@ -275,7 +286,7 @@ export async function loadCoachRosterPayload() {
     loadCoachTable('athlete_profiles', 'user_id,athlete_name,fight_date,camp_length,training_tenure,camp_reset_at,default_modality,updated_at'),
     loadCoachTable('hr_info', 'user_id,max_hr,resting_hr,goal_weight,target_date,updated_at'),
     loadCoachTable('workout_completions', 'user_id,completion_key,week_index,workout_index,week_label,week_title,day_of_week,workout_type,description,warmup,target_zone,target_bpm,total_minutes,total_seconds,avg_bpm,max_bpm,distance,modality,output_type,output_value,avg_watts,completed_at,attachment_id,proof_pending,record_json,updated_at'),
-    loadCoachTable('sprint_sessions', 'user_id,session_id,session_at,week_index,workout_index,workout_type,avg_drop,peak_hr,intervals_completed,attachment_id,session_json,updated_at'),
+    loadCoachTable('sprint_sessions', 'user_id,session_id,session_at,week_index,workout_index,workout_type,avg_drop,peak_hr,intervals_completed,attachment_id,ble_verified,session_json,updated_at'),
     loadCoachTable('mile_tests', 'user_id,test_key,saved_at,distance,total_minutes,avg_bpm,max_bpm,attachment_id,proof_pending,result_json,updated_at'),
     loadCoachTable('coach_notes', 'athlete_user_id,note,updated_at'),
     client.rpc('coach_roster_identities').then(({ data, error }) => {
@@ -685,12 +696,21 @@ export async function saveCloudSprintSession(record) {
   const user = getCurrentUser();
   if (!isSupabaseConfigured || !supabase || !user || !record) return null;
 
-  const { error } = await supabase
+  const payload = toCloudSprintSession(record, user.id);
+  const { data, error } = await supabase
     .from('sprint_sessions')
-    .upsert(toCloudSprintSession(record, user.id), { onConflict: 'user_id,session_id' });
+    .upsert(payload, { onConflict: 'user_id,session_id' })
+    .select('*')
+    .single();
 
   if (error) throw error;
-  return record;
+
+  return {
+    ...record,
+    bleVerified: data?.ble_verified === true,
+    hrSource: data?.hr_source || record.hrSource || '',
+    bleVerificationReason: data?.ble_verified ? 'ble_verified' : (record.bleVerificationReason || ''),
+  };
 }
 
 export async function loadCloudMileTest(testKey = '') {
