@@ -38,5 +38,5 @@ export function getHRMonitorSetupCopy() {
 }
 
 export function getSprintHRMonitorDisclaimer() {
-  return 'For auto HR capture, connect your chest strap here only. Disconnect it from Wahoo, Strava, or other fitness apps first — most straps can only talk to one app at a time.';
+  return 'Disconnect your chest strap from Wahoo, Strava, or other fitness apps first. Most straps can only connect to one app at a time.';
 }

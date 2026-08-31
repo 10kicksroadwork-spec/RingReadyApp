@@ -289,7 +289,9 @@ async function init() {
   const setupCopy = document.getElementById('hr-setup-copy');
   if (setupCopy) setupCopy.textContent = getHRMonitorSetupCopy();
   const setupDisclaimer = document.getElementById('hr-setup-disclaimer');
-  if (setupDisclaimer) setupDisclaimer.textContent = getSprintHRMonitorDisclaimer();
+  if (setupDisclaimer) {
+    setupDisclaimer.innerHTML = `<strong>Before connecting:</strong> ${getSprintHRMonitorDisclaimer()}`;
+  }
 
   bindClick('ble-btn', () => connectHR());
   bindClick('start-session-btn', () => startSession());
