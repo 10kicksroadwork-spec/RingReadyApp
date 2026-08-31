@@ -1,6 +1,7 @@
 import {
   PROFILE_STORAGE_KEY,
   STORAGE_KEY,
+  ACTIVE_SESSION_STORAGE_KEY,
   SYNC_QUEUE_KEY,
   WORKOUT_COMPLETIONS_STORAGE_KEY,
 } from './constants.js';
@@ -221,10 +222,10 @@ function getCloudTimestamp(record) {
   return Number.isNaN(date.getTime()) ? 0 : date.getTime();
 }
 function clearAccountLocalData() {
-  [PROFILE_STORAGE_KEY, STORAGE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY, HR_INFO_STORAGE_KEY, MILE_TEST_STORAGE_KEY, PROFILE_FORM_COLLAPSED_KEY, PROGRAM_GUIDE_COLLAPSED_KEY, WORKOUT_NOTES_STORAGE_KEY, CAMP_RESET_SEEN_KEY, 'ringReadyClearedWorkoutCompletions'].forEach((key) => localStorage.removeItem(key));
+  [PROFILE_STORAGE_KEY, STORAGE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY, HR_INFO_STORAGE_KEY, MILE_TEST_STORAGE_KEY, PROFILE_FORM_COLLAPSED_KEY, PROGRAM_GUIDE_COLLAPSED_KEY, WORKOUT_NOTES_STORAGE_KEY, CAMP_RESET_SEEN_KEY, ACTIVE_SESSION_STORAGE_KEY, 'ringReadyClearedWorkoutCompletions'].forEach((key) => localStorage.removeItem(key));
 }
 function clearLocalTrainingData({ markResetAt = '' } = {}) {
-  [STORAGE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY, MILE_TEST_STORAGE_KEY, WORKOUT_NOTES_STORAGE_KEY, SYNC_QUEUE_KEY, WEEK_INDEX_KEY, SC_WEEK_STORAGE_KEY, 'ringReadyClearedWorkoutCompletions'].forEach((key) => localStorage.removeItem(key));
+  [STORAGE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY, MILE_TEST_STORAGE_KEY, WORKOUT_NOTES_STORAGE_KEY, SYNC_QUEUE_KEY, WEEK_INDEX_KEY, SC_WEEK_STORAGE_KEY, ACTIVE_SESSION_STORAGE_KEY, 'ringReadyClearedWorkoutCompletions'].forEach((key) => localStorage.removeItem(key));
   activeWeekIndex = 0;
   scWeek = 1;
   saveWeek(0);
@@ -1603,7 +1604,7 @@ function renderAthleteProfilePage() {
 }
 function clearLocalTestData() {
   if (!window.confirm('Clear local test data on this device? This resets profile, HR info, mile test, completed workouts, sprint history, pending sync, and onboarding.')) return;
-  [PROFILE_STORAGE_KEY, STORAGE_KEY, SYNC_QUEUE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY, HR_INFO_STORAGE_KEY, MILE_TEST_STORAGE_KEY, AUTH_USER_STORAGE_KEY, SC_MODE_STORAGE_KEY, SC_WEEK_STORAGE_KEY, WEEK_INDEX_KEY, PROFILE_FORM_COLLAPSED_KEY, PROGRAM_GUIDE_COLLAPSED_KEY, ONBOARDING_DISMISSED_KEY, WORKOUT_NOTES_STORAGE_KEY, CAMP_RESET_SEEN_KEY, 'ringReadyClearedWorkoutCompletions'].forEach((key) => localStorage.removeItem(key));
+  [PROFILE_STORAGE_KEY, STORAGE_KEY, SYNC_QUEUE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY, HR_INFO_STORAGE_KEY, MILE_TEST_STORAGE_KEY, AUTH_USER_STORAGE_KEY, SC_MODE_STORAGE_KEY, SC_WEEK_STORAGE_KEY, WEEK_INDEX_KEY, PROFILE_FORM_COLLAPSED_KEY, PROGRAM_GUIDE_COLLAPSED_KEY, ONBOARDING_DISMISSED_KEY, WORKOUT_NOTES_STORAGE_KEY, CAMP_RESET_SEEN_KEY, ACTIVE_SESSION_STORAGE_KEY, 'ringReadyClearedWorkoutCompletions'].forEach((key) => localStorage.removeItem(key));
   activeWeekIndex = 0;
   scMode = 'Gym Machines';
   scWeek = 1;
