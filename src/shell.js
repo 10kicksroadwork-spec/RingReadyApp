@@ -13,7 +13,7 @@ import {
   clearSyncQueueForUser,
   quarantineLegacySyncQueue,
 } from './sync.js';
-import { PROGRAM, getWeek } from './program.js';
+import { PROGRAM, getWeek, getSprintConfig } from './program.js';
 import {
   HR_INFO_DEFAULTS,
   HR_INFO_STORAGE_KEY,
@@ -951,19 +951,18 @@ function updateDetailExpectedStatus() {
   status.className = `detail-expected-status is-${comparison.tone} is-${comparison.severity}`;
   status.textContent = `${comparison.label} — ${comparison.detail}`;
 }
-function getSprintSetupFromWorkout(workout) {
-  const text = `${workout.type || ''} ${workout.description || ''}`;
-  const repMatch = text.match(/(\d+)\s*x\s*(\d+(?:\.\d+)?)\s*m/i);
-  const restMatch = text.match(/(\d+)\s*(?:second|sec|s)\s*(?:rest|recovery)/i);
-  return { reps: repMatch ? Number(repMatch[1]) : null, distanceMeters: repMatch ? Number(repMatch[2]) : null, restSeconds: restMatch ? Number(restMatch[1]) : null };
-}
 function buildWorkoutContext(week, workout, weekIndex, workoutIndex) {
-  const sprintSetup = getSprintSetupFromWorkout(workout);
+  const sprintConfig = getSprintConfig(workout);
   const targetPct = getWorkoutTargetPct(workout);
   return {
     weekIndex, workoutIndex, weekLabel: week.label, weekTitle: week.title, weekTab: week.title ? `${week.label} (${week.title})` : week.label,
     dayOfWeek: workout.day, workoutType: workout.type, description: workout.description, warmup: workout.warmup || '', targetZone: workout.targetZone || '',
-    targetBPM: getWorkoutTargetBPM(workout), targetPct, maxHr: getHRInfo().maxHr, reps: sprintSetup.reps, restSeconds: sprintSetup.restSeconds, distanceMeters: sprintSetup.distanceMeters,
+    targetBPM: getWorkoutTargetBPM(workout), targetPct, maxHr: getHRInfo().maxHr,
+    sprintConfig: sprintConfig ? { ...sprintConfig } : null,
+    reps: sprintConfig?.reps ?? null,
+    restSeconds: sprintConfig?.restSeconds ?? null,
+    distanceMeters: sprintConfig?.distanceMeters ?? null,
+    restCaptureSeconds: sprintConfig?.restCaptureSeconds ?? null,
   };
 }
 function makeWorkoutCompletionId() { return window.crypto && typeof window.crypto.randomUUID === 'function' ? window.crypto.randomUUID() : `workout-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`; }

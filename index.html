@@ -509,27 +509,16 @@
         <div class="sprint-warmup-copy" id="sprint-warmup-copy"></div>
       </div>
 
-      <div class="field-group">
-        <div class="field-label">Intervals</div>
-        <div class="stepper">
-          <button type="button" data-adjust="reps" data-delta="-1" aria-label="Decrease intervals">-</button>
-          <div class="stepper-center">
-            <div class="stepper-val" id="reps-val">8</div>
-            <span class="stepper-unit">sprints</span>
-          </div>
-          <button type="button" data-adjust="reps" data-delta="1" aria-label="Increase intervals">+</button>
+      <div class="field-group" id="sprint-prescription-group">
+        <div class="field-label">Today's Sprint Session</div>
+        <div class="sprint-prescription-card" id="sprint-prescription-card">
+          <div class="sprint-prescription-main" id="sprint-prescription-main">—</div>
+          <div class="sprint-prescription-detail" id="sprint-prescription-rest">—</div>
+          <div class="sprint-prescription-detail" id="sprint-prescription-hr">—</div>
+          <div class="sprint-prescription-week" id="sprint-prescription-week">—</div>
         </div>
-      </div>
-
-      <div class="field-group">
-        <div class="field-label">Rest Between Sprints</div>
-        <div class="stepper">
-          <button type="button" data-adjust="rest" data-delta="-5" aria-label="Decrease rest">-</button>
-          <div class="stepper-center">
-            <div class="stepper-val" id="rest-val">90</div>
-            <span class="stepper-unit">seconds</span>
-          </div>
-          <button type="button" data-adjust="rest" data-delta="5" aria-label="Increase rest">+</button>
+        <div class="sprint-prescription-error" id="sprint-prescription-error" hidden>
+          Could not load sprint prescription — return to week plan
         </div>
       </div>
 
