@@ -6,7 +6,7 @@ import {
   SYNC_ENDPOINT_KEY,
   SYNC_QUEUE_KEY_PREFIX,
 } from './constants.js';
-import { calculateAvgDrop, calculatePeakHR } from './workout.js';
+import { calculateAvgDrop, calculatePeakHR, isLoggedDrop } from './workout.js';
 import { hrState } from './hr-service.js';
 import { MODALITY_RUNNING, normalizeModality } from './modality.js';
 import { getCurrentUser } from './auth.js';
@@ -354,9 +354,9 @@ export function buildSessionPayload(cfg, data, sessionRecord = null) {
   const workoutContext = cfg.workoutContext || {};
   const workoutType = workoutContext.workoutType || 'Sprint Intervals';
   const targetBPM = Number(workoutContext.targetBPM) || Math.round((cfg.maxHR * cfg.targetPct) / 100);
-  const validDrops = data
+  const loggedDrops = data
     .map((rep) => rep.drop)
-    .filter((drop) => Number.isFinite(Number(drop)) && Number(drop) > 0)
+    .filter((drop) => isLoggedDrop(drop))
     .map((drop) => Number(drop));
   const linkedRecordId = String(sessionRecord?.id || base.eventId);
   const proofMeta = buildProofMetadata(workoutContext, linkedRecordId);
@@ -385,8 +385,8 @@ export function buildSessionPayload(cfg, data, sessionRecord = null) {
       intervals: data.length,
       avgDrop: calculateAvgDrop(data),
       peakHR: calculatePeakHR(data),
-      bpmDropCsv: validDrops.join(', '),
-      validDropCount: validDrops.length,
+      bpmDropCsv: loggedDrops.join(', '),
+      validDropCount: loggedDrops.length,
     },
     reps: data.map((rep, index) => ({
       rep: index + 1,
