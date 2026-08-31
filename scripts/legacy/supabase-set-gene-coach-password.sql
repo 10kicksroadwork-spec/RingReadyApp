@@ -1,3 +1,5 @@
+-- DEPRECATED: use scripts/migrations/ — see scripts/MIGRATIONS.md
+
 -- Set password for Gene's coach account
 -- Run in Supabase SQL Editor.
 --

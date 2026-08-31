@@ -1,5 +1,11 @@
 ﻿export const CIRCUMFERENCE = 2 * Math.PI * 108;
 export const APP_NAME = '10 Kicks: Ring Ready';
+export const ACTIVE_SESSION_KEY_PREFIX = 'ringReadyActiveSession:';
+export const LEGACY_ACTIVE_SESSION_STORAGE_KEY = 'ringReadyActiveSprintSession';
+export const ACTIVE_SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+export const SYNC_QUEUE_KEY_PREFIX = 'ringReadySyncQueue:';
+export const LEGACY_SYNC_QUEUE_KEY = 'ringReadySyncQueue';
+export const LEGACY_SYNC_QUEUE_QUARANTINE_KEY = 'ringReadySyncQueue:legacy-quarantine';
 export const STORAGE_KEY = 'sprintTrainerHistory';
 export const WORKOUT_COMPLETIONS_STORAGE_KEY = 'ringReadyWorkoutCompletions';
 export const PROFILE_STORAGE_KEY = 'ringReadyAthleteProfile';

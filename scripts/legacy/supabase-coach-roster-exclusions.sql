@@ -1,3 +1,4 @@
+-- DEPRECATED: see scripts/MIGRATIONS.md for canonical migrations.
 -- Ring Ready coach roster exclusions
 -- Run in Supabase SQL Editor after scripts/supabase-coach-access.sql
 --

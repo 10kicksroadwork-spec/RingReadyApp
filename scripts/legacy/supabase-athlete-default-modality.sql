@@ -1,3 +1,4 @@
+-- DEPRECATED: see scripts/MIGRATIONS.md for canonical migrations.
 -- Ring Ready default modality on athlete profiles
 -- Run in Supabase SQL Editor after the base athlete_profiles table exists.
 --

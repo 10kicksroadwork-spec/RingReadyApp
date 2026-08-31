@@ -1,3 +1,4 @@
+-- DEPRECATED: see scripts/MIGRATIONS.md for canonical migrations.
 -- Allow JPEG/PNG proof uploads from iOS Safari (canvas WebP encoding is unsupported).
 -- Run once in Supabase SQL editor after scripts/supabase-workout-proof.sql.
 

@@ -259,6 +259,7 @@ export function showScreen(id) {
 
   document.querySelectorAll('.screen').forEach((s) => s.classList.remove('active'));
   screen.classList.add('active');
+  document.dispatchEvent(new CustomEvent('ringready:screen-changed', { detail: { screenId: id } }));
   return true;
 }
 export function setStatus(s) {

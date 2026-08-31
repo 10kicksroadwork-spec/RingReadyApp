@@ -1,3 +1,5 @@
+-- DEPRECATED: use scripts/migrations/ — see scripts/MIGRATIONS.md
+
 -- Set a password for 10kicksroadwork@gmail.com
 -- Run in Supabase SQL Editor (Authentication users created via "Add user"
 -- often cannot sign in on a new device until a password is set and the

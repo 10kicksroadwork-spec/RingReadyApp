@@ -13,6 +13,15 @@ import {
   getRestDuration,
   getRestCaptureCopy,
 } from './workout.js';
+import {
+  clearActiveSessionCheckpoint,
+  hasActiveSessionCheckpoint,
+  isCheckpointResumable,
+  checkpointHasProgress,
+  loadActiveSessionCheckpoint,
+  saveActiveSessionCheckpoint,
+  resolveRestCaptureAttempted,
+} from './session-checkpoint.js';
 import { removeWorkoutCompletion, saveSessionToHistory, saveWorkoutCompletion } from './storage.js';
 import {
   applyCompletionActionState,
@@ -26,6 +35,8 @@ import {
   getAthleteProfile,
   saveAthleteProfile,
 } from './sync.js';
+import { getCurrentUser, saveCloudSprintSession } from './auth.js';
+import { isSupabaseConfigured } from './supabase-client.js';
 import {
   getAutoCapturedHR,
   isHRConnected,
@@ -77,6 +88,245 @@ export const state = {
 let activeResultRecord = null;
 const STRIDES_VIDEO_URL = 'https://www.youtube.com/watch?v=YA_u3F5aCdU';
 const SKIPS_VIDEO_URL = 'https://www.youtube.com/watch?v=A7r6yCpmSrA';
+
+const timerCheckpoint = {
+  kind: null,
+  startedAt: 0,
+  totalRest: 0,
+  restCaptureAt: 0,
+  captureAttempted: false,
+  delaySec: 0,
+};
+
+let sessionPersistenceBound = false;
+
+function clearTimerCheckpoint() {
+  timerCheckpoint.kind = null;
+  timerCheckpoint.startedAt = 0;
+  timerCheckpoint.totalRest = 0;
+  timerCheckpoint.restCaptureAt = 0;
+  timerCheckpoint.captureAttempted = false;
+  timerCheckpoint.delaySec = 0;
+}
+
+function persistSessionCheckpoint() {
+  if (state.phase === 'done') {
+    clearActiveSessionCheckpoint();
+    return;
+  }
+  saveActiveSessionCheckpoint(cfg, state, timerCheckpoint.kind ? { ...timerCheckpoint } : null);
+}
+
+function rebuildSessionDots() {
+  const dots = document.getElementById('dots-row');
+  if (!dots) return;
+  dots.innerHTML = '';
+  for (let i = 0; i < cfg.reps; i++) {
+    const dot = document.createElement('div');
+    dot.className = 'dot' + (i === 0 && state.currentRep === 0 ? ' active' : '');
+    dot.id = `dot-${i}`;
+    dots.appendChild(dot);
+  }
+  for (let i = 0; i < cfg.reps; i++) {
+    const dot = document.getElementById(`dot-${i}`);
+    if (!dot) continue;
+    dot.className =
+      'dot' +
+      (i < state.currentRep - 1 ? ' done' : i === state.currentRep - 1 ? ' active' : '');
+  }
+}
+
+function syncPendingRepChips() {
+  resetChips();
+  const pending = state.pendingRep;
+  if (!pending) return;
+
+  if (pending.sprintHR) {
+    document.getElementById('chip-sprint').textContent = pending.sprintHR;
+    document.getElementById('chip-sprint').classList.add('has-val');
+  }
+  if (pending.restHR) {
+    document.getElementById('chip-rest').textContent = pending.restHR;
+    document.getElementById('chip-rest').classList.add('has-val');
+  }
+  if (pending.sprintHR && pending.restHR !== null) {
+    const drop = pending.sprintHR - pending.restHR;
+    const chipDrop = document.getElementById('chip-drop');
+    chipDrop.textContent = drop;
+    chipDrop.classList.add('has-val');
+    if (pending.restHR > pending.sprintHR) chipDrop.classList.add('suspicious');
+  }
+}
+
+function restoreSessionUI() {
+  rebuildSessionDots();
+  document.getElementById('curr-interval').textContent = String(Math.max(1, state.currentRep || 1));
+  document.getElementById('total-intervals').textContent = `of ${cfg.reps}`;
+  document.getElementById('live-badge').style.display = hasFreshHRSample() ? 'flex' : 'none';
+  syncPendingRepChips();
+  syncHoldToCancelLabels();
+}
+
+function applyCheckpoint(checkpoint) {
+  const savedCfg = checkpoint.cfg || {};
+  cfg.reps = Math.max(1, Math.min(20, Number(savedCfg.reps) || cfg.reps));
+  cfg.rest = Math.max(30, Math.min(300, Number(savedCfg.rest) || cfg.rest));
+  cfg.maxHR = Number(savedCfg.maxHR) || cfg.maxHR;
+  cfg.targetPct = Number(savedCfg.targetPct) || cfg.targetPct;
+  cfg.workoutContext = savedCfg.workoutContext ? { ...savedCfg.workoutContext } : null;
+  renderSprintWarmup(cfg.workoutContext);
+  syncConfigControls();
+
+  const savedState = checkpoint.state || {};
+  Object.assign(state, {
+    phase: savedState.phase || 'idle',
+    currentRep: Number(savedState.currentRep) || 0,
+    timer: null,
+    seconds: Number(savedState.seconds) || 0,
+    data: Array.isArray(savedState.data) ? savedState.data.map((row) => ({ ...row })) : [],
+    pendingRep: savedState.pendingRep ? { ...savedState.pendingRep } : null,
+    awaitingModal: !!savedState.awaitingModal,
+    capturedSprintHR: savedState.capturedSprintHR ?? null,
+    capturedRestHR: savedState.capturedRestHR ?? null,
+  });
+
+  clearTimerCheckpoint();
+  const savedTimer = checkpoint.timer;
+  if (savedTimer?.kind) {
+    timerCheckpoint.kind = savedTimer.kind;
+    timerCheckpoint.startedAt = Number(savedTimer.startedAt) || 0;
+    timerCheckpoint.totalRest = Number(savedTimer.totalRest) || 0;
+    timerCheckpoint.restCaptureAt = Number(savedTimer.restCaptureAt) || 0;
+    timerCheckpoint.captureAttempted = !!savedTimer.captureAttempted;
+    timerCheckpoint.delaySec = Number(savedTimer.delaySec) || 0;
+  }
+}
+
+function resumeManualEntryUI() {
+  if (!state.pendingRep) return;
+  if (state.pendingRep.needsManualRest && state.pendingRep.restHR === null) {
+    openManualRestHRModal(timerCheckpoint.restCaptureAt || REST_CAPTURE_SEC);
+    return;
+  }
+  if (state.pendingRep.needsManualSprint || !state.pendingRep.sprintHR) {
+    openManualSprintHRModal();
+  }
+}
+
+function resumeActivePhaseUI() {
+  if (state.phase === 'idle') {
+    setStatus('ready');
+    setTimerDisplay('PRESS GO', 'GO', 'tap to begin');
+    setMainBtn('go', 'GO');
+    setRing(1, false);
+    return;
+  }
+
+  if (state.phase === 'sprinting') {
+    setStatus('sprint');
+    setMainBtn('sprint', 'SPRINT DONE');
+    setTimerDisplay('SPRINTING', '--', 'hold 2 seconds when finished');
+    setRing(1, true);
+    return;
+  }
+
+  if (state.phase === 'manual-entry') {
+    resumeManualEntryUI();
+    return;
+  }
+
+  if (state.phase === 'resting' && timerCheckpoint.kind === 'next-sprint') {
+    resumeNextSprintCountdown();
+    return;
+  }
+
+  if (state.phase === 'resting' && state.pendingRep) {
+    resumeAutoRest();
+    return;
+  }
+
+  if (state.phase === 'resting') {
+    setMainBtn('go', 'START NEXT SPRINT');
+    setTimerDisplay('READY', 'GO', 'tap to sprint');
+    setRing(1, false);
+  }
+}
+
+function resumeActiveSession(checkpoint = loadActiveSessionCheckpoint()) {
+  if (!isCheckpointResumable(checkpoint)) {
+    clearActiveSessionCheckpoint();
+    clearTimerCheckpoint();
+    return false;
+  }
+
+  activeResultRecord = null;
+  clearSessionTimer();
+  stopRestLogAlert();
+  applyCheckpoint(checkpoint);
+  restoreSessionUI();
+  resumeActivePhaseUI();
+  showScreen('session');
+  persistSessionCheckpoint();
+  return true;
+}
+
+export function tryAutoResumeActiveSession() {
+  const checkpoint = loadActiveSessionCheckpoint();
+  if (!isCheckpointResumable(checkpoint) || !checkpointHasProgress(checkpoint)) {
+    if (checkpoint && !isCheckpointResumable(checkpoint)) clearActiveSessionCheckpoint();
+    return false;
+  }
+
+  if (!resumeActiveSession(checkpoint)) return false;
+
+  const interval = Math.max(1, state.currentRep || 1);
+  const logged = state.data.length;
+  showToast(logged > 0 ? `SESSION RESUMED — INTERVAL ${interval}, ${logged} LOGGED` : `SESSION RESUMED — INTERVAL ${interval}`);
+  return true;
+}
+
+export function reconcileActiveSessionAfterBackground() {
+  if (state.phase === 'done') return;
+  if (!hasActiveSessionCheckpoint()) return;
+
+  if (state.phase === 'resting' && timerCheckpoint.kind === 'rest' && state.pendingRep) {
+    resumeAutoRest();
+    persistSessionCheckpoint();
+    return;
+  }
+
+  if (state.phase === 'resting' && timerCheckpoint.kind === 'next-sprint') {
+    resumeNextSprintCountdown();
+    persistSessionCheckpoint();
+  }
+}
+
+function bindSessionPersistence() {
+  if (sessionPersistenceBound) return;
+  sessionPersistenceBound = true;
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      persistSessionCheckpoint();
+      return;
+    }
+    reconcileActiveSessionAfterBackground();
+  });
+
+  window.addEventListener('pagehide', () => {
+    persistSessionCheckpoint();
+  });
+
+  window.addEventListener('pageshow', (event) => {
+    if (!event.persisted) return;
+    reconcileActiveSessionAfterBackground();
+  });
+}
+
+export function initSessionPersistence() {
+  bindSessionPersistence();
+  return tryAutoResumeActiveSession();
+}
 
 
 export function clearSessionTimer() {
@@ -169,7 +419,7 @@ export function setWorkoutContext(context = null) {
   applySessionHRConfig();
   syncConfigControls();
 }
-function runStartSession() {
+function runStartSession({ forceFresh = false } = {}) {
   const profile = getAthleteProfile();
   const athleteName = String(profile.athleteName || '').trim();
 
@@ -181,9 +431,28 @@ function runStartSession() {
     return;
   }
 
+  if (!forceFresh) {
+    const checkpoint = loadActiveSessionCheckpoint();
+    if (isCheckpointResumable(checkpoint) && checkpointHasProgress(checkpoint)) {
+      const interval = Math.max(1, Number(checkpoint.state.currentRep) || 1);
+      const logged = Array.isArray(checkpoint.state.data) ? checkpoint.state.data.length : 0;
+      const resume = window.confirm(
+        `You have an unfinished sprint session${logged ? ` with ${logged} interval${logged === 1 ? '' : 's'} logged` : ''} at interval ${interval}.\n\nResume that session?\n\nChoose Cancel to start a fresh session instead.`
+      );
+      if (resume) {
+        resumeActiveSession(checkpoint);
+        showToast(`SESSION RESUMED — INTERVAL ${interval}`);
+        return;
+      }
+      clearActiveSessionCheckpoint();
+      clearTimerCheckpoint();
+    }
+  }
+
   saveAthleteProfile({ athleteName });
   activeResultRecord = null;
   clearSessionTimer();
+  clearTimerCheckpoint();
 
   applySessionHRConfig();
 
@@ -199,15 +468,7 @@ function runStartSession() {
     capturedRestHR: null,
   });
 
-  const dots = document.getElementById('dots-row');
-  dots.innerHTML = '';
-  for (let i = 0; i < cfg.reps; i++) {
-    const d = document.createElement('div');
-    d.className = 'dot' + (i === 0 ? ' active' : '');
-    d.id = `dot-${i}`;
-    dots.appendChild(d);
-  }
-
+  rebuildSessionDots();
   document.getElementById('curr-interval').textContent = 1;
   document.getElementById('total-intervals').textContent = `of ${cfg.reps}`;
   document.getElementById('live-badge').style.display = hasFreshHRSample() ? 'flex' : 'none';
@@ -219,6 +480,7 @@ function runStartSession() {
   setRing(1, false);
   showScreen('session');
   syncHoldToCancelLabels();
+  persistSessionCheckpoint();
 }
 
 export function startSession() {
@@ -226,6 +488,18 @@ export function startSession() {
     runStartSession();
   } catch (err) {
     console.error('Start session failed', err);
+    const message = String(err && err.message ? err.message : err).slice(0, 56).toUpperCase();
+    showToast(`START FAILED: ${message}`);
+  }
+}
+
+export function startFreshSession() {
+  try {
+    clearActiveSessionCheckpoint();
+    clearTimerCheckpoint();
+    runStartSession({ forceFresh: true });
+  } catch (err) {
+    console.error('Start fresh session failed', err);
     const message = String(err && err.message ? err.message : err).slice(0, 56).toUpperCase();
     showToast(`START FAILED: ${message}`);
   }
@@ -264,6 +538,7 @@ export function beginSprint() {
   setRing(1, true);
   vibrate([100, 50, 100]);
   syncHoldToCancelLabels();
+  persistSessionCheckpoint();
 }
 
 export function handleSprintDone() {
@@ -291,6 +566,7 @@ export function handleSprintDone() {
   if (!sprintHR) {
     state.phase = 'manual-entry';
     openManualSprintHRModal();
+    persistSessionCheckpoint();
     return;
   }
 
@@ -298,6 +574,7 @@ export function handleSprintDone() {
   document.getElementById('chip-sprint').classList.add('has-val');
 
   startAutoRest();
+  persistSessionCheckpoint();
 }
 
 export function openManualSprintHRModal() {
@@ -331,6 +608,7 @@ export function openManualSprintHRModal() {
   document.getElementById('hr-modal').classList.add('open');
 
   setTimeout(() => sprintInput.focus(), 200);
+  persistSessionCheckpoint();
 }
 
 export function startAutoRest() {
@@ -342,16 +620,40 @@ export function startAutoRest() {
 function resumeAutoRest() {
   const totalRest = getRestDuration(cfg);
   const restCaptureAt = Math.min(REST_CAPTURE_SEC, totalRest);
-  const elapsed = Math.max(0, totalRest - state.seconds);
+  let elapsed = 0;
+
+  if (timerCheckpoint.kind === 'rest' && timerCheckpoint.startedAt) {
+    elapsed = Math.max(0, Math.floor((Date.now() - timerCheckpoint.startedAt) / 1000));
+  } else {
+    elapsed = Math.max(0, totalRest - state.seconds);
+  }
+
+  if (elapsed >= totalRest) {
+    state.seconds = 0;
+    if (state.pendingRep && state.pendingRep.restHR === null) {
+      autoCaptureRestHR(restCaptureAt);
+    }
+    completeRestAndAdvance();
+    return;
+  }
+
   runAutoRestCountdown(totalRest, restCaptureAt, elapsed);
 }
 
 function runAutoRestCountdown(totalRest, restCaptureAt, initialElapsed) {
   clearSessionTimer();
+  const restoredCaptureAttempted = timerCheckpoint.captureAttempted;
+  clearTimerCheckpoint();
 
   let elapsed = Math.max(0, Math.min(totalRest, initialElapsed));
-  let captureAttempted = !!(state.pendingRep && state.pendingRep.restHR !== null);
+  let captureAttempted = resolveRestCaptureAttempted({ captureAttempted: restoredCaptureAttempted }, state.pendingRep);
   const startedAt = Date.now() - elapsed * 1000;
+
+  timerCheckpoint.kind = 'rest';
+  timerCheckpoint.startedAt = startedAt;
+  timerCheckpoint.totalRest = totalRest;
+  timerCheckpoint.restCaptureAt = restCaptureAt;
+  timerCheckpoint.captureAttempted = captureAttempted;
 
   state.phase = 'resting';
   state.seconds = Math.max(0, totalRest - elapsed);
@@ -391,15 +693,19 @@ function runAutoRestCountdown(totalRest, restCaptureAt, initialElapsed) {
     // Use >= so a delayed/throttled tick cannot skip the exact second.
     if (!captureAttempted && elapsed >= restCaptureAt) {
       captureAttempted = true;
+      timerCheckpoint.captureAttempted = true;
       if (!autoCaptureRestHR(restCaptureAt)) {
+        persistSessionCheckpoint();
         return;
       }
     }
 
     if (state.seconds <= 0) {
       clearSessionTimer();
+      clearTimerCheckpoint();
 
       if (state.pendingRep && state.pendingRep.restHR === null && !autoCaptureRestHR(restCaptureAt)) {
+        persistSessionCheckpoint();
         return;
       }
 
@@ -409,6 +715,7 @@ function runAutoRestCountdown(totalRest, restCaptureAt, initialElapsed) {
 
   state.timer = setInterval(tick, 250);
   tick();
+  persistSessionCheckpoint();
 }
 
 export function autoCaptureRestHR(captureAt) {
@@ -475,6 +782,7 @@ export function openManualRestHRModal(captureAt) {
   startRestLogAlert();
 
   setTimeout(() => restInput.focus(), 200);
+  persistSessionCheckpoint();
 }
 
 export function completeRestAndAdvance() {
@@ -521,33 +829,67 @@ export function completeRestAndAdvance() {
   if (AUTO_START_NEXT_SPRINT) {
     startNextSprintCountdown();
   } else {
+    clearTimerCheckpoint();
     state.phase = 'resting';
     setMainBtn('go', 'START NEXT SPRINT');
     setTimerDisplay('READY', 'GO', 'tap to sprint');
     setRing(1, false);
   }
+  persistSessionCheckpoint();
 }
 
-export function startNextSprintCountdown() {
-  const delaySec = Math.max(1, Math.round(AUTO_START_DELAY_MS / 1000));
-  let remaining = delaySec;
+function resumeNextSprintCountdown() {
+  const delaySec = Math.max(1, timerCheckpoint.delaySec || Math.round(AUTO_START_DELAY_MS / 1000));
+  const startedAt = timerCheckpoint.startedAt || Date.now();
+  const elapsed = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+
+  if (elapsed >= delaySec) {
+    clearTimerCheckpoint();
+    beginSprint();
+    return;
+  }
+
+  runNextSprintCountdown(delaySec, elapsed);
+}
+
+function runNextSprintCountdown(delaySec, initialElapsed) {
+  clearSessionTimer();
+  clearTimerCheckpoint();
+
+  const elapsed = Math.max(0, Math.min(delaySec, initialElapsed));
+  const startedAt = Date.now() - elapsed * 1000;
+
+  timerCheckpoint.kind = 'next-sprint';
+  timerCheckpoint.startedAt = startedAt;
+  timerCheckpoint.delaySec = delaySec;
 
   state.phase = 'resting';
   setMainBtn('disabled', 'GET READY...');
-  setTimerDisplay('NEXT SPRINT', String(remaining), 'get ready');
-  setRing(1, false);
 
-  state.timer = setInterval(() => {
-    remaining--;
+  const tick = () => {
+    const currentElapsed = Math.min(delaySec, Math.floor((Date.now() - startedAt) / 1000));
+    const remaining = Math.max(0, delaySec - currentElapsed);
+    state.seconds = remaining;
 
     if (remaining > 0) {
       setTimerDisplay('NEXT SPRINT', String(remaining), 'get ready');
+      setRing(1, false);
       return;
     }
 
     clearSessionTimer();
+    clearTimerCheckpoint();
     beginSprint();
-  }, 1000);
+  };
+
+  state.timer = setInterval(tick, 250);
+  tick();
+  persistSessionCheckpoint();
+}
+
+export function startNextSprintCountdown() {
+  const delaySec = Math.max(1, Math.round(AUTO_START_DELAY_MS / 1000));
+  runNextSprintCountdown(delaySec, 0);
 }
 
 export function confirmHR() {
@@ -582,6 +924,7 @@ export function confirmHR() {
 
     if (state.seconds <= 0) completeRestAndAdvance();
     else resumeAutoRest();
+    persistSessionCheckpoint();
     return;
   }
 
@@ -607,6 +950,7 @@ export function confirmHR() {
   state.phase = 'resting';
 
   startAutoRest();
+  persistSessionCheckpoint();
 }
 
 export function sessionCancelRequiresHold() {
@@ -617,6 +961,8 @@ export function cancelSession() {
   if (state.phase === 'idle' || state.phase === 'done') return;
 
   resetSessionUI();
+  clearTimerCheckpoint();
+  clearActiveSessionCheckpoint();
 
   Object.assign(state, {
     phase: 'idle',
@@ -634,9 +980,11 @@ export function cancelSession() {
   showToast('SESSION CANCELLED');
 }
 
-export function finishSession() {
+export async function finishSession() {
   clearSessionTimer();
   stopRestLogAlert();
+  clearTimerCheckpoint();
+  clearActiveSessionCheckpoint();
   state.phase = 'done';
   setStatus('done');
   setTimerDisplay('DONE', 'OK', 'session complete');
@@ -644,10 +992,17 @@ export function finishSession() {
   syncHoldToCancelLabels();
   vibrate([100, 50, 100, 50, 200]);
   activeResultRecord = saveSessionToHistory(cfg, state.data);
+  if (isSupabaseConfigured && getCurrentUser()) {
+    try {
+      await saveCloudSprintSession(activeResultRecord);
+    } catch (error) {
+      console.warn('Cloud sprint session save failed', error);
+    }
+  }
   window.dispatchEvent(new CustomEvent('ringready:sprint-session-saved', { detail: activeResultRecord }));
-  enqueueSessionForSync(cfg, state.data);
+  enqueueSessionForSync(cfg, state.data, activeResultRecord);
   flushSyncQueue().then((result) => {
-    if (result.sent > 0) showToast('SESSION SYNCED');
+    if (result.dispatched > 0) showToast('SHEETS REQUEST DISPATCHED');
     else if (result.status === 'not-configured') showToast('SESSION SAVED LOCALLY');
     else if (result.status === 'offline') showToast('OFFLINE - SAVED LOCALLY');
   });
@@ -817,7 +1172,7 @@ export async function completeWorkout() {
     const attachment = await ensureWorkoutProofUploaded('sprint', activeResultRecord.id);
     if (attachment) {
       activeResultRecord = { ...activeResultRecord, proofPolicyVersion: PROOF_POLICY_VERSION, attachment };
-      if (isNewProof) enqueueWorkoutProofForSync(attachment, { ...getRecordContext(activeResultRecord), campLength: Number(getAthleteProfile().campLength) || 7 }, activeResultRecord.id);
+      if (isNewProof) enqueueWorkoutProofForSync(attachment);
     }
   } catch (error) {
     console.warn('Sprint proof upload failed', error);
@@ -939,6 +1294,8 @@ export function resetSessionUI() {
 export function newSession() {
   resetSessionUI();
   activeResultRecord = null;
+  clearTimerCheckpoint();
+  clearActiveSessionCheckpoint();
 
   Object.assign(state, {
     phase: 'idle',

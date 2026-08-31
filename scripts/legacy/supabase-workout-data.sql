@@ -1,3 +1,6 @@
+-- DEPRECATED: canonical migration is scripts/migrations/001_baseline.sql
+-- See scripts/MIGRATIONS.md
+
 -- Ring Ready workout-data cloud sync support
 -- Run this in Supabase SQL Editor after the base tables exist.
 

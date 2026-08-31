@@ -21,10 +21,10 @@ import {
   normalizeModality,
   readOutputFromWorkoutLog,
 } from './modality.js';
+import { scoreZoneAdherence } from './hr-analytics.js';
 
 const NOTES_KEY = 'ringReadyCoachPreviewNotes';
 const COACH_SCREENS = new Set(['coach-dashboard', 'coach-athlete']);
-const HR_TARGET_TOLERANCE_BPM = 5;
 const SPRINT_TARGET_DROP = 30;
 const EQUIV_RATIO_MIN = 0.85;
 const EQUIV_RATIO_MAX = 1.15;
@@ -49,6 +49,7 @@ let liveAthletes = null;
 let liveLoadError = '';
 let liveLoadState = 'idle';
 let rosterSource = 'mock';
+let rosterSourceWarnings = [];
 
 export function isLocalCoachPreviewHost() {
   return isLocalHost();
@@ -207,18 +208,13 @@ function buildBenchSignal(points) {
   };
 }
 
-function buildZoneSignal(sessions) {
-  let scored = 0;
-  let onTarget = 0;
-  sessions.forEach((session) => {
-    if (session.status !== 'logged') return;
-    if (isSprintType(session.type) || isMileTestType(session.type)) return;
-    const avg = Number(session.avgBpm);
-    const tgt = Number(session.targetBPM);
-    if (!Number.isFinite(avg) || avg <= 0 || !Number.isFinite(tgt) || tgt <= 0) return;
-    scored += 1;
-    if (Math.abs(avg - tgt) <= HR_TARGET_TOLERANCE_BPM) onTarget += 1;
-  });
+function buildZoneSignal(sessions, maxHr = null, restingHr = null) {
+  const hrInfo = { maxHr: maxHr || 0, restingHr: restingHr || 0 };
+  const workoutLookup = (session) => {
+    const week = PROGRAM[session.weekIndex];
+    return week?.workouts?.[session.workoutIndex] || null;
+  };
+  const { scored, onTarget } = scoreZoneAdherence(sessions, workoutLookup, hrInfo);
   if (!scored) return emptySignal('zone', 'No HR vs target yet');
   const pct = Math.round((onTarget / scored) * 100);
   let tone = 'red';
@@ -229,7 +225,7 @@ function buildZoneSignal(sessions) {
     tone,
     value: `${pct}%`,
     short: `${pct}%`,
-    detail: `${onTarget}/${scored} runs within ±${HR_TARGET_TOLERANCE_BPM} bpm`,
+    detail: `${onTarget}/${scored} runs within target HR band`,
     points: [],
     pct,
     scored,
@@ -464,7 +460,7 @@ function buildHeadline(athlete) {
     bits.push('On track.');
   }
 
-  if (tone === 'behind' && scan.recovery.tone === 'neutral') {
+  if (tone === 'behind' && scan.recovery.tone === 'neutral' && !scan.recovery.points?.length) {
     bits.push('No sprint yet.');
   } else if (scan.zone.tone === 'red') {
     bits.push(`Zone ${scan.zone.value}.`);
@@ -621,7 +617,7 @@ function buildAthleteRecord(config) {
   const performance = buildPerformanceContinuity(sessions);
   const scan = {
     bench: buildBenchSignal(benchPoints),
-    zone: buildZoneSignal(sessions),
+    zone: buildZoneSignal(sessions, config.maxHr, config.restingHr),
     recovery: buildRecoverySignal(sprintPoints),
     pace: buildPaceSignal(sessions),
     performance: buildPerformanceSignal(performance),
@@ -897,6 +893,43 @@ function completionKeyFromRow(row) {
   return '';
 }
 
+function mileTestKeyFromRow(row) {
+  const ctx = row.test_context_json && typeof row.test_context_json === 'object' ? row.test_context_json : {};
+  if (Number.isFinite(Number(ctx.weekIndex)) && Number.isFinite(Number(ctx.workoutIndex))) {
+    return sessionKey(Number(ctx.weekIndex), Number(ctx.workoutIndex));
+  }
+  const match = String(row.test_key || '').match(/^program:\d+:(\d+):(\d+)$/);
+  if (match) return sessionKey(Number(match[1]), Number(match[2]));
+  return '';
+}
+
+function synthesizeCompletionFromMileTest(mileRow, workout) {
+  const ctx = mileRow.test_context_json && typeof mileRow.test_context_json === 'object' ? mileRow.test_context_json : {};
+  let weekIndex = Number(ctx.weekIndex);
+  let workoutIndex = Number(ctx.workoutIndex);
+  if (!Number.isFinite(weekIndex) || !Number.isFinite(workoutIndex)) {
+    const match = String(mileRow.test_key || '').match(/^program:\d+:(\d+):(\d+)$/);
+    if (match) {
+      weekIndex = Number(match[1]);
+      workoutIndex = Number(match[2]);
+    }
+  }
+  return {
+    completion_key: sessionKey(weekIndex, workoutIndex),
+    week_index: weekIndex,
+    workout_index: workoutIndex,
+    workout_type: ctx.workoutType || workout.type,
+    avg_bpm: mileRow.avg_bpm,
+    max_bpm: mileRow.max_bpm,
+    total_minutes: mileRow.total_minutes,
+    distance: mileRow.distance,
+    attachment_id: mileRow.attachment_id || null,
+    completed_at: mileRow.saved_at || mileRow.updated_at,
+    updated_at: mileRow.updated_at || mileRow.saved_at,
+    record_json: mileRow.result_json && typeof mileRow.result_json === 'object' ? mileRow.result_json : {},
+  };
+}
+
 function sprintDropFromRow(row) {
   const json = row.session_json && typeof row.session_json === 'object' ? row.session_json : {};
   const data = Array.isArray(json.data) ? json.data : [];
@@ -911,12 +944,57 @@ function sprintDropFromRow(row) {
   return Number.isFinite(avg) && avg > 0 ? avg : null;
 }
 
-function formatLastSession(completions) {
-  const dated = [...completions]
-    .map((row) => ({
+function sprintContextFromRow(row) {
+  const json = row.session_json && typeof row.session_json === 'object' ? row.session_json : {};
+  return json.cfg?.workoutContext || json.workoutContext || {};
+}
+
+function sessionKeyFromSprintRow(row) {
+  let weekIndex = Number(row.week_index);
+  let workoutIndex = Number(row.workout_index);
+  const context = sprintContextFromRow(row);
+  if (!Number.isFinite(weekIndex)) weekIndex = Number(context.weekIndex);
+  if (!Number.isFinite(workoutIndex)) workoutIndex = Number(context.workoutIndex);
+  if (!Number.isFinite(weekIndex)) return '';
+  if (!Number.isFinite(workoutIndex)) workoutIndex = 0;
+  return sessionKey(weekIndex, workoutIndex);
+}
+
+function synthesizeCompletionFromSprint(sprintRow, workout) {
+  const json = sprintRow.session_json && typeof sprintRow.session_json === 'object' ? sprintRow.session_json : {};
+  const context = sprintContextFromRow(sprintRow);
+  const weekIndex = Number.isFinite(Number(sprintRow.week_index))
+    ? Number(sprintRow.week_index)
+    : Number(context.weekIndex);
+  const workoutIndex = Number.isFinite(Number(sprintRow.workout_index))
+    ? Number(sprintRow.workout_index)
+    : (Number.isFinite(Number(context.workoutIndex)) ? Number(context.workoutIndex) : 0);
+
+  return {
+    completion_key: sessionKeyFromSprintRow(sprintRow),
+    week_index: weekIndex,
+    workout_index: workoutIndex,
+    workout_type: sprintRow.workout_type || workout.type,
+    target_bpm: Number(sprintRow.target_bpm || context.targetBPM || workout.targetBPM),
+    max_bpm: Number(sprintRow.peak_hr) || null,
+    attachment_id: sprintRow.attachment_id || null,
+    completed_at: sprintRow.session_at || sprintRow.updated_at,
+    updated_at: sprintRow.updated_at || sprintRow.session_at,
+    record_json: json,
+  };
+}
+
+function formatLastSession(completions, sprints = []) {
+  const dated = [
+    ...completions.map((row) => ({
       at: new Date(row.completed_at || row.updated_at || 0).getTime(),
       type: row.workout_type || 'Session',
-    }))
+    })),
+    ...sprints.map((row) => ({
+      at: new Date(row.session_at || row.updated_at || 0).getTime(),
+      type: row.workout_type || 'Sprint Intervals',
+    })),
+  ]
     .filter((row) => Number.isFinite(row.at) && row.at > 0)
     .sort((a, b) => b.at - a.at);
   if (!dated.length) return 'No sessions yet';
@@ -933,13 +1011,23 @@ function isSkippedCloudCompletion(row, record = {}) {
     || log.status === 'skipped';
 }
 
-function liveAthleteConfig(profile, hrRow, completions, sprints, note, email = '', campStartDate = '') {
+function liveAthleteConfig(profile, hrRow, completions, sprints, mileTests, note, email = '', campStartDate = '') {
   const campLength = Number(profile.camp_length) === 4 ? 4 : 7;
   const weeks = campWeeks(campLength);
   const byKey = new Map();
   completions.forEach((row) => {
     const key = completionKeyFromRow(row);
     if (key) byKey.set(key, row);
+  });
+  const mileTestByKey = new Map();
+  (mileTests || []).forEach((row) => {
+    const key = mileTestKeyFromRow(row);
+    if (key) mileTestByKey.set(key, row);
+  });
+  const sprintsByKey = new Map();
+  sprints.forEach((row) => {
+    const key = sessionKeyFromSprintRow(row);
+    if (key) sprintsByKey.set(key, row);
   });
   const currentWeekIndex = inferCurrentWeekIndex(
     profile.fight_date,
@@ -966,7 +1054,15 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, note, email = '
       const key = sessionKey(weekIndex, workoutIndex);
       if (weekIndex > currentWeekIndex) return;
       if (campStartDate && !isSessionDueYet(campStartDate, weekIndex, workout.day)) return;
-      const row = byKey.get(key);
+      let row = byKey.get(key);
+      const sprintRow = sprintsByKey.get(key);
+      if (!row && isSprintType(workout.type) && sprintRow) {
+        row = synthesizeCompletionFromSprint(sprintRow, workout);
+      }
+      if (!row && isMileTestType(workout.type)) {
+        const mileRow = mileTestByKey.get(key);
+        if (mileRow) row = synthesizeCompletionFromMileTest(mileRow, workout);
+      }
       if (!row) {
         missing.push(key);
         return;
@@ -980,7 +1076,7 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, note, email = '
         sessionNotes[key] = skipNote || (reason ? `Skipped · ${reason}` : 'Coach-approved skip.');
         return;
       }
-      if (!row.attachment_id) missingProofs.push(key);
+      if (!row.attachment_id && !sprintRow?.attachment_id) missingProofs.push(key);
       const log = record.workoutLog || {};
       const output = readOutputFromWorkoutLog({
         modality: log.modality,
@@ -1009,11 +1105,12 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, note, email = '
 
   sprints.forEach((row) => {
     const drop = sprintDropFromRow(row);
-    const weekIndex = Number(row.week_index);
-    if (!Number.isFinite(drop) || !Number.isFinite(weekIndex)) return;
+    const key = sessionKeyFromSprintRow(row);
+    if (!Number.isFinite(drop) || !key) return;
+    const weekIndex = Number(key.split(':')[0]);
+    if (!Number.isFinite(weekIndex)) return;
     sprintPoints.push({ weekIndex, first5Avg: drop });
-    const workoutIndex = Number(row.workout_index);
-    if (Number.isFinite(workoutIndex)) drops[sessionKey(weekIndex, workoutIndex)] = drop;
+    drops[key] = drop;
   });
 
   return {
@@ -1027,7 +1124,7 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, note, email = '
     tenure: profile.training_tenure || '',
     maxHr: hrRow?.max_hr ?? null,
     restingHr: hrRow?.resting_hr ?? null,
-    lastSession: formatLastSession(completions),
+    lastSession: formatLastSession(completions, sprints),
     missing,
     skipped,
     missingProofs,
@@ -1059,6 +1156,12 @@ function buildLiveRoster(payload) {
     list.push(row);
     sprintsByUser.set(row.user_id, list);
   });
+  const mileTestsByUser = new Map();
+  (payload.mileTests || []).forEach((row) => {
+    const list = mileTestsByUser.get(row.user_id) || [];
+    list.push(row);
+    mileTestsByUser.set(row.user_id, list);
+  });
   const notesByUser = new Map((payload.notes || []).map((row) => [row.athlete_user_id, row.note || '']));
   const metaByUser = new Map((payload.meta || []).map((row) => [row.athlete_user_id, row]));
   const emailByUser = new Map();
@@ -1081,6 +1184,7 @@ function buildLiveRoster(payload) {
       hrByUser.get(profile.user_id),
       completionsByUser.get(profile.user_id) || [],
       sprintsByUser.get(profile.user_id) || [],
+      mileTestsByUser.get(profile.user_id) || [],
       notesByUser.get(profile.user_id) || '',
       emailByUser.get(normalizeUserId(profile.user_id)) || '',
       metaByUser.get(profile.user_id)?.camp_start_date || ''
@@ -1267,6 +1371,17 @@ function renderRoster() {
     }
     if (list) list.innerHTML = '';
     return;
+  }
+
+  const warningEl = document.getElementById('coach-roster-warnings');
+  if (warningEl) {
+    if (rosterSourceWarnings.length) {
+      warningEl.hidden = false;
+      warningEl.textContent = rosterSourceWarnings.join(' · ');
+    } else {
+      warningEl.hidden = true;
+      warningEl.textContent = '';
+    }
   }
 
   const athletes = rosterAthletes().filter((athlete) => matchesFilter(athlete) && matchesQuery(athlete));
@@ -1605,10 +1720,22 @@ async function loadLiveRoster() {
   liveLoadState = 'loading';
   rosterSource = 'live';
   liveLoadError = '';
+  rosterSourceWarnings = [];
   try {
     const payload = await loadCoachRosterPayload();
+    const sourceErrors = payload?.sourceErrors || {};
+    rosterSourceWarnings = Object.entries(sourceErrors).map(([key, message]) => {
+      const labels = {
+        sprints: 'Sprint data unavailable',
+        completions: 'Completion data unavailable',
+        mileTests: 'Mile test data unavailable',
+        hrRows: 'HR data unavailable',
+        notes: 'Coach notes unavailable',
+      };
+      return labels[key] || `${key} unavailable: ${message}`;
+    });
     liveAthletes = buildLiveRoster(payload || {
-      profiles: [], hrRows: [], completions: [], sprints: [], notes: [], identities: [], exclusions: [], meta: [],
+      profiles: [], hrRows: [], completions: [], sprints: [], mileTests: [], notes: [], identities: [], exclusions: [], meta: [],
     });
     liveLoadState = 'ready';
   } catch (error) {

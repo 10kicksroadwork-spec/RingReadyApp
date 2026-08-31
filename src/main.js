@@ -28,6 +28,7 @@ import {
   clearResultWorkoutCompletion,
   newSession,
   showSavedWorkoutResult,
+  initSessionPersistence,
 } from './app.js';
 
 const READABILITY_STYLES = `
@@ -250,19 +251,19 @@ function initReadabilityEnhancements() {
 
   document.addEventListener('click', (event) => {
     if (event.target.closest('[data-page-target="mile-test-page"]')) {
-      window.setTimeout(configureMileTimeInput, 0);
+      window.setTimeout(() => {
+        configureMileTimeInput();
+        refreshMileResultCopy();
+      }, 0);
     }
   });
 
-  window.setInterval(() => {
-    const milePage = document.getElementById('mile-test-page');
-
-    if (milePage?.classList.contains('active')) {
+  document.addEventListener('ringready:screen-changed', (event) => {
+    if (event.detail?.screenId === 'mile-test-page') {
       configureMileTimeInput();
+      refreshMileResultCopy();
     }
-
-    refreshMileResultCopy();
-  }, 500);
+  });
 }
 
 async function init() {
@@ -275,6 +276,7 @@ async function init() {
   initReadabilityEnhancements();
   const openedCoachPreview = openCoachPreviewIfRequested();
   if (!openedCoachPreview) await enforceAthleteOnboarding({ showScreen });
+  initSessionPersistence();
   registerMainHandlers({ handleMainBtn, handleSprintDone });
 
   initHRService({

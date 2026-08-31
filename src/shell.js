@@ -1,9 +1,18 @@
 import {
   PROFILE_STORAGE_KEY,
   STORAGE_KEY,
-  SYNC_QUEUE_KEY,
   WORKOUT_COMPLETIONS_STORAGE_KEY,
 } from './constants.js';
+import {
+  clearSharedLocalState,
+  shouldClearSharedStateOnSwitch,
+} from './account-switch.js';
+import { clearActiveSessionCheckpointsForAllUsers } from './session-checkpoint.js';
+import { getHRInfo, saveHRInfo } from './hr-local.js';
+import {
+  clearSyncQueueForUser,
+  quarantineLegacySyncQueue,
+} from './sync.js';
 import { PROGRAM, getWeek } from './program.js';
 import {
   HR_INFO_DEFAULTS,
@@ -39,6 +48,12 @@ import {
 import { getWorkoutCompletion, isWorkoutCompletionCleared, markWorkoutCompletionCleared, removeWorkoutCompletion, saveWorkoutCompletion } from './storage.js';
 import { parseDurationMinutes, sanitizeDurationInput } from './workout.js';
 import {
+  calculateZoneBPM,
+  getExpectedSessionAvgTarget,
+  getIntervalPlan,
+  getZone2BPM,
+} from './hr-analytics.js';
+import {
   applyCompletionActionState,
   buildHrChecklistItem,
   buildNumericChecklistItem,
@@ -67,6 +82,8 @@ import {
   archiveAndResetCamp,
   clearAuthRedirectParams,
   deleteCloudWorkoutCompletion,
+  ensureCloudMileTestIdentity,
+  ensureCloudWorkoutIdentity,
   getCurrentUser,
   initSupabaseAuth,
   isCoachUser,
@@ -82,6 +99,8 @@ import {
   saveCloudProfile,
   saveCloudSprintSession,
   saveCloudWorkoutCompletion,
+  rollbackCloudMileTestIdentity,
+  rollbackCloudWorkoutIdentity,
   signInWithEmail,
   signOut,
   signUpWithEmail,
@@ -97,6 +116,7 @@ import {
   initWorkoutProof,
   markWorkoutProofCleared,
 } from './proof.js';
+import { resolveCanonicalClientRecordId } from './proof-staging.js';
 
 const WEEK_INDEX_KEY = 'ringReadyActiveWeekIndex';
 const PROFILE_FORM_COLLAPSED_KEY = 'ringReadyProfileFormCollapsed';
@@ -215,16 +235,26 @@ function hasCustomHRInfo(hrInfo = {}) {
     || Number(hrInfo.maxHr) !== Number(HR_INFO_DEFAULTS.maxHr)
     || Number(hrInfo.restingHr) !== Number(HR_INFO_DEFAULTS.restingHr);
 }
-function getCloudTimestamp(record) {
-  const value = record?.completedAt || record?.savedAt || record?.date || record?.workoutLog?.completedAt || '';
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? 0 : date.getTime();
-}
+import {
+  chooseLatestMileResult,
+  getCloudTimestamp,
+  getRecordUpdatedAt,
+  mergeHRByTimestamp,
+  mergeProfileByTimestamp,
+  mergeSprintSessions,
+  mergeWorkoutCompletions,
+} from './shell-cloud-merge.js';
+
 function clearAccountLocalData() {
-  [PROFILE_STORAGE_KEY, STORAGE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY, HR_INFO_STORAGE_KEY, MILE_TEST_STORAGE_KEY, PROFILE_FORM_COLLAPSED_KEY, PROGRAM_GUIDE_COLLAPSED_KEY, WORKOUT_NOTES_STORAGE_KEY, CAMP_RESET_SEEN_KEY, 'ringReadyClearedWorkoutCompletions'].forEach((key) => localStorage.removeItem(key));
+  const userId = getCurrentUser()?.id;
+  if (userId) clearSyncQueueForUser(userId);
+  clearSharedLocalState();
 }
 function clearLocalTrainingData({ markResetAt = '' } = {}) {
-  [STORAGE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY, MILE_TEST_STORAGE_KEY, WORKOUT_NOTES_STORAGE_KEY, SYNC_QUEUE_KEY, WEEK_INDEX_KEY, SC_WEEK_STORAGE_KEY, 'ringReadyClearedWorkoutCompletions'].forEach((key) => localStorage.removeItem(key));
+  const userId = getCurrentUser()?.id;
+  if (userId) clearSyncQueueForUser(userId);
+  clearActiveSessionCheckpointsForAllUsers();
+  [STORAGE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY, MILE_TEST_STORAGE_KEY, WORKOUT_NOTES_STORAGE_KEY, WEEK_INDEX_KEY, SC_WEEK_STORAGE_KEY, 'ringReadyClearedWorkoutCompletions'].forEach((key) => localStorage.removeItem(key));
   activeWeekIndex = 0;
   scWeek = 1;
   saveWeek(0);
@@ -245,21 +275,8 @@ function prepareCoachSession() {
   const userId = getCurrentUser()?.id;
   if (userId) localStorage.setItem(AUTH_USER_STORAGE_KEY, userId);
 }
-function mergeWorkoutCompletions(localCompletions = {}, cloudCompletions = {}) {
-  const merged = { ...localCompletions };
-  Object.entries(cloudCompletions || {}).forEach(([key, cloudRecord]) => {
-    const cloudStamp = cloudRecord?.updatedAt || cloudRecord?.completedAt || cloudRecord?.updated_at || cloudRecord?.date || '';
-    if (isWorkoutCompletionCleared(key, null, cloudStamp)) {
-      delete merged[key];
-      return;
-    }
-    const localRecord = merged[key];
-    if (!localRecord || getCloudTimestamp(cloudRecord) >= getCloudTimestamp(localRecord)) merged[key] = cloudRecord;
-  });
-  Object.keys(merged).forEach((key) => {
-    if (isWorkoutCompletionCleared(key)) delete merged[key];
-  });
-  return merged;
+function mergeWorkoutCompletionsLocal(localCompletions = {}, cloudCompletions = {}) {
+  return mergeWorkoutCompletions(localCompletions, cloudCompletions, isWorkoutCompletionCleared);
 }
 function completionsNeedingCloudBackfill(localCompletions = {}, cloudCompletions = {}) {
   const out = {};
@@ -273,21 +290,6 @@ function completionsNeedingCloudBackfill(localCompletions = {}, cloudCompletions
     if (getCloudTimestamp(record) > getCloudTimestamp(cloud)) out[key] = record;
   });
   return out;
-}
-function mergeSprintSessions(localSessions = [], cloudSessions = []) {
-  const byId = new Map();
-  [...cloudSessions, ...localSessions].forEach((record) => {
-    if (!record) return;
-    const id = String(record.id || record.sessionId || record.date || Math.random());
-    const existing = byId.get(id);
-    if (!existing || getCloudTimestamp(record) >= getCloudTimestamp(existing)) byId.set(id, record);
-  });
-  return Array.from(byId.values()).sort((a, b) => getCloudTimestamp(b) - getCloudTimestamp(a)).slice(0, 50);
-}
-function chooseLatestMileResult(localResult, cloudResult) {
-  if (!localResult) return cloudResult || null;
-  if (!cloudResult) return localResult;
-  return getCloudTimestamp(cloudResult) >= getCloudTimestamp(localResult) ? cloudResult : localResult;
 }
 async function saveTrainingDataToCloud({ completions = {}, sessions = [], mileTest = null } = {}) {
   if (!isSupabaseConfigured || !getCurrentUser()) return;
@@ -419,8 +421,9 @@ async function hydrateCloudData() {
   if (!isSupabaseConfigured || !getCurrentUser()) return;
   const user = getCurrentUser();
   const lastUserId = localStorage.getItem(AUTH_USER_STORAGE_KEY);
-  if (lastUserId && lastUserId !== user.id) clearAccountLocalData();
+  if (shouldClearSharedStateOnSwitch(lastUserId, user.id)) clearSharedLocalState();
   localStorage.setItem(AUTH_USER_STORAGE_KEY, user.id);
+  quarantineLegacySyncQueue();
 
   const localProfile = getAthleteProfile();
   const localHRInfo = getHRInfo();
@@ -448,7 +451,15 @@ async function hydrateCloudData() {
 
   if (cloudProfile && hasProfileData(cloudProfile)) {
     applyCampResetIfNeeded(cloudProfile);
-    saveAthleteProfile(cloudProfile);
+    const mergedProfile = mergeProfileByTimestamp(localProfile, cloudProfile);
+    saveAthleteProfile(mergedProfile, { preserveUpdatedAt: true });
+    if (getRecordUpdatedAt(localProfile) > getRecordUpdatedAt(cloudProfile) && hasProfileData(localProfile)) {
+      try {
+        await saveCloudProfile(mergedProfile);
+      } catch (error) {
+        console.warn('Cloud profile conflict save failed', error);
+      }
+    }
   } else if (hasProfileData(localProfile)) {
     try {
       await saveCloudProfile(localProfile);
@@ -458,7 +469,15 @@ async function hydrateCloudData() {
   }
 
   if (cloudHRInfo && hasCustomHRInfo(cloudHRInfo)) {
-    saveHRInfo({ ...HR_INFO_DEFAULTS, ...cloudHRInfo });
+    const mergedHR = mergeHRByTimestamp(localHRInfo, cloudHRInfo, HR_INFO_DEFAULTS);
+    saveHRInfo(mergedHR, { preserveUpdatedAt: true });
+    if (getRecordUpdatedAt(localHRInfo) > getRecordUpdatedAt(cloudHRInfo) && hasCustomHRInfo(localHRInfo)) {
+      try {
+        await saveCloudHRInfo(mergedHR);
+      } catch (error) {
+        console.warn('Cloud HR info conflict save failed', error);
+      }
+    }
   } else if (hasCustomHRInfo(localHRInfo)) {
     try {
       await saveCloudHRInfo(localHRInfo);
@@ -470,7 +489,7 @@ async function hydrateCloudData() {
   const freshLocalCompletions = readJSON(WORKOUT_COMPLETIONS_STORAGE_KEY, {});
   const freshLocalSessions = getSessionHistory();
   const freshLocalMileTest = getMileTestResult();
-  const mergedCompletions = mergeWorkoutCompletions(freshLocalCompletions, cloudCompletions);
+  const mergedCompletions = mergeWorkoutCompletionsLocal(freshLocalCompletions, cloudCompletions);
   const mergedSessions = mergeSprintSessions(freshLocalSessions, cloudSessions);
   const latestMileTest = chooseLatestMileResult(freshLocalMileTest, cloudMileTest);
 
@@ -654,26 +673,7 @@ function clampWeek(index) { const limit = Math.max(1, getCampWeekLimit()); retur
 function clampSCWeek(week) { return Math.max(1, Math.min(getCampWeekLimit(), Number(week) || 1)); }
 function saveWeek(index) { activeWeekIndex = clampWeek(index); localStorage.setItem(WEEK_INDEX_KEY, String(activeWeekIndex)); }
 
-function getHRInfo() {
-  const saved = readJSON(HR_INFO_STORAGE_KEY, {});
-  return {
-    goalWeight: Number(saved.goalWeight ?? HR_INFO_DEFAULTS.goalWeight),
-    targetDate: String(saved.targetDate || HR_INFO_DEFAULTS.targetDate),
-    maxHr: Number(saved.maxHr ?? HR_INFO_DEFAULTS.maxHr),
-    restingHr: Number(saved.restingHr ?? HR_INFO_DEFAULTS.restingHr),
-  };
-}
-function saveHRInfo(info) {
-  const next = {
-    goalWeight: Number(info.goalWeight) || HR_INFO_DEFAULTS.goalWeight,
-    targetDate: String(info.targetDate || HR_INFO_DEFAULTS.targetDate),
-    maxHr: Number(info.maxHr) || HR_INFO_DEFAULTS.maxHr,
-    restingHr: Number(info.restingHr) || HR_INFO_DEFAULTS.restingHr,
-  };
-  writeJSON(HR_INFO_STORAGE_KEY, next);
-  return next;
-}
-function calculateZoneBPM(zone, hrInfo) { const reserve = Math.max(0, hrInfo.maxHr - hrInfo.restingHr); return Math.round((reserve * zone.pct) / 100 + hrInfo.restingHr); }
+function calculateZoneBPMFromZone(zone, hrInfo) { return calculateZoneBPM(zone, hrInfo); }
 function getWorkoutTargetPcts(workout) {
   const matches = String(workout.targetZone || '').match(/\d+(?:\.\d+)?/g);
   if (!matches || matches.length === 0) return [];
@@ -688,35 +688,20 @@ function getWorkoutZoneBounds(workout, hrInfo = getHRInfo()) {
   if (!values.length) return null;
   const lowPct = Math.min(...values);
   const highPct = Math.max(...values);
-  const low = calculateZoneBPM({ pct: lowPct }, hrInfo);
-  const high = calculateZoneBPM({ pct: highPct }, hrInfo);
+  const low = calculateZoneBPMFromZone({ pct: lowPct }, hrInfo);
+  const high = calculateZoneBPMFromZone({ pct: highPct }, hrInfo);
   return { low, high, lowPct, highPct };
 }
 function getWorkoutTargetBPM(workout, hrInfo = getHRInfo()) {
   const pct = getWorkoutTargetPct(workout);
-  return Number.isFinite(pct) ? calculateZoneBPM({ pct }, hrInfo) : Number(workout.targetBPM) || null;
-}
-/** Zone 2 midpoint (60–70%) used for recovery jogs in session-average math. */
-function getZone2BPM(hrInfo = getHRInfo()) {
-  return calculateZoneBPM({ pct: 65 }, hrInfo);
-}
-function getIntervalPlan(workout) {
-  const plan = workout?.intervalPlan;
-  if (!plan) return null;
-  const reps = Number(plan.reps);
-  const workMinutes = Number(plan.workMinutes);
-  const restMinutes = Number(plan.restMinutes);
-  if (![reps, workMinutes, restMinutes].every((value) => Number.isFinite(value) && value > 0)) return null;
-  const workTotal = reps * workMinutes;
-  const restTotal = Math.max(0, reps - 1) * restMinutes;
-  return { reps, workMinutes, restMinutes, workTotal, restTotal, totalMinutes: workTotal + restTotal };
+  return Number.isFinite(pct) ? calculateZoneBPMFromZone({ pct }, hrInfo) : Number(workout.targetBPM) || null;
 }
 function getExpectedSessionAvg(workout, hrInfo = getHRInfo()) {
   const plan = getIntervalPlan(workout);
   const targetBPM = getWorkoutTargetBPM(workout, hrInfo);
   const easyBPM = getZone2BPM(hrInfo);
-  if (!plan || !Number.isFinite(targetBPM) || plan.totalMinutes <= 0) return null;
-  const expectedAvg = Math.round(((plan.workTotal * targetBPM) + (plan.restTotal * easyBPM)) / plan.totalMinutes);
+  const expectedAvg = getExpectedSessionAvgTarget({ ...workout, targetBPM, targetPct: getWorkoutTargetPct(workout) }, hrInfo);
+  if (!plan || !Number.isFinite(targetBPM) || !Number.isFinite(expectedAvg) || plan.totalMinutes <= 0) return null;
   const range = SESSION_AVG_RANGE_BPM;
   return {
     mode: 'session-avg',
@@ -1110,6 +1095,9 @@ async function saveWorkoutNoteFromDetail(event) {
     button.disabled = false;
   }
 }
+function getRecordContext(record) {
+  return record?.cfg?.workoutContext || record?.workoutContext || null;
+}
 function attachStoredNoteToCompletion(record) {
   if (!record) return record;
   const context = getRecordContext(record);
@@ -1346,10 +1334,11 @@ function setDetailWorkoutLog(isVisible, completion = null, workout = null) {
   if (note) note.hidden = true;
   updateDetailExpectedStatus();
 }
-function flushQueuedEvent(syncMessage) {
+function flushQueuedEvent(cloudMessage) {
   flushSyncQueue().then((result) => {
-    if (result.sent > 0) shellHooks?.showToast?.(syncMessage);
-    else if (result.status === 'offline') shellHooks?.showToast?.('SAVED LOCALLY - WILL SYNC LATER');
+    if (result.dispatched > 0) shellHooks?.showToast?.('SHEETS REQUEST DISPATCHED');
+    else if (result.status === 'offline') shellHooks?.showToast?.('SAVED LOCALLY');
+    if (cloudMessage) shellHooks?.showToast?.(cloudMessage);
   });
 }
 async function completeWorkoutFromDetail(weekIndex, workoutIndex) {
@@ -1368,7 +1357,12 @@ async function completeWorkoutFromDetail(weekIndex, workoutIndex) {
   const record = buildBasicWorkoutCompletion(week, workout, safeWeekIndex, safeWorkoutIndex, workoutLog);
   if (existing?.id) record.id = existing.id;
   const isNewProof = hasPendingWorkoutProof('detail');
+  let identityStaging = null;
   try {
+    if (isSupabaseConfigured && getCurrentUser()) {
+      identityStaging = await ensureCloudWorkoutIdentity(record);
+      record.id = resolveCanonicalClientRecordId(identityStaging, record.id);
+    }
     const attachment = await ensureWorkoutProofUploaded('detail', record.id);
     if (attachment) {
       record.proofPolicyVersion = PROOF_POLICY_VERSION;
@@ -1376,6 +1370,11 @@ async function completeWorkoutFromDetail(weekIndex, workoutIndex) {
       record.workoutLog = { ...record.workoutLog, proofPolicyVersion: PROOF_POLICY_VERSION, attachment };
     }
   } catch (error) {
+    if (identityStaging?.created) {
+      await rollbackCloudWorkoutIdentity(record, identityStaging).catch((rollbackError) => {
+        console.warn('Could not roll back provisional workout identity', rollbackError);
+      });
+    }
     console.warn('Workout proof upload failed', error);
     shellHooks?.showToast?.(String(error?.message || error).toUpperCase());
     return;
@@ -1384,10 +1383,10 @@ async function completeWorkoutFromDetail(weekIndex, workoutIndex) {
   let cloudSaved = false;
   if (completed) cloudSaved = await saveWorkoutCompletionToCloud(completed);
   if (completed && !existing) {
-    enqueueDailyWorkoutForSync(workoutLog, record.workoutContext);
+    enqueueDailyWorkoutForSync(workoutLog, record.workoutContext, record.id);
   }
-  if (completed && isNewProof && record.attachment) enqueueWorkoutProofForSync(record.attachment, record.workoutContext, record.id);
-  if (completed) flushQueuedEvent('WORKOUT SYNCED');
+  if (completed && isNewProof && record.attachment) enqueueWorkoutProofForSync(record.attachment);
+  if (completed) flushQueuedEvent('CLOUD SAVED');
   renderShell();
   renderAthleteProfileDashboard();
   openWorkoutDetail(safeWeekIndex, safeWorkoutIndex);
@@ -1479,8 +1478,8 @@ async function confirmSkipWorkoutFromDetail() {
   let cloudSaved = false;
   if (completed) cloudSaved = await saveWorkoutCompletionToCloud(completed);
   if (completed) {
-    enqueueDailyWorkoutForSync(record.workoutLog, record.workoutContext);
-    flushQueuedEvent('SKIP SYNCED');
+    enqueueDailyWorkoutForSync(record.workoutLog, record.workoutContext, record.id);
+    flushQueuedEvent('CLOUD SAVED');
   }
   setDetailSkipCard(false);
   renderShell();
@@ -1603,7 +1602,11 @@ function renderAthleteProfilePage() {
 }
 function clearLocalTestData() {
   if (!window.confirm('Clear local test data on this device? This resets profile, HR info, mile test, completed workouts, sprint history, pending sync, and onboarding.')) return;
-  [PROFILE_STORAGE_KEY, STORAGE_KEY, SYNC_QUEUE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY, HR_INFO_STORAGE_KEY, MILE_TEST_STORAGE_KEY, AUTH_USER_STORAGE_KEY, SC_MODE_STORAGE_KEY, SC_WEEK_STORAGE_KEY, WEEK_INDEX_KEY, PROFILE_FORM_COLLAPSED_KEY, PROGRAM_GUIDE_COLLAPSED_KEY, ONBOARDING_DISMISSED_KEY, WORKOUT_NOTES_STORAGE_KEY, CAMP_RESET_SEEN_KEY, 'ringReadyClearedWorkoutCompletions'].forEach((key) => localStorage.removeItem(key));
+  clearActiveSessionCheckpointsForAllUsers();
+  quarantineLegacySyncQueue();
+  const userId = getCurrentUser()?.id;
+  if (userId) clearSyncQueueForUser(userId);
+  [PROFILE_STORAGE_KEY, STORAGE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY, HR_INFO_STORAGE_KEY, MILE_TEST_STORAGE_KEY, AUTH_USER_STORAGE_KEY, SC_MODE_STORAGE_KEY, SC_WEEK_STORAGE_KEY, WEEK_INDEX_KEY, PROFILE_FORM_COLLAPSED_KEY, PROGRAM_GUIDE_COLLAPSED_KEY, ONBOARDING_DISMISSED_KEY, WORKOUT_NOTES_STORAGE_KEY, CAMP_RESET_SEEN_KEY, 'ringReadyClearedWorkoutCompletions'].forEach((key) => localStorage.removeItem(key));
   activeWeekIndex = 0;
   scMode = 'Gym Machines';
   scWeek = 1;
@@ -1681,7 +1684,7 @@ async function saveAthleteProfileFromInputs() {
   if (profile.athleteName) {
     localStorage.setItem(PROFILE_FORM_COLLAPSED_KEY, '1');
     enqueueProfileForSync(profile);
-    flushQueuedEvent('PROFILE SYNCED');
+    flushQueuedEvent('CLOUD SAVED');
   }
   saveWeek(activeWeekIndex);
   scWeek = clampSCWeek(scWeek);
@@ -1784,7 +1787,7 @@ async function saveHRInfoFromInputs() {
   }
 
   enqueueHRInfoForSync(hrInfo);
-  flushQueuedEvent('HR INFO SYNCED');
+  flushQueuedEvent('CLOUD SAVED');
   renderHRInfoPage();
   renderShell();
   renderAthleteProfileDashboard();
@@ -1866,16 +1869,34 @@ async function saveMileTestResult() {
   if (avgBpm > 999 || maxBpm > 999) { shellHooks?.showToast?.('HR MUST BE 3 DIGITS OR LESS'); return; }
   if (maxBpm < avgBpm) { shellHooks?.showToast?.('MAX HR SHOULD BE AVG OR HIGHER'); return; }
   const proofContext = getActiveMileProofContext();
+  const existingMile = getMileTestResult();
   const result = { id: makeWorkoutCompletionId(), testKey: proofContext.testKey, distance, totalMinutes, totalSeconds: duration?.totalSeconds ?? Math.round(totalMinutes * 60), totalTimeDisplay: duration?.display || '', avgBpm, maxBpm, paceMinPerMile: distance > 0 ? totalMinutes / distance : '', savedAt: new Date().toISOString() };
+  if (existingMile?.id && existingMile.testKey === proofContext.testKey) {
+    result.id = existingMile.id;
+  }
+  const testContext = { ...proofContext, weekTab: proofContext.weekIndex == null ? 'Mile Test' : `Week ${Number(proofContext.weekIndex) + 1}`, workoutType: proofContext.workoutType, dayOfWeek: proofContext.dayOfWeek, description: activeMileTestContext.workoutContext?.description || MILE_TEST_INFO.description, warmup: activeMileTestContext.workoutContext?.warmup || MILE_TEST_INFO.warmup };
   const isNewProof = hasPendingWorkoutProof('mile');
+  let identityStaging = null;
   try {
+    if (isSupabaseConfigured && getCurrentUser()) {
+      identityStaging = await ensureCloudMileTestIdentity(result, getHRInfo(), testContext);
+      result.id = resolveCanonicalClientRecordId(identityStaging, result.id);
+    }
     result.attachment = await ensureWorkoutProofUploaded('mile', result.id);
     if (result.attachment) result.proofPolicyVersion = PROOF_POLICY_VERSION;
   }
-  catch (error) { console.warn('Mile Test proof upload failed', error); shellHooks?.showToast?.(String(error?.message || error).toUpperCase()); return; }
+  catch (error) {
+    if (identityStaging?.created) {
+      await rollbackCloudMileTestIdentity(result, testContext, identityStaging).catch((rollbackError) => {
+        console.warn('Could not roll back provisional mile test identity', rollbackError);
+      });
+    }
+    console.warn('Mile Test proof upload failed', error);
+    shellHooks?.showToast?.(String(error?.message || error).toUpperCase());
+    return;
+  }
   writeJSON(MILE_TEST_STORAGE_KEY, result);
   if (maxBpm > 0) saveHRInfo({ ...getHRInfo(), maxHr: maxBpm });
-  const testContext = { ...proofContext, weekTab: proofContext.weekIndex == null ? 'Mile Test' : `Week ${Number(proofContext.weekIndex) + 1}`, workoutType: proofContext.workoutType, dayOfWeek: proofContext.dayOfWeek, description: activeMileTestContext.workoutContext?.description || MILE_TEST_INFO.description, warmup: activeMileTestContext.workoutContext?.warmup || MILE_TEST_INFO.warmup };
   let cloudSaved = false;
   if (isSupabaseConfigured && getCurrentUser()) {
     try {
@@ -1888,8 +1909,8 @@ async function saveMileTestResult() {
   }
   if (getAthleteProfile().athleteName) {
     enqueueMileTestForSync(result, getHRInfo(), testContext);
-    if (isNewProof && result.attachment) enqueueWorkoutProofForSync(result.attachment, testContext, result.id);
-    flushQueuedEvent('MILE TEST SYNCED');
+    if (isNewProof && result.attachment) enqueueWorkoutProofForSync(result.attachment);
+    flushQueuedEvent('CLOUD SAVED');
   }
   renderMileTestPage();
   renderHRInfoPage();
@@ -2180,8 +2201,8 @@ export async function initAthleteShell(hooks) {
       }
     });
   });
-  window.addEventListener('ringready:sprint-session-saved', (event) => {
-    if (event.detail) saveSprintSessionToCloud(event.detail);
+  window.addEventListener('ringready:sprint-session-saved', () => {
+    // Cloud sprint save is awaited in finishSession before proof can be submitted.
   });
 
   renderAllPages();
