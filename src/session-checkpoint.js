@@ -49,6 +49,7 @@ function cloneCaptureProvenance(capture) {
     capturedAt: capture.capturedAt ?? null,
     sampleSequence: capture.sampleSequence ?? null,
     windowStartSequence: capture.windowStartSequence ?? null,
+    captureAtRestSec: capture.captureAtRestSec ?? null,
   };
 }
 

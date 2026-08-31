@@ -14,24 +14,17 @@ Run these **in order** on a fresh or partially migrated project. Do not run file
 | 8 | [007_proof_pending.sql](./migrations/007_proof_pending.sql) | Pending-proof staging flag + test cleanup RPC |
 | 9 | [008_backfill_sprint_proof_links.sql](./migrations/008_backfill_sprint_proof_links.sql) | Backfill sprint attachment_id from current proofs |
 | 10 | [009_coach_attachment_access.sql](./migrations/009_coach_attachment_access.sql) | Coach SELECT on workout_attachments (fixes 002→003 ordering gap) |
-<<<<<<< HEAD
 | 11 | [010_completed_at_nullable.sql](./migrations/010_completed_at_nullable.sql) | Allow null `completed_at` for pending-proof staging rows |
 | 12 | [011_mile_test_staging_nullable.sql](./migrations/011_mile_test_staging_nullable.sql) | Allow null `saved_at`/`distance`/`total_minutes` for mile-test staging |
 | 13 | [012_set_workout_proof_cleared.sql](./migrations/012_set_workout_proof_cleared.sql) | Reconcile `set_workout_proof_cleared` RPC on legacy production |
 | 14 | [013_attachment_write_revoke.sql](./migrations/013_attachment_write_revoke.sql) | Revoke direct authenticated INSERT/UPDATE on workout_attachments |
 | 15 | [014_workout_modality_output.sql](./migrations/014_workout_modality_output.sql) | First-class modality/output/watts columns on workout_completions |
 | 16 | [015_clear_workout_completion_with_proof.sql](./migrations/015_clear_workout_completion_with_proof.sql) | Transactional completion clear + proof attachment reconcile RPC |
+| 17 | [016_sprint_ble_verification.sql](./migrations/016_sprint_ble_verification.sql) | `ble_verified` column, canonical `program_sprint_prescriptions`, DB-derived validation trigger |
 
 ## Fresh database
 
 Paste and run each file in the Supabase SQL editor in order. Follow this table for the current canonical sequence.
-=======
-| 11 | [010_sprint_ble_verification.sql](./migrations/010_sprint_ble_verification.sql) | `ble_verified` column + DB trigger validation from session provenance |
-
-## Fresh database
-
-Paste and run each file in the Supabase SQL editor in order (000 through 010).
->>>>>>> e28b1c8 (feat(sprint): waive proof for verified BLE sessions)
 
 ## Upgrade from existing production
 

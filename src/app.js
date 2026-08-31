@@ -55,6 +55,7 @@ import {
 import { getCurrentUser, saveCloudSprintSession, clearCloudWorkoutCompletionWithProof } from './auth.js';
 import { isSupabaseConfigured } from './supabase-client.js';
 import {
+  getAutoCapturedHR,
   isHRConnected,
   hasFreshHRSample,
   clearHRBufferForInterval,
@@ -1250,29 +1251,21 @@ export async function completeWorkout() {
   }
 
   const isNewProof = hasPendingWorkoutProof('sprint');
-<<<<<<< HEAD
   try {
     if (isSupabaseConfigured && getCurrentUser()) {
       await saveCloudSprintSession(activeResultRecord);
     }
-    const attachment = await ensureWorkoutProofUploaded('sprint', activeResultRecord.id);
-    if (attachment) {
-      activeResultRecord = { ...activeResultRecord, proofPolicyVersion: PROOF_POLICY_VERSION, attachment };
-      if (isNewProof) enqueueWorkoutProofForSync(attachment);
-=======
-  if (needsScreenshotProof) {
-    try {
+    if (needsScreenshotProof) {
       const attachment = await ensureWorkoutProofUploaded('sprint', activeResultRecord.id);
       if (attachment) {
         activeResultRecord = { ...activeResultRecord, proofPolicyVersion: PROOF_POLICY_VERSION, attachment };
         if (isNewProof) enqueueWorkoutProofForSync(attachment);
       }
-    } catch (error) {
-      console.warn('Sprint proof upload failed', error);
-      showToast(String(error?.message || error).toUpperCase());
-      return;
->>>>>>> e28b1c8 (feat(sprint): waive proof for verified BLE sessions)
     }
+  } catch (error) {
+    console.warn('Sprint proof upload failed', error);
+    showToast(String(error?.message || error).toUpperCase());
+    return;
   }
 
   const completed = saveWorkoutCompletion(activeResultRecord);

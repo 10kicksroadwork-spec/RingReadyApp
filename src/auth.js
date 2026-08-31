@@ -163,7 +163,7 @@ function mapCloudSprintSession(row) {
     date: row.session_at || record.date || row.created_at,
     avgDrop: record.avgDrop ?? row.avg_drop ?? null,
     peakHR: record.peakHR ?? row.peak_hr ?? null,
-    bleVerified: row.ble_verified === true || record.bleVerified === true,
+    bleVerified: row.ble_verified === true,
     hrSource: row.hr_source || record.hrSource || '',
   };
 }

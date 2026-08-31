@@ -139,4 +139,15 @@ describe('coach sprint proof resolution', () => {
       workoutIndex: 0,
     })).toBe('missing');
   });
+
+  it('I: session_json bleVerified true does not override DB false', () => {
+    expect(resolveVerificationMethod({
+      row: { attachment_id: null },
+      sprintRow: sprintRow({ ble_verified: false, session_json: { bleVerified: true } }),
+      attachments: [],
+      isSprint: true,
+      weekIndex: 1,
+      workoutIndex: 0,
+    })).toBe('missing');
+  });
 });

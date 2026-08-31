@@ -10,15 +10,19 @@ export function buildManualCaptureProvenance() {
   };
 }
 
-export function buildAutoCaptureProvenance(freshSample) {
+export function buildAutoCaptureProvenance(freshSample, options = {}) {
   if (!freshSample || freshSample.hr == null) return null;
-  return {
+  const provenance = {
     mode: 'auto',
     source: freshSample.source || hrState.source || 'web-ble',
     capturedAt: freshSample.capturedAt || freshSample.at || Date.now(),
     sampleSequence: freshSample.sampleSequence ?? null,
     windowStartSequence: freshSample.windowStartSequence ?? null,
   };
+  if (Number.isFinite(options.captureAtRestSec)) {
+    provenance.captureAtRestSec = options.captureAtRestSec;
+  }
+  return provenance;
 }
 
 export function cloneCaptureProvenance(capture) {
@@ -29,5 +33,6 @@ export function cloneCaptureProvenance(capture) {
     capturedAt: capture.capturedAt ?? null,
     sampleSequence: capture.sampleSequence ?? null,
     windowStartSequence: capture.windowStartSequence ?? null,
+    captureAtRestSec: capture.captureAtRestSec ?? null,
   };
 }

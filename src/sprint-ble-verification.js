@@ -1,4 +1,4 @@
-import { isValidSprintPrescription, resolveSprintPrescription } from './sprint-prescription.js';
+import { getCanonicalSprintPrescription } from './program-sprint-prescriptions.js';
 
 const BLE_SOURCES = new Set(['web-ble', 'native-ble']);
 
@@ -16,12 +16,16 @@ export function normalizeCaptureProvenance(capture) {
   const windowStartSequence = capture.windowStartSequence == null
     ? null
     : Number(capture.windowStartSequence);
+  const captureAtRestSec = capture.captureAtRestSec == null
+    ? null
+    : Number(capture.captureAtRestSec);
   return {
     mode,
     source,
     capturedAt: Number.isFinite(capturedAt) ? capturedAt : null,
     sampleSequence: Number.isFinite(sampleSequence) ? sampleSequence : null,
     windowStartSequence: Number.isFinite(windowStartSequence) ? windowStartSequence : null,
+    captureAtRestSec: Number.isFinite(captureAtRestSec) ? captureAtRestSec : null,
   };
 }
 
@@ -36,26 +40,33 @@ export function isFreshAutoBleCapture(capture) {
 }
 
 export function deriveSessionHrSource(reps = []) {
-  const sources = new Set();
+  const autoBleSources = new Set();
+  let hasManual = false;
+
   (Array.isArray(reps) ? reps : []).forEach((rep) => {
     [rep?.sprintCapture, rep?.restCapture].forEach((capture) => {
       const normalized = normalizeCaptureProvenance(capture);
-      if (normalized?.mode === 'auto' && isBleTransportSource(normalized.source)) {
-        sources.add(normalized.source);
+      if (!normalized) return;
+      if (normalized.mode === 'manual') {
+        hasManual = true;
+        return;
+      }
+      if (normalized.mode === 'auto' && isBleTransportSource(normalized.source)) {
+        autoBleSources.add(normalized.source);
       }
     });
   });
-  if (sources.size === 1) return [...sources][0];
-  if (sources.size > 1) return 'mixed-ble';
+
+  if (hasManual) {
+    return autoBleSources.size > 0 ? 'mixed' : 'manual';
+  }
+  if (autoBleSources.size === 1) return [...autoBleSources][0];
+  if (autoBleSources.size > 1) return 'mixed-ble';
   return 'manual';
 }
 
-export function isBleVerifiedSprintRow(sprintRow, recordJson = null) {
-  if (!sprintRow) return false;
-  if (sprintRow.ble_verified === true) return true;
-  const record = recordJson
-    || (sprintRow.session_json && typeof sprintRow.session_json === 'object' ? sprintRow.session_json : null);
-  return record?.bleVerified === true;
+export function isBleVerifiedSprintRow(sprintRow) {
+  return sprintRow?.ble_verified === true;
 }
 
 export function evaluateSprintBleVerification(record, workoutContext = null) {
@@ -64,20 +75,26 @@ export function evaluateSprintBleVerification(record, workoutContext = null) {
     || record?.workoutContext
     || null;
 
-  if (!isValidSprintPrescription(context)) {
+  if (!context) {
     return { bleVerified: false, reason: 'invalid_prescription' };
   }
 
-  const prescription = resolveSprintPrescription(context);
-  const prescribedReps = Number(prescription?.reps);
+  const canonical = getCanonicalSprintPrescription(context.weekIndex, context.workoutIndex);
+  if (!canonical) {
+    return { bleVerified: false, reason: 'invalid_prescription' };
+  }
+
+  const prescribedReps = canonical.reps;
+  const restCaptureSeconds = canonical.restCaptureSeconds;
   const data = Array.isArray(record?.data) ? record.data : [];
-
-  if (!Number.isFinite(prescribedReps) || prescribedReps <= 0) {
-    return { bleVerified: false, reason: 'invalid_prescription' };
-  }
 
   if (data.length !== prescribedReps) {
     return { bleVerified: false, reason: 'incomplete_session' };
+  }
+
+  const cfgRest = Number(record?.cfg?.rest);
+  if (Number.isFinite(cfgRest) && cfgRest !== canonical.restSeconds) {
+    return { bleVerified: false, reason: 'rest_mismatch' };
   }
 
   for (let i = 0; i < data.length; i += 1) {
@@ -85,18 +102,23 @@ export function evaluateSprintBleVerification(record, workoutContext = null) {
     const sprintHR = Number(rep?.sprintHR);
     const restHR = Number(rep?.restHR);
 
-    if (!Number.isFinite(sprintHR) || sprintHR <= 0) {
+    if (!Number.isFinite(sprintHR) || sprintHR < 60 || sprintHR > 230) {
       return { bleVerified: false, reason: `missing_sprint_hr_rep_${i + 1}` };
     }
-    if (!Number.isFinite(restHR) || restHR <= 0) {
+    if (!Number.isFinite(restHR) || restHR < 40 || restHR > 229) {
       return { bleVerified: false, reason: `missing_rest_hr_rep_${i + 1}` };
     }
 
     if (!isFreshAutoBleCapture(rep?.sprintCapture)) {
       return { bleVerified: false, reason: `sprint_capture_not_verified_rep_${i + 1}` };
     }
-    if (!isFreshAutoBleCapture(rep?.restCapture)) {
+
+    const restCapture = normalizeCaptureProvenance(rep?.restCapture);
+    if (!isFreshAutoBleCapture(restCapture)) {
       return { bleVerified: false, reason: `rest_capture_not_verified_rep_${i + 1}` };
+    }
+    if (restCapture.captureAtRestSec !== restCaptureSeconds) {
+      return { bleVerified: false, reason: `rest_checkpoint_mismatch_rep_${i + 1}` };
     }
   }
 
@@ -116,11 +138,7 @@ export function resolveVerificationMethod({
   if (hasAttachment) return 'attachment';
 
   if (isSprint && sprintRow) {
-    const record = row?.record_json && typeof row.record_json === 'object'
-      ? row.record_json
-      : (sprintRow.session_json && typeof sprintRow.session_json === 'object' ? sprintRow.session_json : null);
-
-    if (isBleVerifiedSprintRow(sprintRow, record)) return 'ble';
+    if (isBleVerifiedSprintRow(sprintRow)) return 'ble';
 
     if (findAttachment) {
       const attachment = findAttachment(attachments, sprintRow, weekIndex, workoutIndex);
