@@ -16,7 +16,6 @@ import {
 } from './hr-service.js';
 import { registerMainHandlers, showToast, selectExportText, closeExportModal, showScreen, bindHoldToCancel } from './ui.js';
 import {
-  adjust,
   setWorkoutContext,
   startSession,
   handleMainBtn,
@@ -304,12 +303,6 @@ async function init() {
   bindClick('new-session-btn', () => newSession());
   bindClick('export-select-btn', () => selectExportText());
   bindClick('export-close-btn', () => closeExportModal());
-
-  document.querySelectorAll('[data-adjust]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      adjust(btn.dataset.adjust, Number(btn.dataset.delta));
-    });
-  });
 }
 
 document.addEventListener('DOMContentLoaded', () => {

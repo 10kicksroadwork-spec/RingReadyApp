@@ -6,6 +6,17 @@ import {
 } from './constants.js';
 import { HR_INFO_DEFAULTS, HR_INFO_STORAGE_KEY } from './app-content.js';
 import {
+  applySprintPrescriptionToCfg,
+  formatSprintPrescriptionHrCapture,
+  formatSprintPrescriptionMain,
+  formatSprintPrescriptionRest,
+  formatSprintPrescriptionWeek,
+  hasLoadedSprintPrescription,
+  isValidSprintPrescription,
+  resolveSprintPrescription,
+  sessionCompletesAtRep,
+} from './sprint-prescription.js';
+import {
   validateSprintHR,
   validateRestHR,
   calculateAvgDrop,
@@ -71,7 +82,7 @@ import {
   syncHoldToCancelLabels,
 } from './ui.js';
 
-export const cfg = { reps: 8, rest: 90, maxHR: 183, targetPct: 90, workoutContext: null };
+export const cfg = { reps: null, rest: null, maxHR: 183, targetPct: 90, workoutContext: null };
 
 export const state = {
   phase: 'idle',
@@ -169,13 +180,15 @@ function restoreSessionUI() {
 
 function applyCheckpoint(checkpoint) {
   const savedCfg = checkpoint.cfg || {};
-  cfg.reps = Math.max(1, Math.min(20, Number(savedCfg.reps) || cfg.reps));
-  cfg.rest = Math.max(30, Math.min(300, Number(savedCfg.rest) || cfg.rest));
+  const savedReps = Number(savedCfg.reps);
+  const savedRest = Number(savedCfg.rest);
+  cfg.reps = Number.isFinite(savedReps) && savedReps > 0 ? savedReps : null;
+  cfg.rest = Number.isFinite(savedRest) && savedRest > 0 ? savedRest : null;
   cfg.maxHR = Number(savedCfg.maxHR) || cfg.maxHR;
   cfg.targetPct = Number(savedCfg.targetPct) || cfg.targetPct;
   cfg.workoutContext = savedCfg.workoutContext ? { ...savedCfg.workoutContext } : null;
   renderSprintWarmup(cfg.workoutContext);
-  syncConfigControls();
+  renderSprintPrescription();
 
   const savedState = checkpoint.state || {};
   Object.assign(state, {
@@ -336,12 +349,6 @@ export function clearSessionTimer() {
   }
 }
 
-export function adjust(key, delta) {
-  if (key === 'reps') cfg.reps = Math.max(1, Math.min(20, cfg.reps + delta));
-  if (key === 'rest') cfg.rest = Math.max(30, Math.min(300, cfg.rest + delta));
-  syncConfigControls();
-}
-
 function readAthleteMaxHR() {
   try {
     const saved = JSON.parse(localStorage.getItem(HR_INFO_STORAGE_KEY) || '{}');
@@ -365,12 +372,37 @@ function applySessionHRConfig() {
   }
 }
 
-function syncConfigControls() {
-  const repsVal = document.getElementById('reps-val');
-  const restVal = document.getElementById('rest-val');
+function renderSprintPrescription() {
+  const group = document.getElementById('sprint-prescription-group');
+  const card = document.getElementById('sprint-prescription-card');
+  const error = document.getElementById('sprint-prescription-error');
+  const main = document.getElementById('sprint-prescription-main');
+  const rest = document.getElementById('sprint-prescription-rest');
+  const hr = document.getElementById('sprint-prescription-hr');
+  const week = document.getElementById('sprint-prescription-week');
+  const startBtn = document.getElementById('start-session-btn');
+  const prescription = resolveSprintPrescription(cfg.workoutContext);
+  const valid = !!prescription && hasLoadedSprintPrescription(cfg);
 
-  if (repsVal) repsVal.textContent = cfg.reps;
-  if (restVal) restVal.textContent = cfg.rest;
+  group?.classList.toggle('is-invalid', !valid);
+  if (card) card.hidden = !valid;
+  if (error) error.hidden = valid;
+
+  if (main) main.textContent = formatSprintPrescriptionMain(prescription);
+  if (rest) rest.textContent = formatSprintPrescriptionRest(prescription);
+  if (hr) hr.textContent = formatSprintPrescriptionHrCapture(prescription);
+  if (week) week.textContent = formatSprintPrescriptionWeek(prescription);
+
+  if (startBtn) {
+    startBtn.disabled = !valid;
+    startBtn.setAttribute('aria-disabled', valid ? 'false' : 'true');
+  }
+}
+
+function rejectMissingSprintPrescription() {
+  renderSprintPrescription();
+  showToast('COULD NOT LOAD SPRINT PRESCRIPTION — RETURN TO WEEK PLAN');
+  showScreen('home');
 }
 
 function renderSprintWarmup(context) {
@@ -408,18 +440,22 @@ export function setWorkoutContext(context = null) {
   cfg.workoutContext = context ? { ...context } : null;
   renderSprintWarmup(cfg.workoutContext);
 
-  if (context && Number.isFinite(Number(context.reps))) {
-    cfg.reps = Math.max(1, Math.min(20, Number(context.reps)));
-  }
-
-  if (context && Number.isFinite(Number(context.restSeconds))) {
-    cfg.rest = Math.max(30, Math.min(300, Number(context.restSeconds)));
+  if (context && isValidSprintPrescription(context)) {
+    applySprintPrescriptionToCfg(cfg, context);
+  } else {
+    cfg.reps = null;
+    cfg.rest = null;
   }
 
   applySessionHRConfig();
-  syncConfigControls();
+  renderSprintPrescription();
 }
 function runStartSession({ forceFresh = false } = {}) {
+  if (!hasLoadedSprintPrescription(cfg) || !isValidSprintPrescription(cfg.workoutContext)) {
+    rejectMissingSprintPrescription();
+    return;
+  }
+
   const profile = getAthleteProfile();
   const athleteName = String(profile.athleteName || '').trim();
 
@@ -821,7 +857,7 @@ export function completeRestAndAdvance() {
   stopRestLogAlert();
   restCompleteAlert();
 
-  if (state.currentRep >= cfg.reps) {
+  if (sessionCompletesAtRep(state.currentRep, cfg)) {
     finishSession();
     return;
   }

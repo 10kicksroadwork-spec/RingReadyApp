@@ -339,6 +339,53 @@
   .stepper-val { font-family: Impact, Haettenschweiler, 'Arial Narrow Bold', sans-serif; font-size: 42px; color: var(--white); line-height: 1; }
   .stepper-unit { font-size: 12px; color: var(--light-grey); display: block; }
 
+  .sprint-prescription-card {
+    background: var(--dark2);
+    border: 1px solid var(--grey);
+    border-radius: 12px;
+    padding: 20px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    text-align: center;
+  }
+
+  .sprint-prescription-main {
+    font-family: Impact, Haettenschweiler, 'Arial Narrow Bold', sans-serif;
+    font-size: 36px;
+    color: var(--white);
+    line-height: 1.1;
+  }
+
+  .sprint-prescription-detail {
+    font-size: 14px;
+    color: var(--light-grey);
+    line-height: 1.4;
+  }
+
+  .sprint-prescription-week {
+    margin-top: 4px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1.4px;
+    text-transform: uppercase;
+    color: var(--gold);
+  }
+
+  .sprint-prescription-error {
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+    color: var(--red);
+    text-align: center;
+    padding: 12px 8px;
+  }
+
+  #sprint-prescription-group.is-invalid .sprint-prescription-card {
+    opacity: 0.35;
+  }
+
   input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
 
   /* BLE */
