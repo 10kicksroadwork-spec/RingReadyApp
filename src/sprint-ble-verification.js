@@ -1,4 +1,8 @@
 import { getCanonicalSprintPrescription } from './program-sprint-prescriptions.js';
+import {
+  isRestCaptureAtPrescribedCheckpoint,
+  REST_CAPTURE_TOLERANCE_SEC,
+} from './sprint-rest-capture.js';
 
 const BLE_SOURCES = new Set(['web-ble', 'native-ble']);
 
@@ -19,6 +23,9 @@ export function normalizeCaptureProvenance(capture) {
   const captureAtRestSec = capture.captureAtRestSec == null
     ? null
     : Number(capture.captureAtRestSec);
+  const targetRestCaptureSec = capture.targetRestCaptureSec == null
+    ? null
+    : Number(capture.targetRestCaptureSec);
   return {
     mode,
     source,
@@ -26,6 +33,7 @@ export function normalizeCaptureProvenance(capture) {
     sampleSequence: Number.isFinite(sampleSequence) ? sampleSequence : null,
     windowStartSequence: Number.isFinite(windowStartSequence) ? windowStartSequence : null,
     captureAtRestSec: Number.isFinite(captureAtRestSec) ? captureAtRestSec : null,
+    targetRestCaptureSec: Number.isFinite(targetRestCaptureSec) ? targetRestCaptureSec : null,
   };
 }
 
@@ -117,7 +125,11 @@ export function evaluateSprintBleVerification(record, workoutContext = null) {
     if (!isFreshAutoBleCapture(restCapture)) {
       return { bleVerified: false, reason: `rest_capture_not_verified_rep_${i + 1}` };
     }
-    if (restCapture.captureAtRestSec !== restCaptureSeconds) {
+    if (!isRestCaptureAtPrescribedCheckpoint(
+      restCapture,
+      restCaptureSeconds,
+      REST_CAPTURE_TOLERANCE_SEC,
+    )) {
       return { bleVerified: false, reason: `rest_checkpoint_mismatch_rep_${i + 1}` };
     }
   }

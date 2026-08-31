@@ -4,6 +4,7 @@
  */
 
 import { getCanonicalSprintPrescription } from './program-sprint-prescriptions.js';
+import { isRestCaptureAtPrescribedCheckpoint, REST_CAPTURE_TOLERANCE_SEC } from './sprint-rest-capture.js';
 
 const BLE_SOURCES = new Set(['web-ble', 'native-ble']);
 
@@ -59,8 +60,11 @@ export function validateSprintBleVerificationRow({
       const restCapture = rep.restCapture;
       if (!isValidAutoBleCapture(restCapture)) return false;
 
-      const captureAtRestSec = parseIntSafe(restCapture.captureAtRestSec);
-      if (captureAtRestSec !== canonical.restCaptureSeconds) return false;
+      if (!isRestCaptureAtPrescribedCheckpoint(
+        restCapture,
+        canonical.restCaptureSeconds,
+        REST_CAPTURE_TOLERANCE_SEC,
+      )) return false;
     }
 
     return true;

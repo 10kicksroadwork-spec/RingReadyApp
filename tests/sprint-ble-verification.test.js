@@ -14,6 +14,7 @@ function autoCapture(sampleSequence = 12, windowStartSequence = 5, captureAtRest
     capturedAt: Date.now(),
     sampleSequence,
     windowStartSequence,
+    targetRestCaptureSec: 60,
   };
   if (captureAtRestSec != null) {
     capture.captureAtRestSec = captureAtRestSec;
@@ -114,8 +115,14 @@ describe('sprint BLE verification', () => {
   });
 
   it('rejects rest HR captured at 90s instead of prescribed 60s checkpoint', () => {
-    const record = buildSprintRecord(0, 3, { lateRestRep: 1 });
+    const record = buildSprintRecord(0, 5, { lateRestRep: 1 });
     expect(evaluateSprintBleVerification(record, record.cfg.workoutContext).bleVerified).toBe(false);
+  });
+
+  it('accepts rest HR captured within 60–62s tolerance', () => {
+    const record = buildSprintRecord(0, 5);
+    record.data[0].restCapture = autoCapture(20, 10, 61);
+    expect(evaluateSprintBleVerification(record, record.cfg.workoutContext).bleVerified).toBe(true);
   });
 
   it('allows suspicious drops when provenance is valid', () => {

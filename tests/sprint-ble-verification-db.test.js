@@ -10,6 +10,7 @@ function autoCapture(sampleSequence = 12, windowStartSequence = 5, captureAtRest
     sampleSequence,
     windowStartSequence,
     captureAtRestSec,
+    targetRestCaptureSec: 60,
   };
 }
 

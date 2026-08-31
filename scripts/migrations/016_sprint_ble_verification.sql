@@ -31,6 +31,8 @@ on conflict (week_index, workout_index) do update set
 
 alter table public.program_sprint_prescriptions enable row level security;
 
+grant select on table public.program_sprint_prescriptions to authenticated;
+
 drop policy if exists program_sprint_prescriptions_select on public.program_sprint_prescriptions;
 create policy program_sprint_prescriptions_select
   on public.program_sprint_prescriptions
@@ -148,7 +150,9 @@ begin
       return false;
     end if;
 
-    if capture_at_rest is null or capture_at_rest <> canonical.rest_capture_seconds then
+    if capture_at_rest is null
+      or capture_at_rest < canonical.rest_capture_seconds
+      or capture_at_rest > canonical.rest_capture_seconds + 2 then
       return false;
     end if;
   end loop;

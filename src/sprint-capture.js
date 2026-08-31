@@ -22,6 +22,9 @@ export function buildAutoCaptureProvenance(freshSample, options = {}) {
   if (Number.isFinite(options.captureAtRestSec)) {
     provenance.captureAtRestSec = options.captureAtRestSec;
   }
+  if (Number.isFinite(options.targetRestCaptureSec)) {
+    provenance.targetRestCaptureSec = options.targetRestCaptureSec;
+  }
   return provenance;
 }
 
@@ -34,5 +37,6 @@ export function cloneCaptureProvenance(capture) {
     sampleSequence: capture.sampleSequence ?? null,
     windowStartSequence: capture.windowStartSequence ?? null,
     captureAtRestSec: capture.captureAtRestSec ?? null,
+    targetRestCaptureSec: capture.targetRestCaptureSec ?? null,
   };
 }

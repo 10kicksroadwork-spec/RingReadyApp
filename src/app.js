@@ -70,6 +70,7 @@ import {
   buildAutoCaptureProvenance,
   buildManualCaptureProvenance,
 } from './sprint-capture.js';
+import { applyAutoRestCapture } from './sprint-rest-capture.js';
 import {
   PROOF_POLICY_VERSION,
   buildProgramProofKey,
@@ -685,7 +686,7 @@ function resumeAutoRest() {
   if (elapsed >= totalRest) {
     state.seconds = 0;
     if (state.pendingRep && state.pendingRep.restHR === null) {
-      autoCaptureRestHR(restCaptureAt);
+      autoCaptureRestHR(totalRest, restCaptureAt);
     }
     completeRestAndAdvance();
     return;
@@ -749,7 +750,7 @@ function runAutoRestCountdown(totalRest, restCaptureAt, initialElapsed) {
     if (!captureAttempted && elapsed >= restCaptureAt) {
       captureAttempted = true;
       timerCheckpoint.captureAttempted = true;
-      if (!autoCaptureRestHR(restCaptureAt)) {
+      if (!autoCaptureRestHR(elapsed, restCaptureAt)) {
         persistSessionCheckpoint();
         return;
       }
@@ -759,7 +760,7 @@ function runAutoRestCountdown(totalRest, restCaptureAt, initialElapsed) {
       clearSessionTimer();
       clearTimerCheckpoint();
 
-      if (state.pendingRep && state.pendingRep.restHR === null && !autoCaptureRestHR(restCaptureAt)) {
+      if (state.pendingRep && state.pendingRep.restHR === null && !autoCaptureRestHR(elapsed, restCaptureAt)) {
         persistSessionCheckpoint();
         return;
       }
@@ -773,7 +774,7 @@ function runAutoRestCountdown(totalRest, restCaptureAt, initialElapsed) {
   persistSessionCheckpoint();
 }
 
-export function autoCaptureRestHR(captureAt) {
+export function autoCaptureRestHR(actualElapsedSec, targetRestCaptureSec = REST_CAPTURE_SEC) {
   if (!state.pendingRep) return false;
   if (state.pendingRep.restHR !== null) return true;
 
@@ -784,17 +785,15 @@ export function autoCaptureRestHR(captureAt) {
     // Manual backup only when no BLE HR monitor is connected.
     if (!isHRConnected()) {
       state.pendingRep.needsManualRest = true;
-      openManualRestHRModal(captureAt);
+      openManualRestHRModal(targetRestCaptureSec);
       return false;
     }
 
-    showToast(`REST HR NOT CAPTURED @ ${captureAt}s`);
+    showToast(`REST HR NOT CAPTURED @ ${targetRestCaptureSec}s`);
     return true;
   }
 
-  state.pendingRep.restHR = restHR;
-  state.pendingRep.needsManualRest = false;
-  state.pendingRep.restCapture = buildAutoCaptureProvenance(freshRest);
+  applyAutoRestCapture(state.pendingRep, freshRest, actualElapsedSec, targetRestCaptureSec);
   state.capturedRestHR = restHR;
 
   document.getElementById('chip-rest').textContent = restHR;
