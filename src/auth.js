@@ -296,11 +296,12 @@ function settledRows(result) {
 export async function loadCoachRosterPayload() {
   if (!isSupabaseConfigured || !supabase || !isCoachUser()) return null;
   const client = requireSupabase();
-  const [profilesResult, hrResult, completionsResult, sprintsResult, notesResult, identitiesResult, exclusionsResult, metaResult] = await Promise.allSettled([
+  const [profilesResult, hrResult, completionsResult, sprintsResult, mileTestsResult, notesResult, identitiesResult, exclusionsResult, metaResult] = await Promise.allSettled([
     loadCoachTable('athlete_profiles'),
     loadCoachTable('hr_info'),
     loadCoachTable('workout_completions'),
     loadCoachTable('sprint_sessions'),
+    loadCoachTable('mile_tests'),
     loadCoachTable('coach_notes'),
     client.rpc('coach_roster_identities').then(({ data, error }) => {
       if (error) throw error;
@@ -315,6 +316,7 @@ export async function loadCoachRosterPayload() {
     hrRows: settledRows(hrResult),
     completions: settledRows(completionsResult),
     sprints: settledRows(sprintsResult),
+    mileTests: settledRows(mileTestsResult),
     notes: settledRows(notesResult),
     identities: settledRows(identitiesResult),
     exclusions: settledRows(exclusionsResult),
