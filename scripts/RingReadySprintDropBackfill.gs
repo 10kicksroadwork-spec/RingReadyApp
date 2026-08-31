@@ -9,7 +9,7 @@
  *
  * Install:
  * 1. Open the Apps Script project bound to the coach/master Google Sheet.
- * 2. Add this file alongside RingReadyWebApp.gs (same project).
+ * 2. Add RingReadySprintDropUtils.gs, then this file, alongside RingReadyWebApp.gs.
  * 3. Run once from the Apps Script editor:
  *
  *    rrBackfillSprintDropAverages(true);   // dry run — review Logger output

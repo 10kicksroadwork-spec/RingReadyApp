@@ -236,6 +236,12 @@ function rrHandleSprintSession_(payload) {
   var context = payload.workoutContext || {};
   var summary = payload.summary || {};
   var config = payload.config || {};
+  var reps = payload.reps || [];
+  var recalculatedAvg = typeof rrSprintDropCalculateAvgFromReps_ === 'function'
+    ? rrSprintDropCalculateAvgFromReps_(reps)
+    : null;
+  if (recalculatedAvg !== null) summary.avgDrop = recalculatedAvg;
+
   var sheet = rrEnsureSheetWithHeaders_(RR_SPRINT_SHEET, [
     'Received At', 'Session ID', 'Athlete', 'User ID', 'Linked Record ID', 'Proof Key',
     'Week Index', 'Workout Index', 'Week Tab', 'Day', 'Workout Type', 'Intervals',
@@ -264,10 +270,16 @@ function rrHandleSprintSession_(payload) {
   var repsSheet = rrEnsureSheetWithHeaders_(RR_SPRINT_REPS_SHEET, [
     'Received At', 'Session ID', 'Rep', 'Sprint HR', 'Rest HR', 'Drop', 'Suspicious'
   ]);
-  (payload.reps || []).forEach(function(rep) {
+  var repIndexes = typeof rrSprintDropEnsureColumns_ === 'function'
+    ? rrSprintDropEnsureColumns_(repsSheet, ['Received At', 'Session ID', 'Rep', 'Sprint HR', 'Rest HR', 'Drop', 'Suspicious'])
+    : {};
+  reps.forEach(function(rep) {
     repsSheet.appendRow([
       new Date(), meta.linkedRecordId, rep.rep, rep.sprintHR, rep.restHR, rep.drop, rep.suspicious ? 'yes' : ''
     ]);
+    if (typeof rrSprintDropWriteRepCell_ === 'function' && repIndexes['Drop']) {
+      rrSprintDropWriteRepCell_(repsSheet, repsSheet.getLastRow(), repIndexes['Drop'], rep.drop);
+    }
   });
 
   rrAppendAthleteRawSprintRow_(payload, meta);
@@ -346,7 +358,13 @@ function rrAppendAthleteRawSprintRow_(payload, meta) {
   if (indexes['Week']) sheet.getRange(row, indexes['Week']).setValue(payload.weekTab || context.weekTab || '');
   if (indexes['Day']) sheet.getRange(row, indexes['Day']).setValue(payload.dayOfWeek || context.dayOfWeek || '');
   if (indexes['Workout Type']) sheet.getRange(row, indexes['Workout Type']).setValue(payload.workoutType || context.workoutType || 'Sprint Intervals');
-  if (indexes['Avg Drop']) sheet.getRange(row, indexes['Avg Drop']).setValue(summary.avgDrop || '');
+  if (indexes['Avg Drop']) {
+    if (typeof rrSprintDropWriteRepCell_ === 'function') {
+      rrSprintDropWriteRepCell_(sheet, row, indexes['Avg Drop'], summary.avgDrop || '');
+    } else {
+      sheet.getRange(row, indexes['Avg Drop']).setValue(summary.avgDrop || '');
+    }
+  }
   if (indexes['Peak HR']) sheet.getRange(row, indexes['Peak HR']).setValue(summary.peakHR || '');
   if (indexes['Intervals']) sheet.getRange(row, indexes['Intervals']).setValue(summary.intervals || '');
   rrWriteProofMetaColumns_(sheet, row, meta);

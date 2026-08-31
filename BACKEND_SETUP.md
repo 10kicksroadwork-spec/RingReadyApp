@@ -39,6 +39,24 @@ If `Athlete Raw Data` is rebuilt by older extraction tools and the PWA rows disa
 ```js
 rrImportPwaReceiverToAthleteRawData()
 ```
+
+Add these Apps Script files to the master sheet project:
+
+- `scripts/RingReadySprintDropUtils.gs`
+- `scripts/RingReadyAthleteRawImport.gs`
+
+Then replace the legacy **Web Extract** custom menu handler with:
+
+```js
+WebExtract()
+```
+
+That rebuild reads sprint averages from **Ring Ready Sprint Reps** (including negative drops like `-1`) instead of the old summary-only math. Dry run first:
+
+```js
+rrImportPwaReceiverToAthleteRawData(true)
+rrImportPwaReceiverToAthleteRawData(false)
+```
 ## 2. Deploy as a Google Web App
 
 In Apps Script:
