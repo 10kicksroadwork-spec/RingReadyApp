@@ -20,6 +20,7 @@ import {
   checkpointHasProgress,
   loadActiveSessionCheckpoint,
   saveActiveSessionCheckpoint,
+  resolveRestCaptureAttempted,
 } from './session-checkpoint.js';
 import { removeWorkoutCompletion, saveSessionToHistory, saveWorkoutCompletion } from './storage.js';
 import {
@@ -639,10 +640,11 @@ function resumeAutoRest() {
 
 function runAutoRestCountdown(totalRest, restCaptureAt, initialElapsed) {
   clearSessionTimer();
+  const restoredCaptureAttempted = timerCheckpoint.captureAttempted;
   clearTimerCheckpoint();
 
   let elapsed = Math.max(0, Math.min(totalRest, initialElapsed));
-  let captureAttempted = timerCheckpoint.captureAttempted || !!(state.pendingRep && state.pendingRep.restHR !== null);
+  let captureAttempted = resolveRestCaptureAttempted({ captureAttempted: restoredCaptureAttempted }, state.pendingRep);
   const startedAt = Date.now() - elapsed * 1000;
 
   timerCheckpoint.kind = 'rest';
@@ -1161,7 +1163,7 @@ export async function completeWorkout() {
     const attachment = await ensureWorkoutProofUploaded('sprint', activeResultRecord.id);
     if (attachment) {
       activeResultRecord = { ...activeResultRecord, proofPolicyVersion: PROOF_POLICY_VERSION, attachment };
-      if (isNewProof) enqueueWorkoutProofForSync(attachment, { ...getRecordContext(activeResultRecord), campLength: Number(getAthleteProfile().campLength) || 7 }, activeResultRecord.id);
+      if (isNewProof) enqueueWorkoutProofForSync(attachment);
     }
   } catch (error) {
     console.warn('Sprint proof upload failed', error);

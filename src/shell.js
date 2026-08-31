@@ -3,7 +3,12 @@ import {
   STORAGE_KEY,
   WORKOUT_COMPLETIONS_STORAGE_KEY,
 } from './constants.js';
+import {
+  clearSharedLocalState,
+  shouldClearSharedStateOnSwitch,
+} from './account-switch.js';
 import { clearActiveSessionCheckpointsForAllUsers } from './session-checkpoint.js';
+import { getHRInfo, saveHRInfo } from './hr-local.js';
 import {
   clearSyncQueueForUser,
   quarantineLegacySyncQueue,
@@ -234,10 +239,7 @@ import {
   mergeSprintSessions,
   mergeWorkoutCompletions,
 } from './shell-cloud-merge.js';
-function clearSharedLocalState() {
-  clearActiveSessionCheckpointsForAllUsers();
-  [PROFILE_STORAGE_KEY, STORAGE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY, HR_INFO_STORAGE_KEY, MILE_TEST_STORAGE_KEY, PROFILE_FORM_COLLAPSED_KEY, PROGRAM_GUIDE_COLLAPSED_KEY, WORKOUT_NOTES_STORAGE_KEY, CAMP_RESET_SEEN_KEY, 'ringReadyClearedWorkoutCompletions'].forEach((key) => localStorage.removeItem(key));
-}
+
 function clearAccountLocalData() {
   const userId = getCurrentUser()?.id;
   if (userId) clearSyncQueueForUser(userId);
@@ -414,7 +416,7 @@ async function hydrateCloudData() {
   if (!isSupabaseConfigured || !getCurrentUser()) return;
   const user = getCurrentUser();
   const lastUserId = localStorage.getItem(AUTH_USER_STORAGE_KEY);
-  if (lastUserId && lastUserId !== user.id) clearSharedLocalState();
+  if (shouldClearSharedStateOnSwitch(lastUserId, user.id)) clearSharedLocalState();
   localStorage.setItem(AUTH_USER_STORAGE_KEY, user.id);
   quarantineLegacySyncQueue();
 
@@ -666,35 +668,6 @@ function clampWeek(index) { const limit = Math.max(1, getCampWeekLimit()); retur
 function clampSCWeek(week) { return Math.max(1, Math.min(getCampWeekLimit(), Number(week) || 1)); }
 function saveWeek(index) { activeWeekIndex = clampWeek(index); localStorage.setItem(WEEK_INDEX_KEY, String(activeWeekIndex)); }
 
-function getHRInfo() {
-  const saved = readJSON(HR_INFO_STORAGE_KEY, {});
-  const next = {
-    goalWeight: Number(saved.goalWeight ?? HR_INFO_DEFAULTS.goalWeight),
-    targetDate: String(saved.targetDate || HR_INFO_DEFAULTS.targetDate),
-    maxHr: Number(saved.maxHr ?? HR_INFO_DEFAULTS.maxHr),
-    restingHr: Number(saved.restingHr ?? HR_INFO_DEFAULTS.restingHr),
-  };
-  const updatedAt = String(saved.updatedAt || saved.updated_at || '').trim();
-  if (updatedAt) next.updatedAt = updatedAt;
-  return next;
-}
-function saveHRInfo(info, options = {}) {
-  const current = getHRInfo();
-  const next = {
-    goalWeight: Number(info.goalWeight) || HR_INFO_DEFAULTS.goalWeight,
-    targetDate: String(info.targetDate || HR_INFO_DEFAULTS.targetDate),
-    maxHr: Number(info.maxHr) || HR_INFO_DEFAULTS.maxHr,
-    restingHr: Number(info.restingHr) || HR_INFO_DEFAULTS.restingHr,
-  };
-  if (options.preserveUpdatedAt) {
-    const preserved = String(info.updatedAt || info.updated_at || current.updatedAt || '').trim();
-    if (preserved) next.updatedAt = preserved;
-  } else {
-    next.updatedAt = new Date().toISOString();
-  }
-  writeJSON(HR_INFO_STORAGE_KEY, next);
-  return next;
-}
 function calculateZoneBPMFromZone(zone, hrInfo) { return calculateZoneBPM(zone, hrInfo); }
 function getWorkoutTargetPcts(workout) {
   const matches = String(workout.targetZone || '').match(/\d+(?:\.\d+)?/g);
@@ -1397,7 +1370,7 @@ async function completeWorkoutFromDetail(weekIndex, workoutIndex) {
   if (completed && !existing) {
     enqueueDailyWorkoutForSync(workoutLog, record.workoutContext, record.id);
   }
-  if (completed && isNewProof && record.attachment) enqueueWorkoutProofForSync(record.attachment, record.workoutContext, record.id);
+  if (completed && isNewProof && record.attachment) enqueueWorkoutProofForSync(record.attachment);
   if (completed) flushQueuedEvent('CLOUD SAVED');
   renderShell();
   renderAthleteProfileDashboard();
@@ -1903,7 +1876,7 @@ async function saveMileTestResult() {
   }
   if (getAthleteProfile().athleteName) {
     enqueueMileTestForSync(result, getHRInfo(), testContext);
-    if (isNewProof && result.attachment) enqueueWorkoutProofForSync(result.attachment, testContext, result.id);
+    if (isNewProof && result.attachment) enqueueWorkoutProofForSync(result.attachment);
     flushQueuedEvent('CLOUD SAVED');
   }
   renderMileTestPage();

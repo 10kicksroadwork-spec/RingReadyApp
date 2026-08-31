@@ -61,7 +61,7 @@ function rrSetupBackendSheets() {
     'Received At', 'Session ID', 'Athlete', 'User ID', 'Linked Record ID', 'Proof Key',
     'Week Index', 'Workout Index', 'Week Tab', 'Day', 'Workout Type', 'Intervals',
     'Avg Drop', 'Peak HR', 'Target BPM', 'Submitted At'
-  ].concat(RR_PROOF_META_HEADERS.filter(function(h) { return h !== 'User ID'; })));
+  ]);
   rrEnsureSheetWithHeaders_(RR_SPRINT_REPS_SHEET, [
     'Received At', 'Session ID', 'Rep', 'Sprint HR', 'Rest HR', 'Drop', 'Suspicious'
   ]);
@@ -110,10 +110,14 @@ function rrJsonResponse_(obj) {
 function rrEnsureSheetWithHeaders_(name, headers) {
   var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = spreadsheet.getSheetByName(name) || spreadsheet.insertSheet(name);
-  if (sheet.getLastRow() === 0) sheet.appendRow(headers);
-  var headerRange = sheet.getRange(1, 1, 1, headers.length);
-  headerRange.setValues([headers]).setFontWeight('bold').setBackground('#111111').setFontColor('#f5c842');
-  sheet.setFrozenRows(1);
+  if (sheet.getLastRow() === 0) {
+    sheet.appendRow(headers);
+    var headerRange = sheet.getRange(1, 1, 1, headers.length);
+    headerRange.setValues([headers]).setFontWeight('bold').setBackground('#111111').setFontColor('#f5c842');
+    sheet.setFrozenRows(1);
+  } else {
+    rrEnsureColumns_(sheet, headers);
+  }
   return sheet;
 }
 

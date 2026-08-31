@@ -9,6 +9,7 @@
     "preview": "node node_modules/vite/bin/vite.js preview",
     "extract-css": "node scripts/extract-css.mjs",
     "test": "vitest run",
+    "test:proof-auth": "node scripts/test-proof-authorization.mjs",
     "lint": "eslint src tests scripts --ext .js,.mjs",
     "cap:sync": "npm run build && node node_modules/@capacitor/cli/bin/capacitor sync",
     "cap:ios": "node node_modules/@capacitor/cli/bin/capacitor open ios",

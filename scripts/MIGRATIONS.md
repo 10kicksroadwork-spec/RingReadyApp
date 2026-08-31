@@ -21,9 +21,21 @@ These migrations use `if not exists` / `drop policy if exists` patterns and are 
 
 ## Deploy order (proof + Sheets)
 
-1. Supabase migration 003 (atomic RPC)
+1. Supabase migration 003 (atomic RPC + linkage validation)
 2. Production Apps Script receiver + proof handler
 3. Compatible client deployment
+
+## Production seeds
+
+Canonical migrations 000–005 are schema-only. Environment-specific data lives under [../seeds/](../seeds/), e.g. [production-coach-roster-exclusions.sql](../seeds/production-coach-roster-exclusions.sql) (run after auth users exist).
+
+## Deploy gate: proof authorization
+
+```bash
+RING_READY_REQUIRE_PROOF_TESTS=1 npm run test:proof-auth
+```
+
+Requires `RING_READY_SUPABASE_URL`, `RING_READY_SUPABASE_ANON_KEY`, `RING_READY_TEST_EMAIL`, and `RING_READY_TEST_PASSWORD`. Without credentials the script skips unless `RING_READY_REQUIRE_PROOF_TESTS=1` is set (then it fails).
 
 ## Legacy scripts
 

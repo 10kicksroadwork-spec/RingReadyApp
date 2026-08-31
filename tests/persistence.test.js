@@ -5,6 +5,7 @@ vi.mock('../src/auth.js', () => ({
 }));
 
 import { getAthleteProfile, saveAthleteProfile } from '../src/sync.js';
+import { getHRInfo, saveHRInfo } from '../src/hr-local.js';
 
 const mockUser = { id: 'user-a' };
 
@@ -34,5 +35,23 @@ describe('profile timestamp persistence', () => {
     const profile = getAthleteProfile();
     expect(profile.athleteName).toBe('Edited Locally');
     expect(new Date(profile.updatedAt).getTime()).toBeGreaterThan(new Date('2020-01-01T00:00:00.000Z').getTime());
+  });
+});
+
+describe('HR timestamp persistence', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it('stamps updatedAt on user edit', () => {
+    saveHRInfo({ maxHr: 190, updatedAt: '2020-01-01T00:00:00.000Z' });
+    const saved = getHRInfo();
+    expect(saved.maxHr).toBe(190);
+    expect(new Date(saved.updatedAt).getTime()).toBeGreaterThan(new Date('2020-01-01T00:00:00.000Z').getTime());
+  });
+
+  it('preserves cloud updatedAt during hydration', () => {
+    saveHRInfo({ maxHr: 180, updatedAt: '2026-08-02T00:00:00.000Z' }, { preserveUpdatedAt: true });
+    expect(getHRInfo().updatedAt).toBe('2026-08-02T00:00:00.000Z');
   });
 });

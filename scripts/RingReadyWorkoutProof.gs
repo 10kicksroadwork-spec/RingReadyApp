@@ -33,7 +33,7 @@ function rrHandleWorkoutProofEvent(payload) {
   }
   var attachmentId = String(payload.attachmentId || (payload.attachment && payload.attachment.id) || '');
   if (!attachmentId) throw new Error('Workout proof is missing its attachment ID.');
-  return rrTransferWorkoutProof_(attachmentId, payload.linkedRecordId || '');
+  return rrTransferWorkoutProof_(attachmentId);
 }
 
 function rrFetchAttachmentRow_(attachmentId) {
@@ -46,14 +46,14 @@ function rrFetchAttachmentRow_(attachmentId) {
   return rows[0];
 }
 
-function rrBuildProofPayloadFromRow_(row, linkedRecordId) {
+function rrBuildProofPayloadFromRow_(row) {
   var profileName = rrLookupAthleteName_(row.user_id);
   return {
     eventType: 'workout_proof',
     athleteName: profileName || 'Unknown Athlete',
     userId: row.user_id,
     proofKey: row.proof_key,
-    linkedRecordId: String(linkedRecordId || row.linked_record_id || ''),
+    linkedRecordId: String(row.linked_record_id || ''),
     workoutContext: {
       campLength: row.camp_length,
       weekIndex: row.week_index,
@@ -75,9 +75,9 @@ function rrBuildProofPayloadFromRow_(row, linkedRecordId) {
   };
 }
 
-function rrTransferWorkoutProof_(attachmentId, linkedRecordId) {
+function rrTransferWorkoutProof_(attachmentId) {
   var row = rrFetchAttachmentRow_(attachmentId);
-  var payload = rrBuildProofPayloadFromRow_(row, linkedRecordId);
+  var payload = rrBuildProofPayloadFromRow_(row);
   var attachment = payload.attachment || {};
   var storagePath = String(attachment.storagePath || '');
   if (!storagePath) throw new Error('Workout proof is missing its storage path.');
@@ -173,7 +173,7 @@ function rrSyncPendingWorkoutProofs() {
         uploadedAt: row.uploaded_at
       }
     };
-    try { rrTransferWorkoutProof_(row.id, row.linked_record_id); }
+    try { rrTransferWorkoutProof_(row.id); }
     catch (error) { console.error('Workout proof retry failed for ' + row.id, error); }
   });
 }
@@ -254,10 +254,14 @@ function rrGetOrCreateFolder_(parent, name) {
 function rrEnsureProofAuditSheet_() {
   var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = spreadsheet.getSheetByName(RR_PROOF_AUDIT_SHEET) || spreadsheet.insertSheet(RR_PROOF_AUDIT_SHEET);
-  if (sheet.getLastRow() === 0) sheet.appendRow(RR_PROOF_HEADERS);
-  var headers = sheet.getRange(1, 1, 1, RR_PROOF_HEADERS.length);
-  headers.setValues([RR_PROOF_HEADERS]).setFontWeight('bold').setBackground('#111111').setFontColor('#f5c842');
-  sheet.setFrozenRows(1);
+  if (sheet.getLastRow() === 0) {
+    sheet.appendRow(RR_PROOF_HEADERS);
+    var headers = sheet.getRange(1, 1, 1, RR_PROOF_HEADERS.length);
+    headers.setValues([RR_PROOF_HEADERS]).setFontWeight('bold').setBackground('#111111').setFontColor('#f5c842');
+    sheet.setFrozenRows(1);
+  } else {
+    rrEnsureColumns_(sheet, RR_PROOF_HEADERS);
+  }
   return sheet;
 }
 
@@ -301,7 +305,7 @@ function rrApplyProofToCoachRows_(payload, status, driveUrl, uploadedAt) {
   var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
   var meta = {
     userId: String(payload.userId || ''),
-    linkedRecordId: String(payload.linkedRecordId || (payload.attachment && payload.attachment.id) || ''),
+    linkedRecordId: String(payload.linkedRecordId || ''),
     proofKey: String(payload.proofKey || ''),
     weekIndex: payload.workoutContext ? payload.workoutContext.weekIndex : '',
     workoutIndex: payload.workoutContext ? payload.workoutContext.workoutIndex : ''
@@ -335,7 +339,8 @@ function rrFindProofTargetRow_(values, header, meta, payload) {
 
   for (var row = values.length - 1; row >= 1; row--) {
     if (linkedCol >= 0 && meta.linkedRecordId && String(values[row][linkedCol]) === meta.linkedRecordId) {
-      return row + 1;
+      var userMatchesLinked = userCol < 0 || !meta.userId || String(values[row][userCol]) === meta.userId;
+      if (userMatchesLinked) return row + 1;
     }
   }
   for (var row2 = values.length - 1; row2 >= 1; row2--) {

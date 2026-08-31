@@ -142,6 +142,22 @@ begin
     raise exception 'unsupported mime_type';
   end if;
 
+  if coalesce(trim(p_linked_record_id), '') <> '' then
+    if not exists (
+      select 1 from public.workout_completions
+      where user_id = caller_id and id::text = trim(p_linked_record_id)
+    ) and not exists (
+      select 1 from public.sprint_sessions
+      where user_id = caller_id
+        and (session_id = trim(p_linked_record_id) or id::text = trim(p_linked_record_id))
+    ) and not exists (
+      select 1 from public.mile_tests
+      where user_id = caller_id and id::text = trim(p_linked_record_id)
+    ) then
+      raise exception 'linked_record_id not found or not owned by caller';
+    end if;
+  end if;
+
   update public.workout_attachments
   set is_current = false, updated_at = now()
   where user_id = caller_id

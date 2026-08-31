@@ -209,3 +209,7 @@ export function checkpointHasProgress(checkpoint) {
   if ((Number(checkpoint.state.currentRep) || 0) > 0) return true;
   return Array.isArray(checkpoint.state.data) && checkpoint.state.data.length > 0;
 }
+
+export function resolveRestCaptureAttempted(timerCheckpoint, pendingRep) {
+  return !!(timerCheckpoint?.captureAttempted || (pendingRep && pendingRep.restHR !== null));
+}

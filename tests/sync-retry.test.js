@@ -68,7 +68,30 @@ describe('sync retry and queue trimming', () => {
     expect(trimmed.filter((item) => item.status === 'pending').length).toBe(MAX_QUEUE_ITEMS);
   });
 
-  it('includes linkedRecordId and proofKey in enqueued payloads', () => {
+  it('preserves 51 pending items when no disposable history exists', () => {
+    const queue = [];
+    for (let i = 0; i < 51; i += 1) {
+      queue.push({ id: `pending-${i}`, status: 'pending', createdAt: new Date(Date.now() - i * 1000).toISOString() });
+    }
+    const trimmed = trimSyncQueue(queue);
+    expect(trimmed.length).toBe(51);
+  });
+
+  it('preserves mixed pending and failed overflow', () => {
+    const queue = [];
+    for (let i = 0; i < 30; i += 1) {
+      queue.push({ id: `pending-${i}`, status: 'pending' });
+    }
+    for (let i = 0; i < 21; i += 1) {
+      queue.push({ id: `failed-${i}`, status: 'failed', attempts: 1 });
+    }
+    const trimmed = trimSyncQueue(queue);
+    expect(trimmed.length).toBe(51);
+    expect(trimmed.filter((item) => item.status === 'pending').length).toBe(30);
+    expect(trimmed.filter((item) => item.status === 'failed').length).toBe(21);
+  });
+
+  it('includes linkedRecordId and proofKey in workout row payloads', () => {
     enqueuePayloadForSync({
       eventType: 'daily_workout',
       userId: 'user-a',
@@ -80,5 +103,18 @@ describe('sync retry and queue trimming', () => {
     expect(item.payload.linkedRecordId).toBe('record-123');
     expect(item.payload.proofKey).toBe('program:7:0:2');
     expect(getPendingSyncCount()).toBe(1);
+  });
+
+  it('workout_proof payload contains attachmentId only', () => {
+    enqueuePayloadForSync({
+      eventType: 'workout_proof',
+      userId: 'user-a',
+      attachmentId: 'attach-123',
+      proofPolicyVersion: 2,
+    });
+    const item = getSyncQueue()[0];
+    expect(item.payload.attachmentId).toBe('attach-123');
+    expect(item.payload.linkedRecordId).toBeUndefined();
+    expect(item.payload.proofKey).toBeUndefined();
   });
 });

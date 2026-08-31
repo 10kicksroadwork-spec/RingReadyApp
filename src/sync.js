@@ -198,7 +198,7 @@ export function trimSyncQueue(queue) {
     }
     if (!removed) break;
   }
-  return result.slice(0, MAX_QUEUE_ITEMS);
+  return result;
 }
 
 function saveQueueForUser(queue, userId = resolveQueueUserId()) {
@@ -502,20 +502,16 @@ export function enqueueDailyWorkoutForSync(workoutLog, workoutContext, linkedRec
   return enqueuePayloadForSync(buildDailyWorkoutPayload(workoutLog, workoutContext, linkedRecordId));
 }
 
-export function buildWorkoutProofPayload(attachment, linkedRecordId = '', workoutContext = {}) {
-  const proofMeta = buildProofMetadata(workoutContext, linkedRecordId, attachment?.proofKey || workoutContext.proofKey);
+export function buildWorkoutProofPayload(attachment) {
   return {
     ...buildBasePayload('workout_proof'),
     proofPolicyVersion: 2,
-    linkedRecordId: proofMeta.linkedRecordId,
-    proofKey: proofMeta.proofKey,
     attachmentId: String(attachment?.id || ''),
-    attachment: attachment || null,
   };
 }
 
-export function enqueueWorkoutProofForSync(attachment, workoutContext, linkedRecordId) {
-  return enqueuePayloadForSync(buildWorkoutProofPayload(attachment, linkedRecordId, workoutContext));
+export function enqueueWorkoutProofForSync(attachment) {
+  return enqueuePayloadForSync(buildWorkoutProofPayload(attachment));
 }
 
 async function postSubmission(endpoint, item) {
