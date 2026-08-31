@@ -1,3 +1,5 @@
+-- DEPRECATED: use scripts/migrations/ — see scripts/MIGRATIONS.md
+
 -- Create Gene Byard's athlete-side Ring Ready account
 -- Run in Supabase SQL Editor.
 --

@@ -312,6 +312,9 @@ const COACH_ROSTER_TABLES = [
   ['meta', 'coach_athlete_meta'],
 ];
 
+// coach_roster_snapshot RPC is explicitly deferred. loadCoachRosterPayload() loads
+// tables directly until a consolidated snapshot RPC ships.
+
 export async function loadCoachRosterPayload() {
   if (!isSupabaseConfigured || !supabase || !isCoachUser()) return null;
   const client = requireSupabase();

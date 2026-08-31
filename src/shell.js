@@ -43,6 +43,12 @@ import {
 import { getWorkoutCompletion, isWorkoutCompletionCleared, markWorkoutCompletionCleared, removeWorkoutCompletion, saveWorkoutCompletion } from './storage.js';
 import { parseDurationMinutes, sanitizeDurationInput } from './workout.js';
 import {
+  calculateZoneBPM,
+  getExpectedSessionAvgTarget,
+  getIntervalPlan,
+  getZone2BPM,
+} from './hr-analytics.js';
+import {
   applyCompletionActionState,
   buildHrChecklistItem,
   buildNumericChecklistItem,
@@ -228,11 +234,14 @@ import {
   mergeSprintSessions,
   mergeWorkoutCompletions,
 } from './shell-cloud-merge.js';
+function clearSharedLocalState() {
+  clearActiveSessionCheckpointsForAllUsers();
+  [PROFILE_STORAGE_KEY, STORAGE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY, HR_INFO_STORAGE_KEY, MILE_TEST_STORAGE_KEY, PROFILE_FORM_COLLAPSED_KEY, PROGRAM_GUIDE_COLLAPSED_KEY, WORKOUT_NOTES_STORAGE_KEY, CAMP_RESET_SEEN_KEY, 'ringReadyClearedWorkoutCompletions'].forEach((key) => localStorage.removeItem(key));
+}
 function clearAccountLocalData() {
   const userId = getCurrentUser()?.id;
   if (userId) clearSyncQueueForUser(userId);
-  clearActiveSessionCheckpointsForAllUsers();
-  [PROFILE_STORAGE_KEY, STORAGE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY, HR_INFO_STORAGE_KEY, MILE_TEST_STORAGE_KEY, PROFILE_FORM_COLLAPSED_KEY, PROGRAM_GUIDE_COLLAPSED_KEY, WORKOUT_NOTES_STORAGE_KEY, CAMP_RESET_SEEN_KEY, 'ringReadyClearedWorkoutCompletions'].forEach((key) => localStorage.removeItem(key));
+  clearSharedLocalState();
 }
 function clearLocalTrainingData({ markResetAt = '' } = {}) {
   const userId = getCurrentUser()?.id;
@@ -405,7 +414,7 @@ async function hydrateCloudData() {
   if (!isSupabaseConfigured || !getCurrentUser()) return;
   const user = getCurrentUser();
   const lastUserId = localStorage.getItem(AUTH_USER_STORAGE_KEY);
-  if (lastUserId && lastUserId !== user.id) clearAccountLocalData();
+  if (lastUserId && lastUserId !== user.id) clearSharedLocalState();
   localStorage.setItem(AUTH_USER_STORAGE_KEY, user.id);
   quarantineLegacySyncQueue();
 
@@ -436,7 +445,7 @@ async function hydrateCloudData() {
   if (cloudProfile && hasProfileData(cloudProfile)) {
     applyCampResetIfNeeded(cloudProfile);
     const mergedProfile = mergeProfileByTimestamp(localProfile, cloudProfile);
-    saveAthleteProfile(mergedProfile);
+    saveAthleteProfile(mergedProfile, { preserveUpdatedAt: true });
     if (getRecordUpdatedAt(localProfile) > getRecordUpdatedAt(cloudProfile) && hasProfileData(localProfile)) {
       try {
         await saveCloudProfile(mergedProfile);
@@ -454,7 +463,7 @@ async function hydrateCloudData() {
 
   if (cloudHRInfo && hasCustomHRInfo(cloudHRInfo)) {
     const mergedHR = mergeHRByTimestamp(localHRInfo, cloudHRInfo, HR_INFO_DEFAULTS);
-    saveHRInfo(mergedHR);
+    saveHRInfo(mergedHR, { preserveUpdatedAt: true });
     if (getRecordUpdatedAt(localHRInfo) > getRecordUpdatedAt(cloudHRInfo) && hasCustomHRInfo(localHRInfo)) {
       try {
         await saveCloudHRInfo(mergedHR);
@@ -659,24 +668,34 @@ function saveWeek(index) { activeWeekIndex = clampWeek(index); localStorage.setI
 
 function getHRInfo() {
   const saved = readJSON(HR_INFO_STORAGE_KEY, {});
-  return {
+  const next = {
     goalWeight: Number(saved.goalWeight ?? HR_INFO_DEFAULTS.goalWeight),
     targetDate: String(saved.targetDate || HR_INFO_DEFAULTS.targetDate),
     maxHr: Number(saved.maxHr ?? HR_INFO_DEFAULTS.maxHr),
     restingHr: Number(saved.restingHr ?? HR_INFO_DEFAULTS.restingHr),
   };
+  const updatedAt = String(saved.updatedAt || saved.updated_at || '').trim();
+  if (updatedAt) next.updatedAt = updatedAt;
+  return next;
 }
-function saveHRInfo(info) {
+function saveHRInfo(info, options = {}) {
+  const current = getHRInfo();
   const next = {
     goalWeight: Number(info.goalWeight) || HR_INFO_DEFAULTS.goalWeight,
     targetDate: String(info.targetDate || HR_INFO_DEFAULTS.targetDate),
     maxHr: Number(info.maxHr) || HR_INFO_DEFAULTS.maxHr,
     restingHr: Number(info.restingHr) || HR_INFO_DEFAULTS.restingHr,
   };
+  if (options.preserveUpdatedAt) {
+    const preserved = String(info.updatedAt || info.updated_at || current.updatedAt || '').trim();
+    if (preserved) next.updatedAt = preserved;
+  } else {
+    next.updatedAt = new Date().toISOString();
+  }
   writeJSON(HR_INFO_STORAGE_KEY, next);
   return next;
 }
-function calculateZoneBPM(zone, hrInfo) { const reserve = Math.max(0, hrInfo.maxHr - hrInfo.restingHr); return Math.round((reserve * zone.pct) / 100 + hrInfo.restingHr); }
+function calculateZoneBPMFromZone(zone, hrInfo) { return calculateZoneBPM(zone, hrInfo); }
 function getWorkoutTargetPcts(workout) {
   const matches = String(workout.targetZone || '').match(/\d+(?:\.\d+)?/g);
   if (!matches || matches.length === 0) return [];
@@ -691,35 +710,20 @@ function getWorkoutZoneBounds(workout, hrInfo = getHRInfo()) {
   if (!values.length) return null;
   const lowPct = Math.min(...values);
   const highPct = Math.max(...values);
-  const low = calculateZoneBPM({ pct: lowPct }, hrInfo);
-  const high = calculateZoneBPM({ pct: highPct }, hrInfo);
+  const low = calculateZoneBPMFromZone({ pct: lowPct }, hrInfo);
+  const high = calculateZoneBPMFromZone({ pct: highPct }, hrInfo);
   return { low, high, lowPct, highPct };
 }
 function getWorkoutTargetBPM(workout, hrInfo = getHRInfo()) {
   const pct = getWorkoutTargetPct(workout);
-  return Number.isFinite(pct) ? calculateZoneBPM({ pct }, hrInfo) : Number(workout.targetBPM) || null;
-}
-/** Zone 2 midpoint (60–70%) used for recovery jogs in session-average math. */
-function getZone2BPM(hrInfo = getHRInfo()) {
-  return calculateZoneBPM({ pct: 65 }, hrInfo);
-}
-function getIntervalPlan(workout) {
-  const plan = workout?.intervalPlan;
-  if (!plan) return null;
-  const reps = Number(plan.reps);
-  const workMinutes = Number(plan.workMinutes);
-  const restMinutes = Number(plan.restMinutes);
-  if (![reps, workMinutes, restMinutes].every((value) => Number.isFinite(value) && value > 0)) return null;
-  const workTotal = reps * workMinutes;
-  const restTotal = Math.max(0, reps - 1) * restMinutes;
-  return { reps, workMinutes, restMinutes, workTotal, restTotal, totalMinutes: workTotal + restTotal };
+  return Number.isFinite(pct) ? calculateZoneBPMFromZone({ pct }, hrInfo) : Number(workout.targetBPM) || null;
 }
 function getExpectedSessionAvg(workout, hrInfo = getHRInfo()) {
   const plan = getIntervalPlan(workout);
   const targetBPM = getWorkoutTargetBPM(workout, hrInfo);
   const easyBPM = getZone2BPM(hrInfo);
-  if (!plan || !Number.isFinite(targetBPM) || plan.totalMinutes <= 0) return null;
-  const expectedAvg = Math.round(((plan.workTotal * targetBPM) + (plan.restTotal * easyBPM)) / plan.totalMinutes);
+  const expectedAvg = getExpectedSessionAvgTarget({ ...workout, targetBPM, targetPct: getWorkoutTargetPct(workout) }, hrInfo);
+  if (!plan || !Number.isFinite(targetBPM) || !Number.isFinite(expectedAvg) || plan.totalMinutes <= 0) return null;
   const range = SESSION_AVG_RANGE_BPM;
   return {
     mode: 'session-avg',
@@ -1391,7 +1395,7 @@ async function completeWorkoutFromDetail(weekIndex, workoutIndex) {
   let cloudSaved = false;
   if (completed) cloudSaved = await saveWorkoutCompletionToCloud(completed);
   if (completed && !existing) {
-    enqueueDailyWorkoutForSync(workoutLog, record.workoutContext);
+    enqueueDailyWorkoutForSync(workoutLog, record.workoutContext, record.id);
   }
   if (completed && isNewProof && record.attachment) enqueueWorkoutProofForSync(record.attachment, record.workoutContext, record.id);
   if (completed) flushQueuedEvent('CLOUD SAVED');
@@ -1486,7 +1490,7 @@ async function confirmSkipWorkoutFromDetail() {
   let cloudSaved = false;
   if (completed) cloudSaved = await saveWorkoutCompletionToCloud(completed);
   if (completed) {
-    enqueueDailyWorkoutForSync(record.workoutLog, record.workoutContext);
+    enqueueDailyWorkoutForSync(record.workoutLog, record.workoutContext, record.id);
     flushQueuedEvent('CLOUD SAVED');
   }
   setDetailSkipCard(false);

@@ -256,29 +256,27 @@ export async function ensureWorkoutProofUploaded(surface, linkedRecordId = '') {
   render(surface);
   emitState(surface);
   const user = getCurrentUser();
-  const attachmentId = makeId();
   const uploadMimeType = state.processed.blob.type || state.processed.mimeType || getCanvasOutputMimeType();
   const uploadExtension = extensionForMimeType(uploadMimeType);
-  const storagePath = `${user.id}/${safePathPart(state.proofKey)}/${Date.now()}-${attachmentId}.${uploadExtension}`;
+  const storagePath = `${user.id}/${safePathPart(state.proofKey)}/${Date.now()}-${makeId()}.${uploadExtension}`;
   try {
     const { error: uploadError } = await supabase.storage.from(PROOF_BUCKET).upload(storagePath, state.processed.blob, { contentType: uploadMimeType, upsert: false, cacheControl: '3600' });
     if (uploadError) throw uploadError;
-    const { error: currentError } = await supabase.rpc('prepare_workout_proof_upload', {
-      proof_key: state.proofKey,
+    const { data, error: rowError } = await supabase.rpc('create_workout_proof_attachment', {
+      p_proof_key: state.proofKey,
+      p_linked_record_id: String(linkedRecordId || ''),
+      p_storage_path: storagePath,
+      p_original_filename: state.filename || `workout-proof.${uploadExtension}`,
+      p_mime_type: uploadMimeType,
+      p_file_size: state.processed.blob.size,
+      p_width: state.processed.width,
+      p_height: state.processed.height,
+      p_camp_length: Number(state.context.campLength) || null,
+      p_week_index: Number.isFinite(Number(state.context.weekIndex)) ? Number(state.context.weekIndex) : null,
+      p_workout_index: Number.isFinite(Number(state.context.workoutIndex)) ? Number(state.context.workoutIndex) : null,
+      p_workout_type: String(state.context.workoutType || 'Workout'),
+      p_day_of_week: String(state.context.dayOfWeek || ''),
     });
-    if (currentError) throw currentError;
-    const row = {
-      id: attachmentId, user_id: user.id, proof_key: state.proofKey, linked_record_id: String(linkedRecordId || ''),
-      camp_length: Number(state.context.campLength) || null,
-      week_index: Number.isFinite(Number(state.context.weekIndex)) ? Number(state.context.weekIndex) : null,
-      workout_index: Number.isFinite(Number(state.context.workoutIndex)) ? Number(state.context.workoutIndex) : null,
-      workout_type: String(state.context.workoutType || 'Workout'), day_of_week: String(state.context.dayOfWeek || ''),
-      storage_bucket: PROOF_BUCKET, storage_path: storagePath, original_filename: state.filename || `workout-proof.${uploadExtension}`,
-      mime_type: uploadMimeType, file_size: state.processed.blob.size, width: state.processed.width, height: state.processed.height,
-      transfer_status: 'pending', is_current: true, completion_cleared: false,
-      uploaded_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-    };
-    const { data, error: rowError } = await supabase.from('workout_attachments').insert(row).select('*').single();
     if (rowError) {
       await supabase.storage.from(PROOF_BUCKET).remove([storagePath]);
       throw rowError;

@@ -1,5 +1,5 @@
 -- Ring Ready private workout-proof staging and evidence metadata.
--- Run after scripts/supabase-workout-data.sql.
+-- Run after scripts/migrations/001_workout_data.sql.
 
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values (
@@ -53,7 +53,7 @@ create index if not exists workout_attachments_transfer_status_idx
   on public.workout_attachments(transfer_status, uploaded_at);
 
 alter table public.workout_attachments enable row level security;
-grant select, insert, update on table public.workout_attachments to authenticated;
+grant select on table public.workout_attachments to authenticated;
 grant select, update on table public.workout_attachments to service_role;
 grant select on table public.athlete_profiles to service_role;
 
@@ -62,10 +62,9 @@ create policy workout_attachments_select_own on public.workout_attachments
   for select to authenticated using ((select auth.uid()) = user_id);
 
 drop policy if exists workout_attachments_insert_own on public.workout_attachments;
-create policy workout_attachments_insert_own on public.workout_attachments
-  for insert to authenticated with check ((select auth.uid()) = user_id);
-
 drop policy if exists workout_attachments_update_own on public.workout_attachments;
+
+revoke insert, update on table public.workout_attachments from authenticated;
 
 drop policy if exists workout_proof_storage_select_own on storage.objects;
 create policy workout_proof_storage_select_own on storage.objects
@@ -92,36 +91,126 @@ alter table public.workout_completions add column if not exists proof_policy_ver
 alter table public.workout_completions add column if not exists attachment_id uuid references public.workout_attachments(id);
 alter table public.sprint_sessions add column if not exists proof_policy_version integer;
 alter table public.sprint_sessions add column if not exists attachment_id uuid references public.workout_attachments(id);
-alter table public.mile_tests add column if not exists test_key text not null default 'mile-test:baseline';
 alter table public.mile_tests add column if not exists proof_policy_version integer;
 alter table public.mile_tests add column if not exists attachment_id uuid references public.workout_attachments(id);
 
-drop index if exists public.mile_tests_user_id_idx;
-create unique index if not exists mile_tests_user_test_key_idx
-  on public.mile_tests(user_id, test_key);
-
--- Athletes may insert/read proof rows; transfer fields are service-owned.
-revoke update on table public.workout_attachments from authenticated;
-
-create or replace function public.prepare_workout_proof_upload(p_proof_key text)
-returns void
+create or replace function public.create_workout_proof_attachment(
+  p_proof_key text,
+  p_linked_record_id text,
+  p_storage_path text,
+  p_original_filename text,
+  p_mime_type text,
+  p_file_size integer,
+  p_width integer default null,
+  p_height integer default null,
+  p_camp_length integer default null,
+  p_week_index integer default null,
+  p_workout_index integer default null,
+  p_workout_type text default '',
+  p_day_of_week text default ''
+)
+returns public.workout_attachments
 language plpgsql
 security definer
 set search_path = public
 as $function$
+declare
+  caller_id uuid := auth.uid();
+  inserted public.workout_attachments%rowtype;
 begin
-  if auth.uid() is null then
+  if caller_id is null then
     raise exception 'Authentication required';
   end if;
+
+  if coalesce(trim(p_proof_key), '') = '' then
+    raise exception 'proof_key is required';
+  end if;
+
+  if coalesce(trim(p_storage_path), '') = '' then
+    raise exception 'storage_path is required';
+  end if;
+
+  if p_storage_path not like caller_id::text || '/%' then
+    raise exception 'storage_path must belong to the authenticated user';
+  end if;
+
+  if p_file_size is null or p_file_size <= 0 or p_file_size > 2621440 then
+    raise exception 'file_size out of range';
+  end if;
+
+  if p_mime_type not in ('image/webp', 'image/jpeg', 'image/png') then
+    raise exception 'unsupported mime_type';
+  end if;
+
   update public.workout_attachments
   set is_current = false, updated_at = now()
-  where user_id = auth.uid()
+  where user_id = caller_id
     and proof_key = p_proof_key
     and is_current = true;
+
+  insert into public.workout_attachments (
+    user_id,
+    proof_key,
+    linked_record_id,
+    camp_length,
+    week_index,
+    workout_index,
+    workout_type,
+    day_of_week,
+    storage_bucket,
+    storage_path,
+    original_filename,
+    mime_type,
+    file_size,
+    width,
+    height,
+    transfer_status,
+    transfer_attempts,
+    transfer_error,
+    drive_file_id,
+    drive_url,
+    is_current,
+    completion_cleared,
+    uploaded_at,
+    updated_at
+  ) values (
+    caller_id,
+    p_proof_key,
+    coalesce(p_linked_record_id, ''),
+    p_camp_length,
+    p_week_index,
+    p_workout_index,
+    coalesce(p_workout_type, ''),
+    coalesce(p_day_of_week, ''),
+    'workout-proof-staging',
+    p_storage_path,
+    coalesce(nullif(trim(p_original_filename), ''), 'workout-proof.webp'),
+    p_mime_type,
+    p_file_size,
+    p_width,
+    p_height,
+    'pending',
+    0,
+    '',
+    '',
+    '',
+    true,
+    false,
+    now(),
+    now()
+  )
+  returning * into inserted;
+
+  return inserted;
 end;
 $function$;
 
-grant execute on function public.prepare_workout_proof_upload(text) to authenticated;
+revoke all on function public.create_workout_proof_attachment(
+  text, text, text, text, text, integer, integer, integer, integer, integer, integer, text, text
+) from public;
+grant execute on function public.create_workout_proof_attachment(
+  text, text, text, text, text, integer, integer, integer, integer, integer, integer, text, text
+) to authenticated;
 
 create or replace function public.set_workout_proof_cleared(attachment_id uuid, cleared boolean)
 returns void
@@ -142,4 +231,7 @@ begin
 end;
 $function$;
 
+revoke all on function public.set_workout_proof_cleared(uuid, boolean) from public;
 grant execute on function public.set_workout_proof_cleared(uuid, boolean) to authenticated;
+
+drop function if exists public.prepare_workout_proof_upload(text);

@@ -1,3 +1,5 @@
+-- DEPRECATED: use scripts/migrations/ — see scripts/MIGRATIONS.md
+
 -- Add athlete_name to all fighter-linked tables for Supabase Table Editor.
 -- Run once in Supabase SQL Editor (after workout-data + coach-access scripts).
 --

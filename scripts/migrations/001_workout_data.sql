@@ -1,25 +1,6 @@
--- Ring Ready workout-data cloud sync support
--- Run this in Supabase SQL Editor after the base tables exist.
+-- Ring Ready workout-data columns and policies (additive only)
+-- Run after scripts/migrations/000_core_schema.sql
 
-create extension if not exists pgcrypto;
-
-grant usage on schema public to anon, authenticated;
-
-grant select, insert, update, delete on table
-  public.athlete_profiles,
-  public.hr_info,
-  public.workout_completions,
-  public.sprint_sessions,
-  public.mile_tests
-to authenticated;
-
-alter table public.workout_completions enable row level security;
-alter table public.sprint_sessions enable row level security;
-alter table public.mile_tests enable row level security;
-
-alter table public.workout_completions add column if not exists id uuid default gen_random_uuid();
-alter table public.workout_completions add column if not exists user_id uuid references auth.users(id) on delete cascade;
-alter table public.workout_completions add column if not exists completion_key text not null default '';
 alter table public.workout_completions add column if not exists week_index integer;
 alter table public.workout_completions add column if not exists workout_index integer;
 alter table public.workout_completions add column if not exists week_label text;
@@ -37,15 +18,10 @@ alter table public.workout_completions add column if not exists max_bpm integer 
 alter table public.workout_completions add column if not exists distance numeric;
 alter table public.workout_completions add column if not exists completed_at timestamptz;
 alter table public.workout_completions add column if not exists record_json jsonb not null default '{}'::jsonb;
-alter table public.workout_completions add column if not exists created_at timestamptz not null default now();
-alter table public.workout_completions add column if not exists updated_at timestamptz not null default now();
 
 create unique index if not exists workout_completions_user_completion_key_idx
   on public.workout_completions(user_id, completion_key);
 
-alter table public.sprint_sessions add column if not exists id uuid default gen_random_uuid();
-alter table public.sprint_sessions add column if not exists user_id uuid references auth.users(id) on delete cascade;
-alter table public.sprint_sessions add column if not exists session_id text not null default '';
 alter table public.sprint_sessions add column if not exists session_at timestamptz;
 alter table public.sprint_sessions add column if not exists week_index integer;
 alter table public.sprint_sessions add column if not exists workout_index integer;
@@ -60,14 +36,10 @@ alter table public.sprint_sessions add column if not exists intervals_completed 
 alter table public.sprint_sessions add column if not exists avg_drop numeric;
 alter table public.sprint_sessions add column if not exists peak_hr integer check (peak_hr is null or peak_hr between 1 and 999);
 alter table public.sprint_sessions add column if not exists session_json jsonb not null default '{}'::jsonb;
-alter table public.sprint_sessions add column if not exists created_at timestamptz not null default now();
-alter table public.sprint_sessions add column if not exists updated_at timestamptz not null default now();
 
 create unique index if not exists sprint_sessions_user_session_id_idx
   on public.sprint_sessions(user_id, session_id);
 
-alter table public.mile_tests add column if not exists id uuid default gen_random_uuid();
-alter table public.mile_tests add column if not exists user_id uuid references auth.users(id) on delete cascade;
 alter table public.mile_tests add column if not exists saved_at timestamptz;
 alter table public.mile_tests add column if not exists distance numeric;
 alter table public.mile_tests add column if not exists total_minutes numeric;
@@ -75,12 +47,9 @@ alter table public.mile_tests add column if not exists total_seconds integer;
 alter table public.mile_tests add column if not exists pace_min_per_mile numeric;
 alter table public.mile_tests add column if not exists avg_bpm integer check (avg_bpm is null or avg_bpm between 1 and 999);
 alter table public.mile_tests add column if not exists max_bpm integer check (max_bpm is null or max_bpm between 1 and 999);
-alter table public.mile_tests add column if not exists test_key text not null default 'mile-test:baseline';
 alter table public.mile_tests add column if not exists result_json jsonb not null default '{}'::jsonb;
 alter table public.mile_tests add column if not exists hr_info_json jsonb;
 alter table public.mile_tests add column if not exists test_context_json jsonb;
-alter table public.mile_tests add column if not exists created_at timestamptz not null default now();
-alter table public.mile_tests add column if not exists updated_at timestamptz not null default now();
 
 drop index if exists public.mile_tests_user_id_idx;
 create unique index if not exists mile_tests_user_test_key_idx

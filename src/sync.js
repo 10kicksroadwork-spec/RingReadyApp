@@ -11,7 +11,8 @@ import { hrState } from './hr-service.js';
 import { MODALITY_RUNNING, normalizeModality } from './modality.js';
 import { getCurrentUser } from './auth.js';
 
-const MAX_QUEUE_ITEMS = 50;
+export const MAX_QUEUE_ITEMS = 50;
+export const MAX_SYNC_ATTEMPTS = 5;
 const ALLOWED_SYNC_HOST = 'script.google.com';
 const ALLOWED_SYNC_PATH = /^\/macros\/s\/[^/]+\/exec$/i;
 
@@ -32,8 +33,12 @@ function normalizeCampLength(value) {
   return String(value) === '4' ? '4' : '7';
 }
 
+function buildProgramProofKey(campLength, weekIndex, workoutIndex) {
+  return `program:${normalizeCampLength(campLength)}:${Number(weekIndex)}:${Number(workoutIndex)}`;
+}
+
 function cleanProfile(profile = {}) {
-  return {
+  const cleaned = {
     athleteName: String(profile.athleteName || '').trim(),
     age: String(profile.age || '').trim(),
     gender: String(profile.gender || '').trim(),
@@ -46,6 +51,9 @@ function cleanProfile(profile = {}) {
     defaultModality: normalizeModality(profile.defaultModality || PROFILE_DEFAULTS.defaultModality),
     campResetAt: String(profile.campResetAt || '').trim(),
   };
+  const updatedAt = String(profile.updatedAt || profile.updated_at || '').trim();
+  if (updatedAt) cleaned.updatedAt = updatedAt;
+  return cleaned;
 }
 
 function readJSON(key, fallback) {
@@ -167,9 +175,35 @@ function readQueueForUser(userId = resolveQueueUserId()) {
   return readJSON(key, []).map(normalizeQueueItem);
 }
 
+export function trimSyncQueue(queue) {
+  if (!Array.isArray(queue) || queue.length <= MAX_QUEUE_ITEMS) return queue || [];
+  const result = [...queue];
+  const removeOldest = (predicate) => {
+    for (let i = result.length - 1; i >= 0 && result.length > MAX_QUEUE_ITEMS; i -= 1) {
+      if (predicate(result[i])) {
+        result.splice(i, 1);
+      }
+    }
+  };
+  removeOldest((item) => item.status === 'acknowledged');
+  removeOldest((item) => item.status === 'dispatched');
+  while (result.length > MAX_QUEUE_ITEMS) {
+    let removed = false;
+    for (let i = result.length - 1; i >= 0; i -= 1) {
+      if (result[i].status === 'acknowledged' || result[i].status === 'dispatched') {
+        result.splice(i, 1);
+        removed = true;
+        break;
+      }
+    }
+    if (!removed) break;
+  }
+  return result.slice(0, MAX_QUEUE_ITEMS);
+}
+
 function saveQueueForUser(queue, userId = resolveQueueUserId()) {
   if (!userId) return;
-  writeJSON(syncQueueStorageKey(userId), queue.slice(0, MAX_QUEUE_ITEMS));
+  writeJSON(syncQueueStorageKey(userId), trimSyncQueue(queue));
 }
 
 export function quarantineLegacySyncQueue() {
@@ -181,7 +215,7 @@ export function quarantineLegacySyncQueue() {
 
   const existing = readJSON(LEGACY_SYNC_QUEUE_QUARANTINE_KEY, []);
   const merged = [...existing, ...legacy.map((item) => ({ ...item, quarantinedAt: new Date().toISOString() }))];
-  writeJSON(LEGACY_SYNC_QUEUE_QUARANTINE_KEY, merged.slice(0, MAX_QUEUE_ITEMS));
+  writeJSON(LEGACY_SYNC_QUEUE_QUARANTINE_KEY, trimSyncQueue(merged));
   localStorage.removeItem(LEGACY_SYNC_QUEUE_KEY);
   return { quarantined: legacy.length };
 }
@@ -206,9 +240,15 @@ export function getAthleteProfile() {
   return cleanProfile({ ...PROFILE_DEFAULTS, ...saved });
 }
 
-export function saveAthleteProfile(profile) {
+export function saveAthleteProfile(profile, options = {}) {
   const current = getAthleteProfile();
   const next = cleanProfile({ ...current, ...profile });
+  if (options.preserveUpdatedAt) {
+    const preserved = String(profile.updatedAt || profile.updated_at || current.updatedAt || '').trim();
+    if (preserved) next.updatedAt = preserved;
+  } else {
+    next.updatedAt = new Date().toISOString();
+  }
   writeJSON(PROFILE_STORAGE_KEY, next);
   return next;
 }
@@ -223,6 +263,34 @@ function saveSyncQueue(queue, userId = resolveQueueUserId()) {
 
 export function getPendingSyncCount(userId = resolveQueueUserId()) {
   return getSyncQueue(userId).filter((item) => item.status === 'pending').length;
+}
+
+export function getFailedSyncCount(userId = resolveQueueUserId()) {
+  return getSyncQueue(userId).filter((item) => item.status === 'failed' && (item.attempts || 0) >= MAX_SYNC_ATTEMPTS).length;
+}
+
+export function getRetryableFailedCount(userId = resolveQueueUserId()) {
+  return getSyncQueue(userId).filter((item) => item.status === 'failed' && (item.attempts || 0) < MAX_SYNC_ATTEMPTS).length;
+}
+
+export function needsManualSyncRetry(userId = resolveQueueUserId()) {
+  return getFailedSyncCount(userId) > 0;
+}
+
+function buildProofMetadata(workoutContext = {}, linkedRecordId = '', proofKey = '') {
+  const campLength = Number(workoutContext.campLength ?? getAthleteProfile().campLength) || 7;
+  const weekIndex = workoutContext.weekIndex;
+  const workoutIndex = workoutContext.workoutIndex;
+  const resolvedProofKey = proofKey
+    || (Number.isFinite(Number(weekIndex)) && Number.isFinite(Number(workoutIndex))
+      ? buildProgramProofKey(campLength, weekIndex, workoutIndex)
+      : String(workoutContext.testKey || workoutContext.proofKey || ''));
+  return {
+    linkedRecordId: String(linkedRecordId || workoutContext.linkedRecordId || ''),
+    proofKey: resolvedProofKey,
+    weekIndex: Number.isFinite(Number(weekIndex)) ? Number(weekIndex) : '',
+    workoutIndex: Number.isFinite(Number(workoutIndex)) ? Number(workoutIndex) : '',
+  };
 }
 
 function buildBasePayload(eventType) {
@@ -252,7 +320,7 @@ export function enqueuePayloadForSync(payload) {
   }
 
   const queue = getSyncQueue(userId);
-  const id = payload.sessionId || payload.eventId || makeEventId();
+  const id = payload.sessionId || payload.linkedRecordId || payload.eventId || makeEventId();
   const item = {
     id,
     userId,
@@ -281,7 +349,7 @@ export function markSyncItemAcknowledged(eventId, userId = resolveQueueUserId())
   return true;
 }
 
-export function buildSessionPayload(cfg, data) {
+export function buildSessionPayload(cfg, data, sessionRecord = null) {
   const base = buildBasePayload('sprint_session');
   const workoutContext = cfg.workoutContext || {};
   const workoutType = workoutContext.workoutType || 'Sprint Intervals';
@@ -290,10 +358,14 @@ export function buildSessionPayload(cfg, data) {
     .map((rep) => rep.drop)
     .filter((drop) => Number.isFinite(Number(drop)) && Number(drop) > 0)
     .map((drop) => Number(drop));
+  const linkedRecordId = String(sessionRecord?.id || base.eventId);
+  const proofMeta = buildProofMetadata(workoutContext, linkedRecordId);
 
   return {
     ...base,
-    sessionId: base.eventId,
+    sessionId: linkedRecordId,
+    linkedRecordId: proofMeta.linkedRecordId,
+    proofKey: proofMeta.proofKey,
     workoutType,
     workoutContext: Object.keys(workoutContext).length ? workoutContext : null,
     weekTab: workoutContext.weekTab || '',
@@ -326,8 +398,8 @@ export function buildSessionPayload(cfg, data) {
   };
 }
 
-export function enqueueSessionForSync(cfg, data) {
-  return enqueuePayloadForSync(buildSessionPayload(cfg, data));
+export function enqueueSessionForSync(cfg, data, sessionRecord = null) {
+  return enqueuePayloadForSync(buildSessionPayload(cfg, data, sessionRecord));
 }
 
 export function buildProfilePayload(profile = getAthleteProfile()) {
@@ -364,9 +436,14 @@ export function buildMileTestPayload(result, hrInfo, testContext = {}) {
   const distance = Number(result.distance) || 0;
   const totalMinutes = Number(result.totalMinutes) || 0;
   const paceMinPerMile = distance > 0 && totalMinutes > 0 ? totalMinutes / distance : '';
+  const linkedRecordId = String(result.id || '');
+  const proofKey = String(result.testKey || testContext.testKey || testContext.proofKey || 'mile-test:baseline');
+  const proofMeta = buildProofMetadata({ ...testContext, testKey: proofKey }, linkedRecordId, proofKey);
 
   return {
     ...buildBasePayload('mile_test'),
+    linkedRecordId: proofMeta.linkedRecordId,
+    proofKey: proofMeta.proofKey,
     testContext: Object.keys(testContext).length ? testContext : null,
     test: {
       distance,
@@ -384,12 +461,15 @@ export function enqueueMileTestForSync(result, hrInfo, testContext) {
   return enqueuePayloadForSync(buildMileTestPayload(result, hrInfo, testContext));
 }
 
-export function buildDailyWorkoutPayload(workoutLog, workoutContext = {}) {
+export function buildDailyWorkoutPayload(workoutLog, workoutContext = {}, linkedRecordId = '') {
   const completedAt = workoutLog.completedAt || new Date().toISOString();
   const isSkip = workoutLog?.status === 'skipped';
+  const proofMeta = buildProofMetadata(workoutContext, linkedRecordId);
 
   return {
     ...buildBasePayload(isSkip ? 'daily_workout_skip' : 'daily_workout'),
+    linkedRecordId: proofMeta.linkedRecordId,
+    proofKey: proofMeta.proofKey,
     workoutContext: Object.keys(workoutContext).length ? workoutContext : null,
     weekTab: workoutContext.weekTab || '',
     dayOfWeek: workoutContext.dayOfWeek || '',
@@ -418,22 +498,24 @@ export function buildDailyWorkoutPayload(workoutLog, workoutContext = {}) {
   };
 }
 
-export function enqueueDailyWorkoutForSync(workoutLog, workoutContext) {
-  return enqueuePayloadForSync(buildDailyWorkoutPayload(workoutLog, workoutContext));
+export function enqueueDailyWorkoutForSync(workoutLog, workoutContext, linkedRecordId = '') {
+  return enqueuePayloadForSync(buildDailyWorkoutPayload(workoutLog, workoutContext, linkedRecordId));
 }
 
-export function buildWorkoutProofPayload(attachment, linkedRecordId = '') {
+export function buildWorkoutProofPayload(attachment, linkedRecordId = '', workoutContext = {}) {
+  const proofMeta = buildProofMetadata(workoutContext, linkedRecordId, attachment?.proofKey || workoutContext.proofKey);
   return {
     ...buildBasePayload('workout_proof'),
     proofPolicyVersion: 2,
-    linkedRecordId: String(linkedRecordId || ''),
+    linkedRecordId: proofMeta.linkedRecordId,
+    proofKey: proofMeta.proofKey,
     attachmentId: String(attachment?.id || ''),
+    attachment: attachment || null,
   };
 }
 
 export function enqueueWorkoutProofForSync(attachment, workoutContext, linkedRecordId) {
-  void workoutContext;
-  return enqueuePayloadForSync(buildWorkoutProofPayload(attachment, linkedRecordId));
+  return enqueuePayloadForSync(buildWorkoutProofPayload(attachment, linkedRecordId, workoutContext));
 }
 
 async function postSubmission(endpoint, item) {
@@ -449,11 +531,19 @@ async function postSubmission(endpoint, item) {
   });
 }
 
-export async function flushSyncQueue() {
+function shouldProcessQueueItem(item, userId, options = {}) {
+  if (item.userId !== userId) return false;
+  if (item.status === 'pending') return true;
+  if (item.status !== 'failed') return false;
+  if (options.manualRetry) return true;
+  return (item.attempts || 0) < MAX_SYNC_ATTEMPTS;
+}
+
+export async function flushSyncQueue(options = {}) {
   const userId = resolveQueueUserId();
   if (!userId) {
     updateSyncStatusUI();
-    return { status: 'not-signed-in', dispatched: 0, pending: 0 };
+    return { status: 'not-signed-in', dispatched: 0, pending: 0, manualRetryRequired: false };
   }
 
   quarantineLegacySyncQueue();
@@ -464,18 +554,25 @@ export async function flushSyncQueue() {
 
   if (!endpoint) {
     updateSyncStatusUI();
-    return { status: 'not-configured', dispatched: 0, pending: pending.length };
+    return { status: 'not-configured', dispatched: 0, pending: pending.length, manualRetryRequired: needsManualSyncRetry(userId) };
   }
 
   if (!navigator.onLine) {
     updateSyncStatusUI();
-    return { status: 'offline', dispatched: 0, pending: pending.length };
+    return { status: 'offline', dispatched: 0, pending: pending.length, manualRetryRequired: needsManualSyncRetry(userId) };
+  }
+
+  if (options.manualRetry) {
+    queue.forEach((item) => {
+      if (item.status === 'failed' && item.userId === userId) {
+        item.attempts = 0;
+      }
+    });
   }
 
   let dispatched = 0;
   for (const item of queue) {
-    if (item.status !== 'pending') continue;
-    if (item.userId !== userId) continue;
+    if (!shouldProcessQueueItem(item, userId, options)) continue;
     try {
       item.attempts = (item.attempts || 0) + 1;
       await postSubmission(endpoint, item);
@@ -491,7 +588,16 @@ export async function flushSyncQueue() {
 
   saveSyncQueue(queue, userId);
   updateSyncStatusUI();
-  return { status: 'ok', dispatched, pending: getPendingSyncCount(userId) };
+  return {
+    status: 'ok',
+    dispatched,
+    pending: getPendingSyncCount(userId),
+    manualRetryRequired: needsManualSyncRetry(userId),
+  };
+}
+
+export function retryFailedSyncItems(options = {}) {
+  return flushSyncQueue({ manualRetry: true, ...options });
 }
 
 export function updateSyncStatusUI() {
@@ -501,6 +607,8 @@ export function updateSyncStatusUI() {
   if (!title || !copy || !btn) return;
 
   const pending = getPendingSyncCount();
+  const retryableFailed = getRetryableFailedCount();
+  const manualFailed = getFailedSyncCount();
   const endpoint = getSyncEndpoint();
   const online = navigator.onLine;
   const legacyCount = getLegacySyncQueueQuarantineCount();
@@ -525,11 +633,21 @@ export function updateSyncStatusUI() {
     return;
   }
 
-  title.textContent = pending ? `${pending} ready to sync` : 'Sheets Sync Ready';
-  copy.textContent = pending
+  if (manualFailed > 0 && pending === 0 && retryableFailed === 0) {
+    title.textContent = `${manualFailed} delivery failed`;
+    copy.textContent = 'Delivery failed — manual retry required';
+    btn.textContent = 'RETRY';
+    btn.disabled = false;
+    btn.style.opacity = '1';
+    return;
+  }
+
+  const readyCount = pending + retryableFailed;
+  title.textContent = readyCount ? `${readyCount} ready to sync` : 'Sheets Sync Ready';
+  copy.textContent = readyCount
     ? 'Tap sync to dispatch saved app data to Sheets.'
     : 'Completed sessions and test results can be sent to the coach sheet.';
-  btn.textContent = 'SYNC';
+  btn.textContent = manualFailed > 0 ? 'RETRY' : 'SYNC';
   btn.disabled = false;
   btn.style.opacity = '1';
 }
@@ -541,11 +659,13 @@ export function initSyncControls({ showToast }) {
 
   if (syncBtn) {
     syncBtn.addEventListener('click', async () => {
-      const result = await flushSyncQueue();
+      const manualRetry = needsManualSyncRetry();
+      const result = await flushSyncQueue(manualRetry ? { manualRetry: true } : {});
       if (result.status === 'not-configured') showToast?.('SHEETS SYNC NOT CONNECTED');
       else if (result.status === 'offline') showToast?.('OFFLINE - SAVED LOCALLY');
       else if (result.status === 'not-signed-in') showToast?.('SIGN IN TO SYNC');
       else if (result.dispatched > 0) showToast?.('SHEETS REQUEST DISPATCHED');
+      else if (result.manualRetryRequired) showToast?.('DELIVERY FAILED — MANUAL RETRY REQUIRED');
       else showToast?.('NOTHING TO SYNC');
     });
   }

@@ -989,7 +989,7 @@ export function finishSession() {
   vibrate([100, 50, 100, 50, 200]);
   activeResultRecord = saveSessionToHistory(cfg, state.data);
   window.dispatchEvent(new CustomEvent('ringready:sprint-session-saved', { detail: activeResultRecord }));
-  enqueueSessionForSync(cfg, state.data);
+  enqueueSessionForSync(cfg, state.data, activeResultRecord);
   flushSyncQueue().then((result) => {
     if (result.dispatched > 0) showToast('SHEETS REQUEST DISPATCHED');
     else if (result.status === 'not-configured') showToast('SESSION SAVED LOCALLY');

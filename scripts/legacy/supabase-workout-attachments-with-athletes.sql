@@ -1,3 +1,5 @@
+-- DEPRECATED: use scripts/migrations/ — see scripts/MIGRATIONS.md
+
 -- Ad-hoc query: list current workout proofs with athlete names.
 -- For Table Editor columns on all tables, run instead:
 --   scripts/supabase-athlete-name-all-tables.sql
