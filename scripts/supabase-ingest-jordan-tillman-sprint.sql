@@ -8,54 +8,54 @@
 --   170-144 | 171-147 | 169-149 | 172-149 | 176-144
 --
 -- Default target: Week 1 Monday sprint (5x150 m, 90s rest).
--- Change week_index / workout_index below if this was a different week.
+-- Change v_week_index / v_workout_index below if this was a different week.
 
 do $ingest$
 declare
-  athlete uuid := 'f2695e2c-fd60-4832-b90f-dad96dee5845';
-  session_id text := 'manual-ingest-jordan-sprint-2026-08-31';
-  completion_key text := '0:0';
-  week_index integer := 0;
-  workout_index integer := 0;
-  session_at timestamptz := timestamptz '2026-08-31 12:00:00+00';
-  reps_planned integer := 5;
-  rest_seconds integer := 90;
-  target_bpm integer := 172;
-  target_pct numeric := 90;
-  athlete_max_hr integer;
-  avg_drop numeric := 25;
-  peak_hr integer := 176;
-  session_record jsonb;
-  completion_record jsonb;
+  v_athlete uuid := 'f2695e2c-fd60-4832-b90f-dad96dee5845';
+  v_session_id text := 'manual-ingest-jordan-sprint-2026-08-31';
+  v_completion_key text := '0:0';
+  v_week_index integer := 0;
+  v_workout_index integer := 0;
+  v_session_at timestamptz := timestamptz '2026-08-31 12:00:00+00';
+  v_reps_planned integer := 5;
+  v_rest_seconds integer := 90;
+  v_target_bpm integer := 172;
+  v_target_pct numeric := 90;
+  v_athlete_max_hr integer;
+  v_avg_drop numeric := 25;
+  v_peak_hr integer := 176;
+  v_session_record jsonb;
+  v_completion_record jsonb;
 begin
-  if not exists (select 1 from auth.users where id = athlete) then
-    raise exception 'User % not found in auth.users', athlete;
+  if not exists (select 1 from auth.users where id = v_athlete) then
+    raise exception 'User % not found in auth.users', v_athlete;
   end if;
 
   select nullif(h.max_hr, 0)
-  into athlete_max_hr
+  into v_athlete_max_hr
   from public.hr_info h
-  where h.user_id = athlete
+  where h.user_id = v_athlete
   limit 1;
 
-  athlete_max_hr := coalesce(athlete_max_hr, 183);
+  v_athlete_max_hr := coalesce(v_athlete_max_hr, 183);
 
-  session_record := jsonb_build_object(
-    'id', session_id,
-    'date', session_at,
-    'completedAt', session_at,
-    'completionKey', completion_key,
-    'avgDrop', avg_drop,
-    'peakHR', peak_hr,
+  v_session_record := jsonb_build_object(
+    'id', v_session_id,
+    'date', v_session_at,
+    'completedAt', v_session_at,
+    'completionKey', v_completion_key,
+    'avgDrop', v_avg_drop,
+    'peakHR', v_peak_hr,
     'note', 'Manual SQL ingest — timer reset during set 5 after phone lock (2026-08-31).',
     'cfg', jsonb_build_object(
-      'reps', reps_planned,
-      'rest', rest_seconds,
-      'maxHR', athlete_max_hr,
-      'targetPct', target_pct,
+      'reps', v_reps_planned,
+      'rest', v_rest_seconds,
+      'maxHR', v_athlete_max_hr,
+      'targetPct', v_target_pct,
       'workoutContext', jsonb_build_object(
-        'weekIndex', week_index,
-        'workoutIndex', workout_index,
+        'weekIndex', v_week_index,
+        'workoutIndex', v_workout_index,
         'weekLabel', 'Week 1',
         'weekTitle', 'Foundation',
         'weekTab', 'Week 1 (Foundation)',
@@ -64,11 +64,11 @@ begin
         'description', '5x150 m Sprints (90 Second rest). Focus on fast but controlled reps. Record HR after 60 seconds rest',
         'warmup', '5 min easy jog; 2x60 m strides; 2x60 m A-skips; 5 min run at 85% MaxHR.',
         'targetZone', '90-95%',
-        'targetBPM', target_bpm,
-        'targetPct', target_pct,
-        'maxHr', athlete_max_hr,
-        'reps', reps_planned,
-        'restSeconds', rest_seconds,
+        'targetBPM', v_target_bpm,
+        'targetPct', v_target_pct,
+        'maxHr', v_athlete_max_hr,
+        'reps', v_reps_planned,
+        'restSeconds', v_rest_seconds,
         'distanceMeters', 150
       )
     ),
@@ -81,7 +81,7 @@ begin
     )
   );
 
-  completion_record := session_record;
+  v_completion_record := v_session_record;
 
   insert into public.sprint_sessions (
     user_id,
@@ -102,22 +102,22 @@ begin
     session_json,
     updated_at
   ) values (
-    athlete,
-    session_id,
-    session_at,
-    week_index,
-    workout_index,
+    v_athlete,
+    v_session_id,
+    v_session_at,
+    v_week_index,
+    v_workout_index,
     'Sprint Intervals',
     'manual-ingest',
-    reps_planned,
-    rest_seconds,
-    athlete_max_hr,
-    target_pct,
-    target_bpm,
+    v_reps_planned,
+    v_rest_seconds,
+    v_athlete_max_hr,
+    v_target_pct,
+    v_target_bpm,
     5,
-    avg_drop,
-    peak_hr,
-    session_record,
+    v_avg_drop,
+    v_peak_hr,
+    v_session_record,
     now()
   )
   on conflict (user_id, session_id) do update set
@@ -154,10 +154,10 @@ begin
     record_json,
     updated_at
   ) values (
-    athlete,
-    completion_key,
-    week_index,
-    workout_index,
+    v_athlete,
+    v_completion_key,
+    v_week_index,
+    v_workout_index,
     'Week 1',
     'Foundation',
     'Monday',
@@ -165,9 +165,9 @@ begin
     '5x150 m Sprints (90 Second rest). Focus on fast but controlled reps. Record HR after 60 seconds rest',
     '5 min easy jog; 2x60 m strides; 2x60 m A-skips; 5 min run at 85% MaxHR.',
     '90-95%',
-    target_bpm,
-    session_at,
-    completion_record,
+    v_target_bpm,
+    v_session_at,
+    v_completion_record,
     now()
   )
   on conflict (user_id, completion_key) do update set
@@ -186,7 +186,7 @@ begin
     updated_at = now();
 
   raise notice 'Ingested Jordan Tillman sprint session (% intervals, avg drop %, peak %).',
-    5, avg_drop, peak_hr;
+    5, v_avg_drop, v_peak_hr;
 end;
 $ingest$;
 
