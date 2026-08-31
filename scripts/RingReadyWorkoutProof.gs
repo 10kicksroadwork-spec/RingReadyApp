@@ -253,8 +253,10 @@ function rrGetOrCreateFolder_(parent, name) {
 
 function rrEnsureProofAuditSheet_() {
   var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
-  var sheet = spreadsheet.getSheetByName(RR_PROOF_AUDIT_SHEET) || spreadsheet.insertSheet(RR_PROOF_AUDIT_SHEET);
-  if (sheet.getLastRow() === 0) {
+  var sheet = spreadsheet.getSheetByName(RR_PROOF_AUDIT_SHEET);
+  var created = !sheet;
+  if (created) sheet = spreadsheet.insertSheet(RR_PROOF_AUDIT_SHEET);
+  if (created) {
     sheet.appendRow(RR_PROOF_HEADERS);
     var headers = sheet.getRange(1, 1, 1, RR_PROOF_HEADERS.length);
     headers.setValues([RR_PROOF_HEADERS]).setFontWeight('bold').setBackground('#111111').setFontColor('#f5c842');

@@ -117,4 +117,56 @@ describe('sync retry and queue trimming', () => {
     expect(item.payload.linkedRecordId).toBeUndefined();
     expect(item.payload.proofKey).toBeUndefined();
   });
+
+  it('dispatches daily_workout before workout_proof (oldest first)', async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true }));
+    vi.stubGlobal('fetch', fetchMock);
+    const posted = [];
+    fetchMock.mockImplementation(async (_url, init) => {
+      posted.push(JSON.parse(init.body).eventType);
+      return { ok: true };
+    });
+
+    enqueuePayloadForSync({
+      eventType: 'daily_workout',
+      userId: 'user-a',
+      submittedAt: '2026-08-31T12:00:00.000Z',
+      linkedRecordId: 'record-1',
+    });
+    enqueuePayloadForSync({
+      eventType: 'workout_proof',
+      userId: 'user-a',
+      submittedAt: '2026-08-31T12:00:01.000Z',
+      attachmentId: 'attach-1',
+    });
+
+    await flushSyncQueue();
+    expect(posted).toEqual(['daily_workout', 'workout_proof']);
+  });
+
+  it('dispatches mile_test before workout_proof (oldest first)', async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true }));
+    vi.stubGlobal('fetch', fetchMock);
+    const posted = [];
+    fetchMock.mockImplementation(async (_url, init) => {
+      posted.push(JSON.parse(init.body).eventType);
+      return { ok: true };
+    });
+
+    enqueuePayloadForSync({
+      eventType: 'mile_test',
+      userId: 'user-a',
+      submittedAt: '2026-08-31T12:00:00.000Z',
+      linkedRecordId: 'mile-1',
+    });
+    enqueuePayloadForSync({
+      eventType: 'workout_proof',
+      userId: 'user-a',
+      submittedAt: '2026-08-31T12:00:01.000Z',
+      attachmentId: 'attach-2',
+    });
+
+    await flushSyncQueue();
+    expect(posted).toEqual(['mile_test', 'workout_proof']);
+  });
 });

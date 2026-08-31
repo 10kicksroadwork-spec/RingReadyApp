@@ -567,8 +567,8 @@ export async function flushSyncQueue(options = {}) {
   }
 
   let dispatched = 0;
-  for (const item of queue) {
-    if (!shouldProcessQueueItem(item, userId, options)) continue;
+  const dispatchOrder = [...queue].reverse().filter((item) => shouldProcessQueueItem(item, userId, options));
+  for (const item of dispatchOrder) {
     try {
       item.attempts = (item.attempts || 0) + 1;
       await postSubmission(endpoint, item);

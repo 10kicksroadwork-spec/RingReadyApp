@@ -1,4 +1,12 @@
 import { isCoachEmail } from './coach-access.js';
+import {
+  buildMileTestCloudPayload,
+  buildMileTestIdentityResult,
+  buildWorkoutCloudPayload,
+  buildWorkoutIdentityRecord,
+  getCompletionKeyFromRecord,
+  getRecordContext,
+} from './cloud-record-mapper.js';
 import { MODALITY_RUNNING, normalizeModality } from './modality.js';
 import { isSupabaseConfigured, supabase } from './supabase-client.js';
 
@@ -43,19 +51,6 @@ function safeJSON(value, fallback) {
 function normalizeISODate(value) {
   const date = new Date(value || Date.now());
   return Number.isNaN(date.getTime()) ? new Date().toISOString() : date.toISOString();
-}
-
-function getRecordContext(record = {}) {
-  return record?.cfg?.workoutContext || record?.workoutContext || {};
-}
-
-function getCompletionKeyFromRecord(record = {}) {
-  const context = getRecordContext(record);
-  if (record.completionKey) return String(record.completionKey);
-  if (Number.isFinite(Number(context.weekIndex)) && Number.isFinite(Number(context.workoutIndex))) {
-    return `${Number(context.weekIndex)}:${Number(context.workoutIndex)}`;
-  }
-  return '';
 }
 
 function mapCloudProfile(row) {
@@ -142,42 +137,13 @@ function mapCloudWorkoutCompletion(row) {
 
   return {
     ...record,
-    id: record.id || row.id,
+    id: record.id || row.client_record_id || row.id,
     completionKey: row.completion_key || record.completionKey || getCompletionKeyFromRecord({ ...record, workoutContext: nextContext }),
     completedAt: row.completed_at || record.completedAt || row.updated_at || row.created_at,
     updatedAt: row.updated_at || row.completed_at || record.completedAt || row.created_at,
     workoutContext: record.workoutContext || nextContext,
     cfg: record.cfg || { workoutContext: nextContext },
     workoutLog,
-  };
-}
-
-function toCloudWorkoutCompletion(record, userId) {
-  const context = getRecordContext(record);
-  const workoutLog = record.workoutLog || null;
-  return {
-    user_id: userId,
-    completion_key: getCompletionKeyFromRecord(record),
-    week_index: integerOrNull(context.weekIndex),
-    workout_index: integerOrNull(context.workoutIndex),
-    week_label: textOrEmpty(context.weekLabel),
-    week_title: textOrEmpty(context.weekTitle),
-    day_of_week: textOrEmpty(context.dayOfWeek),
-    workout_type: textOrEmpty(context.workoutType),
-    description: textOrEmpty(context.description),
-    warmup: textOrEmpty(context.warmup),
-    target_zone: textOrEmpty(context.targetZone),
-    target_bpm: integerOrNull(context.targetBPM),
-    total_minutes: workoutLog ? numberOrNull(workoutLog.totalMinutes) : null,
-    total_seconds: workoutLog ? integerOrNull(workoutLog.totalSeconds) : null,
-    avg_bpm: workoutLog ? integerOrNull(workoutLog.avgBpm) : null,
-    max_bpm: workoutLog ? integerOrNull(workoutLog.maxBpm) : null,
-    distance: workoutLog ? numberOrNull(workoutLog.distance) : null,
-    completed_at: normalizeISODate(record.completedAt || workoutLog?.completedAt || record.date),
-    proof_policy_version: integerOrNull(record.proofPolicyVersion),
-    attachment_id: record.attachment?.id || null,
-    record_json: record,
-    updated_at: new Date().toISOString(),
   };
 }
 
@@ -224,6 +190,7 @@ function mapCloudMileTest(row) {
   const result = safeJSON(row.result_json, {});
   return {
     ...result,
+    id: result.id || row.client_record_id || row.id,
     testKey: row.test_key || result.testKey || 'mile-test:baseline',
     distance: row.distance ?? result.distance,
     totalMinutes: row.total_minutes ?? result.totalMinutes,
@@ -232,28 +199,6 @@ function mapCloudMileTest(row) {
     maxBpm: row.max_bpm ?? result.maxBpm,
     paceMinPerMile: row.pace_min_per_mile ?? result.paceMinPerMile,
     savedAt: row.saved_at || result.savedAt || row.updated_at || row.created_at,
-  };
-}
-
-function toCloudMileTest(result, hrInfo, testContext, userId) {
-  const testKey = String(testContext?.testKey || result.testKey || 'mile-test:baseline');
-  const resultWithContext = { ...result, testKey };
-  return {
-    user_id: userId,
-    test_key: testKey,
-    saved_at: normalizeISODate(result.savedAt),
-    distance: numberOrNull(result.distance),
-    total_minutes: numberOrNull(result.totalMinutes),
-    total_seconds: integerOrNull(result.totalSeconds),
-    pace_min_per_mile: numberOrNull(result.paceMinPerMile),
-    avg_bpm: integerOrNull(result.avgBpm),
-    max_bpm: integerOrNull(result.maxBpm),
-    proof_policy_version: integerOrNull(result.proofPolicyVersion),
-    attachment_id: result.attachment?.id || null,
-    result_json: resultWithContext,
-    hr_info_json: hrInfo || null,
-    test_context_json: testContext || null,
-    updated_at: new Date().toISOString(),
   };
 }
 
@@ -547,11 +492,54 @@ export async function loadCloudWorkoutCompletions() {
   }, {});
 }
 
+export async function ensureCloudWorkoutIdentity(record) {
+  const user = getCurrentUser();
+  if (!isSupabaseConfigured || !supabase || !user || !record?.id) return null;
+  const identityRecord = buildWorkoutIdentityRecord(record);
+  const payload = buildWorkoutCloudPayload(identityRecord, user.id);
+  if (!payload.completion_key || !payload.client_record_id) return null;
+  payload.attachment_id = null;
+  payload.proof_policy_version = null;
+
+  const { error } = await supabase
+    .from('workout_completions')
+    .upsert(payload, { onConflict: 'user_id,completion_key' });
+
+  if (error) throw error;
+  return payload.client_record_id;
+}
+
+export async function rollbackCloudWorkoutIdentity(record) {
+  const user = getCurrentUser();
+  if (!isSupabaseConfigured || !supabase || !user || !record?.id) return false;
+  const clientRecordId = textOrEmpty(record.id);
+  if (!clientRecordId) return false;
+
+  const { data, error } = await supabase
+    .from('workout_completions')
+    .select('id, attachment_id')
+    .eq('user_id', user.id)
+    .eq('client_record_id', clientRecordId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data?.id || data.attachment_id) return false;
+
+  const { error: deleteError } = await supabase
+    .from('workout_completions')
+    .delete()
+    .eq('id', data.id);
+  if (deleteError) throw deleteError;
+  return true;
+}
+
 export async function saveCloudWorkoutCompletion(record) {
   const user = getCurrentUser();
   if (!isSupabaseConfigured || !supabase || !user || !record) return null;
-  const payload = toCloudWorkoutCompletion(record, user.id);
+  const payload = buildWorkoutCloudPayload(record, user.id);
   if (!payload.completion_key) return null;
+  if (payload.completed_at === null && record.completedAt) {
+    payload.completed_at = normalizeISODate(record.completedAt || record.date);
+  }
 
   const { error } = await supabase
     .from('workout_completions')
@@ -641,13 +629,55 @@ export async function loadCloudMileTestByKey(testKey) {
   return loadCloudMileTest(String(testKey || '').trim());
 }
 
+export async function ensureCloudMileTestIdentity(result, hrInfo, testContext) {
+  const user = getCurrentUser();
+  if (!isSupabaseConfigured || !supabase || !user || !result?.id) return null;
+  const identityResult = buildMileTestIdentityResult(result, testContext);
+  const payload = buildMileTestCloudPayload(identityResult, hrInfo, testContext, user.id);
+  if (!payload.client_record_id || !payload.test_key) return null;
+  payload.attachment_id = null;
+  payload.proof_policy_version = null;
+
+  const { error } = await supabase
+    .from('mile_tests')
+    .upsert(payload, { onConflict: 'user_id,test_key' });
+
+  if (error) throw error;
+  return payload.client_record_id;
+}
+
+export async function rollbackCloudMileTestIdentity(result, testContext) {
+  const user = getCurrentUser();
+  if (!isSupabaseConfigured || !supabase || !user || !result?.id) return false;
+  const clientRecordId = textOrEmpty(result.id);
+  const testKey = String(testContext?.testKey || result.testKey || '').trim();
+  if (!clientRecordId || !testKey) return false;
+
+  const { data, error } = await supabase
+    .from('mile_tests')
+    .select('id, attachment_id')
+    .eq('user_id', user.id)
+    .eq('client_record_id', clientRecordId)
+    .eq('test_key', testKey)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data?.id || data.attachment_id) return false;
+
+  const { error: deleteError } = await supabase
+    .from('mile_tests')
+    .delete()
+    .eq('id', data.id);
+  if (deleteError) throw deleteError;
+  return true;
+}
+
 export async function saveCloudMileTest(result, hrInfo, testContext) {
   const user = getCurrentUser();
   if (!isSupabaseConfigured || !supabase || !user || !result) return null;
 
   const { error } = await supabase
     .from('mile_tests')
-    .upsert(toCloudMileTest(result, hrInfo, testContext, user.id), { onConflict: 'user_id,test_key' });
+    .upsert(buildMileTestCloudPayload(result, hrInfo, testContext, user.id), { onConflict: 'user_id,test_key' });
 
   if (error) throw error;
   return result;

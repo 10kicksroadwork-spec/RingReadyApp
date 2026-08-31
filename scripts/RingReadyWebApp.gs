@@ -109,8 +109,10 @@ function rrJsonResponse_(obj) {
 
 function rrEnsureSheetWithHeaders_(name, headers) {
   var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
-  var sheet = spreadsheet.getSheetByName(name) || spreadsheet.insertSheet(name);
-  if (sheet.getLastRow() === 0) {
+  var sheet = spreadsheet.getSheetByName(name);
+  var created = !sheet;
+  if (created) sheet = spreadsheet.insertSheet(name);
+  if (created) {
     sheet.appendRow(headers);
     var headerRange = sheet.getRange(1, 1, 1, headers.length);
     headerRange.setValues([headers]).setFontWeight('bold').setBackground('#111111').setFontColor('#f5c842');

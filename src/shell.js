@@ -82,6 +82,8 @@ import {
   archiveAndResetCamp,
   clearAuthRedirectParams,
   deleteCloudWorkoutCompletion,
+  ensureCloudMileTestIdentity,
+  ensureCloudWorkoutIdentity,
   getCurrentUser,
   initSupabaseAuth,
   isCoachUser,
@@ -97,6 +99,8 @@ import {
   saveCloudProfile,
   saveCloudSprintSession,
   saveCloudWorkoutCompletion,
+  rollbackCloudMileTestIdentity,
+  rollbackCloudWorkoutIdentity,
   signInWithEmail,
   signOut,
   signUpWithEmail,
@@ -1352,7 +1356,12 @@ async function completeWorkoutFromDetail(weekIndex, workoutIndex) {
   const record = buildBasicWorkoutCompletion(week, workout, safeWeekIndex, safeWorkoutIndex, workoutLog);
   if (existing?.id) record.id = existing.id;
   const isNewProof = hasPendingWorkoutProof('detail');
+  let cloudIdentityEstablished = false;
   try {
+    if (isSupabaseConfigured && getCurrentUser()) {
+      await ensureCloudWorkoutIdentity(record);
+      cloudIdentityEstablished = true;
+    }
     const attachment = await ensureWorkoutProofUploaded('detail', record.id);
     if (attachment) {
       record.proofPolicyVersion = PROOF_POLICY_VERSION;
@@ -1360,6 +1369,11 @@ async function completeWorkoutFromDetail(weekIndex, workoutIndex) {
       record.workoutLog = { ...record.workoutLog, proofPolicyVersion: PROOF_POLICY_VERSION, attachment };
     }
   } catch (error) {
+    if (cloudIdentityEstablished) {
+      await rollbackCloudWorkoutIdentity(record).catch((rollbackError) => {
+        console.warn('Could not roll back provisional workout identity', rollbackError);
+      });
+    }
     console.warn('Workout proof upload failed', error);
     shellHooks?.showToast?.(String(error?.message || error).toUpperCase());
     return;
@@ -1855,15 +1869,29 @@ async function saveMileTestResult() {
   if (maxBpm < avgBpm) { shellHooks?.showToast?.('MAX HR SHOULD BE AVG OR HIGHER'); return; }
   const proofContext = getActiveMileProofContext();
   const result = { id: makeWorkoutCompletionId(), testKey: proofContext.testKey, distance, totalMinutes, totalSeconds: duration?.totalSeconds ?? Math.round(totalMinutes * 60), totalTimeDisplay: duration?.display || '', avgBpm, maxBpm, paceMinPerMile: distance > 0 ? totalMinutes / distance : '', savedAt: new Date().toISOString() };
+  const testContext = { ...proofContext, weekTab: proofContext.weekIndex == null ? 'Mile Test' : `Week ${Number(proofContext.weekIndex) + 1}`, workoutType: proofContext.workoutType, dayOfWeek: proofContext.dayOfWeek, description: activeMileTestContext.workoutContext?.description || MILE_TEST_INFO.description, warmup: activeMileTestContext.workoutContext?.warmup || MILE_TEST_INFO.warmup };
   const isNewProof = hasPendingWorkoutProof('mile');
+  let cloudIdentityEstablished = false;
   try {
+    if (isSupabaseConfigured && getCurrentUser()) {
+      await ensureCloudMileTestIdentity(result, getHRInfo(), testContext);
+      cloudIdentityEstablished = true;
+    }
     result.attachment = await ensureWorkoutProofUploaded('mile', result.id);
     if (result.attachment) result.proofPolicyVersion = PROOF_POLICY_VERSION;
   }
-  catch (error) { console.warn('Mile Test proof upload failed', error); shellHooks?.showToast?.(String(error?.message || error).toUpperCase()); return; }
+  catch (error) {
+    if (cloudIdentityEstablished) {
+      await rollbackCloudMileTestIdentity(result, testContext).catch((rollbackError) => {
+        console.warn('Could not roll back provisional mile test identity', rollbackError);
+      });
+    }
+    console.warn('Mile Test proof upload failed', error);
+    shellHooks?.showToast?.(String(error?.message || error).toUpperCase());
+    return;
+  }
   writeJSON(MILE_TEST_STORAGE_KEY, result);
   if (maxBpm > 0) saveHRInfo({ ...getHRInfo(), maxHr: maxBpm });
-  const testContext = { ...proofContext, weekTab: proofContext.weekIndex == null ? 'Mile Test' : `Week ${Number(proofContext.weekIndex) + 1}`, workoutType: proofContext.workoutType, dayOfWeek: proofContext.dayOfWeek, description: activeMileTestContext.workoutContext?.description || MILE_TEST_INFO.description, warmup: activeMileTestContext.workoutContext?.warmup || MILE_TEST_INFO.warmup };
   let cloudSaved = false;
   if (isSupabaseConfigured && getCurrentUser()) {
     try {
@@ -2168,8 +2196,8 @@ export async function initAthleteShell(hooks) {
       }
     });
   });
-  window.addEventListener('ringready:sprint-session-saved', (event) => {
-    if (event.detail) saveSprintSessionToCloud(event.detail);
+  window.addEventListener('ringready:sprint-session-saved', () => {
+    // Cloud sprint save is awaited in finishSession before proof can be submitted.
   });
 
   renderAllPages();

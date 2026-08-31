@@ -35,6 +35,8 @@ import {
   getAthleteProfile,
   saveAthleteProfile,
 } from './sync.js';
+import { getCurrentUser, saveCloudSprintSession } from './auth.js';
+import { isSupabaseConfigured } from './supabase-client.js';
 import {
   getAutoCapturedHR,
   isHRConnected,
@@ -978,7 +980,7 @@ export function cancelSession() {
   showToast('SESSION CANCELLED');
 }
 
-export function finishSession() {
+export async function finishSession() {
   clearSessionTimer();
   stopRestLogAlert();
   clearTimerCheckpoint();
@@ -990,6 +992,13 @@ export function finishSession() {
   syncHoldToCancelLabels();
   vibrate([100, 50, 100, 50, 200]);
   activeResultRecord = saveSessionToHistory(cfg, state.data);
+  if (isSupabaseConfigured && getCurrentUser()) {
+    try {
+      await saveCloudSprintSession(activeResultRecord);
+    } catch (error) {
+      console.warn('Cloud sprint session save failed', error);
+    }
+  }
   window.dispatchEvent(new CustomEvent('ringready:sprint-session-saved', { detail: activeResultRecord }));
   enqueueSessionForSync(cfg, state.data, activeResultRecord);
   flushSyncQueue().then((result) => {
