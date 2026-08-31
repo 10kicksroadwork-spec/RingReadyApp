@@ -28,6 +28,7 @@ import {
   clearResultWorkoutCompletion,
   newSession,
   showSavedWorkoutResult,
+  initSessionPersistence,
 } from './app.js';
 
 const READABILITY_STYLES = `
@@ -275,6 +276,7 @@ async function init() {
   initReadabilityEnhancements();
   const openedCoachPreview = openCoachPreviewIfRequested();
   if (!openedCoachPreview) await enforceAthleteOnboarding({ showScreen });
+  initSessionPersistence();
   registerMainHandlers({ handleMainBtn, handleSprintDone });
 
   initHRService({
