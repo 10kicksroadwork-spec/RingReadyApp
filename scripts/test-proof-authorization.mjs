@@ -45,6 +45,38 @@ async function createProof(client, params) {
   });
 }
 
+async function runCleanup(client, {
+  attachmentIds = [],
+  mileTestIds = [],
+  workoutIds = [],
+  storagePaths = [],
+} = {}) {
+  const cleanupErrors = [];
+  const uniqueAttachmentIds = [...new Set(attachmentIds)];
+  if (uniqueAttachmentIds.length) {
+    const { data: deletedCount, error: cleanupError } = await client.rpc('cleanup_test_workout_proof_attachments', {
+      p_attachment_ids: uniqueAttachmentIds,
+    });
+    if (cleanupError) cleanupErrors.push(`Attachment cleanup failed: ${cleanupError.message}`);
+    else if (deletedCount !== uniqueAttachmentIds.length) {
+      cleanupErrors.push(`Expected ${uniqueAttachmentIds.length} attachment rows deleted, got ${deletedCount}`);
+    }
+  }
+  if (mileTestIds.length) {
+    const { error: mileCleanupError } = await client.from('mile_tests').delete().in('id', mileTestIds);
+    if (mileCleanupError) cleanupErrors.push(`Mile test cleanup failed: ${mileCleanupError.message}`);
+  }
+  if (workoutIds.length) {
+    const { error: workoutCleanupError } = await client.from('workout_completions').delete().in('id', workoutIds);
+    if (workoutCleanupError) cleanupErrors.push(`Workout cleanup failed: ${workoutCleanupError.message}`);
+  }
+  if (storagePaths.length) {
+    const { error: storageCleanupError } = await client.storage.from('workout-proof-staging').remove([...new Set(storagePaths)]);
+    if (storageCleanupError) cleanupErrors.push(`Storage cleanup failed: ${storageCleanupError.message}`);
+  }
+  return cleanupErrors;
+}
+
 async function countCurrentProofs(client, userId, proofKey) {
   const { count, error } = await client
     .from('workout_attachments')
@@ -75,6 +107,7 @@ async function run() {
   const createdMileTestIds = [];
   const createdWorkoutIds = [];
   const storagePaths = [];
+  let cleanupErrors = [];
 
   try {
     const proofKey = `${testPrefix}:basic`;
@@ -182,13 +215,16 @@ async function run() {
     createdAttachmentIds.push(workoutProof.id);
 
     await uploadProofBlob(client, storagePathB);
-    const { error: rollbackError } = await createProof(client, {
-      p_proof_key: proofKey,
-      p_linked_record_id: '',
-      p_storage_path: storagePathB,
+    const replacementFailPath = `${user.id}/${ownedTestKey}/replacement-fail.webp`;
+    storagePaths.push(replacementFailPath);
+    await uploadProofBlob(client, replacementFailPath);
+    const { error: replacementError } = await createProof(client, {
+      p_proof_key: ownedTestKey,
+      p_linked_record_id: clientRecordId,
+      p_storage_path: replacementFailPath,
       p_mime_type: 'image/bmp',
     });
-    assert(!!rollbackError, 'Invalid replacement RPC must fail');
+    assert(!!replacementError, 'Invalid replacement RPC for existing proof key must fail');
     const { data: stillCurrent } = await client
       .from('workout_attachments')
       .select('id,is_current')
@@ -196,7 +232,7 @@ async function run() {
       .eq('proof_key', ownedTestKey)
       .eq('is_current', true)
       .maybeSingle();
-    assert(stillCurrent?.id === ownedProof.id, 'Old proof must remain current after failed replacement');
+    assert(stillCurrent?.id === ownedProof.id, 'Existing current proof must remain after failed replacement on same proof key');
 
     const concurrentMileKey = `${testPrefix}:concurrent-mile`;
     const concurrentClientId = `${testPrefix}:concurrent-client-id`;
@@ -232,18 +268,16 @@ async function run() {
 
     console.log('PASS: proof authorization matrix');
   } finally {
-    if (createdAttachmentIds.length) {
-      await client.from('workout_attachments').delete().in('id', [...new Set(createdAttachmentIds)]);
-    }
-    if (createdMileTestIds.length) {
-      await client.from('mile_tests').delete().in('id', createdMileTestIds);
-    }
-    if (createdWorkoutIds.length) {
-      await client.from('workout_completions').delete().in('id', createdWorkoutIds);
-    }
-    if (storagePaths.length) {
-      await client.storage.from('workout-proof-staging').remove([...new Set(storagePaths)]);
-    }
+    cleanupErrors = await runCleanup(client, {
+      attachmentIds: createdAttachmentIds,
+      mileTestIds: createdMileTestIds,
+      workoutIds: createdWorkoutIds,
+      storagePaths,
+    });
+  }
+
+  if (cleanupErrors.length) {
+    throw new Error(cleanupErrors.join('; '));
   }
 }
 

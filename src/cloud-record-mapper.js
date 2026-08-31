@@ -59,6 +59,7 @@ export function buildWorkoutCloudPayload(record, userId) {
       : (record.completedAt || record.date ? normalizeISODate(record.completedAt || record.date) : null),
     proof_policy_version: integerOrNull(record.proofPolicyVersion),
     attachment_id: record.attachment?.id || null,
+    proof_pending: false,
     record_json: record,
     updated_at: new Date().toISOString(),
   };
@@ -80,8 +81,71 @@ export function buildMileTestCloudPayload(result, hrInfo, testContext, userId) {
     max_bpm: integerOrNull(result.maxBpm),
     proof_policy_version: integerOrNull(result.proofPolicyVersion),
     attachment_id: result.attachment?.id || null,
+    proof_pending: false,
     result_json: resultWithContext,
     hr_info_json: hrInfo || null,
+    test_context_json: testContext || null,
+    updated_at: new Date().toISOString(),
+  };
+}
+
+export function buildProvisionalWorkoutCloudPayload(record, userId) {
+  const context = getRecordContext(record);
+  return {
+    user_id: userId,
+    client_record_id: textOrEmpty(record.id),
+    completion_key: getCompletionKeyFromRecord(record),
+    week_index: integerOrNull(context.weekIndex),
+    workout_index: integerOrNull(context.workoutIndex),
+    week_label: textOrEmpty(context.weekLabel),
+    week_title: textOrEmpty(context.weekTitle),
+    day_of_week: textOrEmpty(context.dayOfWeek),
+    workout_type: textOrEmpty(context.workoutType),
+    description: textOrEmpty(context.description),
+    warmup: textOrEmpty(context.warmup),
+    target_zone: textOrEmpty(context.targetZone),
+    target_bpm: integerOrNull(context.targetBPM),
+    total_minutes: null,
+    total_seconds: null,
+    avg_bpm: null,
+    max_bpm: null,
+    distance: null,
+    completed_at: null,
+    proof_policy_version: null,
+    attachment_id: null,
+    proof_pending: true,
+    record_json: {
+      id: record.id,
+      status: 'pending_proof',
+      workoutContext: context,
+      cfg: { workoutContext: context },
+    },
+    updated_at: new Date().toISOString(),
+  };
+}
+
+export function buildProvisionalMileTestCloudPayload(result, testContext, userId) {
+  const testKey = String(testContext?.testKey || result.testKey || 'mile-test:baseline');
+  return {
+    user_id: userId,
+    client_record_id: textOrEmpty(result.id),
+    test_key: testKey,
+    saved_at: null,
+    distance: null,
+    total_minutes: null,
+    total_seconds: null,
+    pace_min_per_mile: null,
+    avg_bpm: null,
+    max_bpm: null,
+    proof_policy_version: null,
+    attachment_id: null,
+    proof_pending: true,
+    result_json: {
+      id: result.id,
+      testKey,
+      status: 'pending_proof',
+    },
+    hr_info_json: null,
     test_context_json: testContext || null,
     updated_at: new Date().toISOString(),
   };
@@ -90,9 +154,8 @@ export function buildMileTestCloudPayload(result, hrInfo, testContext, userId) {
 export function buildWorkoutIdentityRecord(record) {
   const context = getRecordContext(record);
   return {
-    ...record,
-    status: record.status || 'pending_proof',
-    workoutLog: record.workoutLog || null,
+    id: record.id,
+    status: 'pending_proof',
     workoutContext: record.workoutContext || context,
     cfg: record.cfg || { workoutContext: context },
   };

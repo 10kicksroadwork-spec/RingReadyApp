@@ -288,7 +288,16 @@ function rrEnsureProofColumnsOnCoachTabs_() {
 }
 
 function rrEnsureColumns_(sheet, names) {
-  if (sheet.getLastColumn() < 1) return {};
+  if (sheet.getLastColumn() < 1) {
+    sheet.getRange(1, 1, 1, names.length).setValues([names]);
+    sheet.getRange(1, 1, 1, names.length).setFontWeight('bold').setBackground('#111111').setFontColor('#f5c842');
+    sheet.setFrozenRows(1);
+    var blankIndexes = {};
+    names.forEach(function(name, index) {
+      blankIndexes[name] = index + 1;
+    });
+    return blankIndexes;
+  }
   var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getDisplayValues()[0];
   var indexes = {};
   names.forEach(function(name) {

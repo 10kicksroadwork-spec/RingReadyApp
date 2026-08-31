@@ -1356,11 +1356,10 @@ async function completeWorkoutFromDetail(weekIndex, workoutIndex) {
   const record = buildBasicWorkoutCompletion(week, workout, safeWeekIndex, safeWorkoutIndex, workoutLog);
   if (existing?.id) record.id = existing.id;
   const isNewProof = hasPendingWorkoutProof('detail');
-  let cloudIdentityEstablished = false;
+  let identityStaging = null;
   try {
     if (isSupabaseConfigured && getCurrentUser()) {
-      await ensureCloudWorkoutIdentity(record);
-      cloudIdentityEstablished = true;
+      identityStaging = await ensureCloudWorkoutIdentity(record);
     }
     const attachment = await ensureWorkoutProofUploaded('detail', record.id);
     if (attachment) {
@@ -1369,8 +1368,8 @@ async function completeWorkoutFromDetail(weekIndex, workoutIndex) {
       record.workoutLog = { ...record.workoutLog, proofPolicyVersion: PROOF_POLICY_VERSION, attachment };
     }
   } catch (error) {
-    if (cloudIdentityEstablished) {
-      await rollbackCloudWorkoutIdentity(record).catch((rollbackError) => {
+    if (identityStaging?.created) {
+      await rollbackCloudWorkoutIdentity(record, identityStaging).catch((rollbackError) => {
         console.warn('Could not roll back provisional workout identity', rollbackError);
       });
     }
@@ -1871,18 +1870,17 @@ async function saveMileTestResult() {
   const result = { id: makeWorkoutCompletionId(), testKey: proofContext.testKey, distance, totalMinutes, totalSeconds: duration?.totalSeconds ?? Math.round(totalMinutes * 60), totalTimeDisplay: duration?.display || '', avgBpm, maxBpm, paceMinPerMile: distance > 0 ? totalMinutes / distance : '', savedAt: new Date().toISOString() };
   const testContext = { ...proofContext, weekTab: proofContext.weekIndex == null ? 'Mile Test' : `Week ${Number(proofContext.weekIndex) + 1}`, workoutType: proofContext.workoutType, dayOfWeek: proofContext.dayOfWeek, description: activeMileTestContext.workoutContext?.description || MILE_TEST_INFO.description, warmup: activeMileTestContext.workoutContext?.warmup || MILE_TEST_INFO.warmup };
   const isNewProof = hasPendingWorkoutProof('mile');
-  let cloudIdentityEstablished = false;
+  let identityStaging = null;
   try {
     if (isSupabaseConfigured && getCurrentUser()) {
-      await ensureCloudMileTestIdentity(result, getHRInfo(), testContext);
-      cloudIdentityEstablished = true;
+      identityStaging = await ensureCloudMileTestIdentity(result, getHRInfo(), testContext);
     }
     result.attachment = await ensureWorkoutProofUploaded('mile', result.id);
     if (result.attachment) result.proofPolicyVersion = PROOF_POLICY_VERSION;
   }
   catch (error) {
-    if (cloudIdentityEstablished) {
-      await rollbackCloudMileTestIdentity(result, testContext).catch((rollbackError) => {
+    if (identityStaging?.created) {
+      await rollbackCloudMileTestIdentity(result, testContext, identityStaging).catch((rollbackError) => {
         console.warn('Could not roll back provisional mile test identity', rollbackError);
       });
     }

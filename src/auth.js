@@ -1,12 +1,18 @@
 import { isCoachEmail } from './coach-access.js';
 import {
   buildMileTestCloudPayload,
-  buildMileTestIdentityResult,
+  buildProvisionalMileTestCloudPayload,
+  buildProvisionalWorkoutCloudPayload,
   buildWorkoutCloudPayload,
-  buildWorkoutIdentityRecord,
   getCompletionKeyFromRecord,
   getRecordContext,
 } from './cloud-record-mapper.js';
+import {
+  canRollbackProvisionalStaging,
+  isVisibleCompletionRow,
+  planMileTestIdentityStaging,
+  planWorkoutIdentityStaging,
+} from './proof-staging.js';
 import { MODALITY_RUNNING, normalizeModality } from './modality.js';
 import { isSupabaseConfigured, supabase } from './supabase-client.js';
 
@@ -266,9 +272,9 @@ export async function loadCoachRosterPayload() {
   const [profilesResult, hrResult, completionsResult, sprintsResult, mileTestsResult, notesResult, identitiesResult, exclusionsResult, metaResult] = await Promise.allSettled([
     loadCoachTable('athlete_profiles', 'user_id,athlete_name,fight_date,camp_length,training_tenure,camp_reset_at,default_modality,updated_at'),
     loadCoachTable('hr_info', 'user_id,max_hr,resting_hr,goal_weight,target_date,updated_at'),
-    loadCoachTable('workout_completions', 'user_id,completion_key,week_index,workout_index,week_label,week_title,day_of_week,workout_type,description,warmup,target_zone,target_bpm,total_minutes,total_seconds,avg_bpm,max_bpm,distance,completed_at,attachment_id,record_json,updated_at'),
+    loadCoachTable('workout_completions', 'user_id,completion_key,week_index,workout_index,week_label,week_title,day_of_week,workout_type,description,warmup,target_zone,target_bpm,total_minutes,total_seconds,avg_bpm,max_bpm,distance,completed_at,attachment_id,proof_pending,record_json,updated_at'),
     loadCoachTable('sprint_sessions', 'user_id,session_id,session_at,week_index,workout_index,workout_type,avg_drop,peak_hr,intervals_completed,attachment_id,session_json,updated_at'),
-    loadCoachTable('mile_tests', 'user_id,test_key,saved_at,distance,total_minutes,avg_bpm,max_bpm,attachment_id,result_json,updated_at'),
+    loadCoachTable('mile_tests', 'user_id,test_key,saved_at,distance,total_minutes,avg_bpm,max_bpm,attachment_id,proof_pending,result_json,updated_at'),
     loadCoachTable('coach_notes', 'athlete_user_id,note,updated_at'),
     client.rpc('coach_roster_identities').then(({ data, error }) => {
       if (error) throw error;
@@ -298,9 +304,9 @@ export async function loadCoachRosterPayload() {
   return {
     profiles: settledRows(profilesResult),
     hrRows: settledRows(hrResult),
-    completions: settledRows(completionsResult),
+    completions: settledRows(completionsResult).filter(isVisibleCompletionRow),
     sprints: settledRows(sprintsResult),
-    mileTests: settledRows(mileTestsResult),
+    mileTests: settledRows(mileTestsResult).filter(isVisibleCompletionRow),
     notes: settledRows(notesResult),
     identities: settledRows(identitiesResult),
     exclusions: settledRows(exclusionsResult),
@@ -486,6 +492,7 @@ export async function loadCloudWorkoutCompletions() {
 
   if (error) throw error;
   return (data || []).reduce((acc, row) => {
+    if (!isVisibleCompletionRow(row)) return acc;
     const record = mapCloudWorkoutCompletion(row);
     if (record?.completionKey) acc[record.completionKey] = record;
     return acc;
@@ -494,40 +501,95 @@ export async function loadCloudWorkoutCompletions() {
 
 export async function ensureCloudWorkoutIdentity(record) {
   const user = getCurrentUser();
-  if (!isSupabaseConfigured || !supabase || !user || !record?.id) return null;
-  const identityRecord = buildWorkoutIdentityRecord(record);
-  const payload = buildWorkoutCloudPayload(identityRecord, user.id);
-  if (!payload.completion_key || !payload.client_record_id) return null;
-  payload.attachment_id = null;
-  payload.proof_policy_version = null;
+  if (!isSupabaseConfigured || !supabase || !user || !record?.id) {
+    return { clientRecordId: '', created: false };
+  }
+
+  const completionKey = getCompletionKeyFromRecord(record);
+  const { data: existing, error: loadError } = await supabase
+    .from('workout_completions')
+    .select('id, client_record_id, attachment_id, proof_pending, proof_policy_version')
+    .eq('user_id', user.id)
+    .eq('completion_key', completionKey)
+    .maybeSingle();
+  if (loadError) throw loadError;
+
+  const staging = planWorkoutIdentityStaging(existing, record);
+  if (staging.action === 'skip') {
+    return { clientRecordId: staging.clientRecordId, created: false };
+  }
+
+  if (staging.action === 'noop') {
+    return { clientRecordId: staging.clientRecordId, created: false };
+  }
+
+  if (staging.action === 'patch-client-id') {
+    const { error } = await supabase
+      .from('workout_completions')
+      .update({
+        client_record_id: staging.clientRecordId,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', existing.id);
+    if (error) throw error;
+    return { clientRecordId: staging.clientRecordId, created: false };
+  }
+
+  const payload = buildProvisionalWorkoutCloudPayload(record, user.id);
+  if (staging.action === 'refresh-provisional') {
+    const { error } = await supabase
+      .from('workout_completions')
+      .update({
+        client_record_id: payload.client_record_id,
+        week_index: payload.week_index,
+        workout_index: payload.workout_index,
+        week_label: payload.week_label,
+        week_title: payload.week_title,
+        day_of_week: payload.day_of_week,
+        workout_type: payload.workout_type,
+        description: payload.description,
+        warmup: payload.warmup,
+        target_zone: payload.target_zone,
+        target_bpm: payload.target_bpm,
+        proof_pending: true,
+        record_json: payload.record_json,
+        updated_at: payload.updated_at,
+      })
+      .eq('id', existing.id)
+      .eq('proof_pending', true);
+    if (error) throw error;
+    return { clientRecordId: staging.clientRecordId, created: true };
+  }
 
   const { error } = await supabase
     .from('workout_completions')
-    .upsert(payload, { onConflict: 'user_id,completion_key' });
-
+    .insert(payload);
   if (error) throw error;
-  return payload.client_record_id;
+  return { clientRecordId: staging.clientRecordId, created: true };
 }
 
-export async function rollbackCloudWorkoutIdentity(record) {
+export async function rollbackCloudWorkoutIdentity(record, staging = {}) {
+  if (!canRollbackProvisionalStaging(staging)) return false;
   const user = getCurrentUser();
   if (!isSupabaseConfigured || !supabase || !user || !record?.id) return false;
-  const clientRecordId = textOrEmpty(record.id);
-  if (!clientRecordId) return false;
+
+  const completionKey = getCompletionKeyFromRecord(record);
+  if (!completionKey) return false;
 
   const { data, error } = await supabase
     .from('workout_completions')
-    .select('id, attachment_id')
+    .select('id, proof_pending')
     .eq('user_id', user.id)
-    .eq('client_record_id', clientRecordId)
+    .eq('completion_key', completionKey)
     .maybeSingle();
   if (error) throw error;
-  if (!data?.id || data.attachment_id) return false;
+  if (!canRollbackProvisionalStaging(staging, data)) return false;
 
   const { error: deleteError } = await supabase
     .from('workout_completions')
     .delete()
-    .eq('id', data.id);
+    .eq('id', data.id)
+    .eq('proof_pending', true);
   if (deleteError) throw deleteError;
   return true;
 }
@@ -622,6 +684,7 @@ export async function loadCloudMileTest(testKey = '') {
     .maybeSingle();
 
   if (error) throw error;
+  if (!isVisibleCompletionRow(data)) return null;
   return mapCloudMileTest(data);
 }
 
@@ -631,42 +694,82 @@ export async function loadCloudMileTestByKey(testKey) {
 
 export async function ensureCloudMileTestIdentity(result, hrInfo, testContext) {
   const user = getCurrentUser();
-  if (!isSupabaseConfigured || !supabase || !user || !result?.id) return null;
-  const identityResult = buildMileTestIdentityResult(result, testContext);
-  const payload = buildMileTestCloudPayload(identityResult, hrInfo, testContext, user.id);
-  if (!payload.client_record_id || !payload.test_key) return null;
-  payload.attachment_id = null;
-  payload.proof_policy_version = null;
+  if (!isSupabaseConfigured || !supabase || !user || !result?.id) {
+    return { clientRecordId: '', created: false };
+  }
+
+  const testKey = String(testContext?.testKey || result.testKey || '').trim();
+  const { data: existing, error: loadError } = await supabase
+    .from('mile_tests')
+    .select('id, client_record_id, attachment_id, proof_pending, proof_policy_version')
+    .eq('user_id', user.id)
+    .eq('test_key', testKey)
+    .maybeSingle();
+  if (loadError) throw loadError;
+
+  const staging = planMileTestIdentityStaging(existing, result, testContext);
+  if (staging.action === 'skip' || staging.action === 'noop') {
+    return { clientRecordId: staging.clientRecordId, created: false };
+  }
+
+  if (staging.action === 'patch-client-id') {
+    const { error } = await supabase
+      .from('mile_tests')
+      .update({
+        client_record_id: staging.clientRecordId,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', existing.id);
+    if (error) throw error;
+    return { clientRecordId: staging.clientRecordId, created: false };
+  }
+
+  const payload = buildProvisionalMileTestCloudPayload(result, testContext, user.id);
+  if (staging.action === 'refresh-provisional') {
+    const { error } = await supabase
+      .from('mile_tests')
+      .update({
+        client_record_id: payload.client_record_id,
+        proof_pending: true,
+        result_json: payload.result_json,
+        test_context_json: payload.test_context_json,
+        updated_at: payload.updated_at,
+      })
+      .eq('id', existing.id)
+      .eq('proof_pending', true);
+    if (error) throw error;
+    return { clientRecordId: staging.clientRecordId, created: true };
+  }
 
   const { error } = await supabase
     .from('mile_tests')
-    .upsert(payload, { onConflict: 'user_id,test_key' });
-
+    .insert(payload);
   if (error) throw error;
-  return payload.client_record_id;
+  return { clientRecordId: staging.clientRecordId, created: true };
 }
 
-export async function rollbackCloudMileTestIdentity(result, testContext) {
+export async function rollbackCloudMileTestIdentity(result, testContext, staging = {}) {
+  if (!canRollbackProvisionalStaging(staging)) return false;
   const user = getCurrentUser();
   if (!isSupabaseConfigured || !supabase || !user || !result?.id) return false;
-  const clientRecordId = textOrEmpty(result.id);
+
   const testKey = String(testContext?.testKey || result.testKey || '').trim();
-  if (!clientRecordId || !testKey) return false;
+  if (!testKey) return false;
 
   const { data, error } = await supabase
     .from('mile_tests')
-    .select('id, attachment_id')
+    .select('id, proof_pending')
     .eq('user_id', user.id)
-    .eq('client_record_id', clientRecordId)
     .eq('test_key', testKey)
     .maybeSingle();
   if (error) throw error;
-  if (!data?.id || data.attachment_id) return false;
+  if (!canRollbackProvisionalStaging(staging, data)) return false;
 
   const { error: deleteError } = await supabase
     .from('mile_tests')
     .delete()
-    .eq('id', data.id);
+    .eq('id', data.id)
+    .eq('proof_pending', true);
   if (deleteError) throw deleteError;
   return true;
 }
