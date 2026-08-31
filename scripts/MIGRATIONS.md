@@ -12,10 +12,11 @@ Run these **in order** on a fresh or partially migrated project. Do not run file
 | 6 | [005_roster_meta.sql](./migrations/005_roster_meta.sql) | Camp start, exclusions, athlete modality |
 | 7 | [006_client_record_ids.sql](./migrations/006_client_record_ids.sql) | Client record IDs + contextual proof RPC |
 | 8 | [007_proof_pending.sql](./migrations/007_proof_pending.sql) | Pending-proof staging flag + test cleanup RPC |
+| 9 | [008_backfill_sprint_proof_links.sql](./migrations/008_backfill_sprint_proof_links.sql) | Backfill sprint attachment_id from current proofs |
 
 ## Fresh database
 
-Paste and run each file in the Supabase SQL editor in order (000 through 007).
+Paste and run each file in the Supabase SQL editor in order (000 through 008).
 
 ## Upgrade from existing production
 
@@ -29,7 +30,7 @@ These migrations use `if not exists` / `drop policy if exists` patterns and are 
 
 ## Production seeds
 
-Canonical migrations 000–007 are schema-only. Environment-specific data lives under [../seeds/](../seeds/), e.g. [production-coach-roster-exclusions.sql](../seeds/production-coach-roster-exclusions.sql) (run after auth users exist).
+Canonical migrations 000–008 are schema-only. Environment-specific data lives under [../seeds/](../seeds/), e.g. [production-coach-roster-exclusions.sql](../seeds/production-coach-roster-exclusions.sql) (run after auth users exist).
 
 ## Deploy gate: proof authorization
 

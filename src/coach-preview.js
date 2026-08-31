@@ -22,6 +22,7 @@ import {
   readOutputFromWorkoutLog,
 } from './modality.js';
 import { scoreZoneAdherence } from './hr-analytics.js';
+import { sessionHasProof } from './coach-proof.js';
 
 const NOTES_KEY = 'ringReadyCoachPreviewNotes';
 const COACH_SCREENS = new Set(['coach-dashboard', 'coach-athlete']);
@@ -1011,7 +1012,7 @@ function isSkippedCloudCompletion(row, record = {}) {
     || log.status === 'skipped';
 }
 
-function liveAthleteConfig(profile, hrRow, completions, sprints, mileTests, note, email = '', campStartDate = '') {
+function liveAthleteConfig(profile, hrRow, completions, sprints, mileTests, note, email = '', campStartDate = '', attachments = []) {
   const campLength = Number(profile.camp_length) === 4 ? 4 : 7;
   const weeks = campWeeks(campLength);
   const byKey = new Map();
@@ -1076,7 +1077,14 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, mileTests, note
         sessionNotes[key] = skipNote || (reason ? `Skipped · ${reason}` : 'Coach-approved skip.');
         return;
       }
-      if (!row.attachment_id && !sprintRow?.attachment_id) missingProofs.push(key);
+      if (!sessionHasProof({
+        row,
+        sprintRow,
+        attachments,
+        isSprint: isSprintType(workout.type),
+        weekIndex,
+        workoutIndex,
+      })) missingProofs.push(key);
       const log = record.workoutLog || {};
       const output = readOutputFromWorkoutLog({
         modality: log.modality,
@@ -1162,6 +1170,12 @@ function buildLiveRoster(payload) {
     list.push(row);
     mileTestsByUser.set(row.user_id, list);
   });
+  const attachmentsByUser = new Map();
+  (payload.attachments || []).forEach((row) => {
+    const list = attachmentsByUser.get(row.user_id) || [];
+    list.push(row);
+    attachmentsByUser.set(row.user_id, list);
+  });
   const notesByUser = new Map((payload.notes || []).map((row) => [row.athlete_user_id, row.note || '']));
   const metaByUser = new Map((payload.meta || []).map((row) => [row.athlete_user_id, row]));
   const emailByUser = new Map();
@@ -1187,7 +1201,8 @@ function buildLiveRoster(payload) {
       mileTestsByUser.get(profile.user_id) || [],
       notesByUser.get(profile.user_id) || '',
       emailByUser.get(normalizeUserId(profile.user_id)) || '',
-      metaByUser.get(profile.user_id)?.camp_start_date || ''
+      metaByUser.get(profile.user_id)?.camp_start_date || '',
+      attachmentsByUser.get(profile.user_id) || []
     )))
     .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
 }

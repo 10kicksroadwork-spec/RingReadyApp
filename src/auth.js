@@ -263,13 +263,15 @@ const COACH_ROSTER_TABLES = [
   ['meta', 'coach_athlete_meta'],
 ];
 
+const COACH_ATTACHMENT_COLUMNS = 'id,user_id,proof_key,linked_record_id,week_index,workout_index,transfer_status,drive_url,is_current,completion_cleared,uploaded_at';
+
 // coach_roster_snapshot RPC is explicitly deferred. loadCoachRosterPayload() loads
 // tables directly until a consolidated snapshot RPC ships.
 
 export async function loadCoachRosterPayload() {
   if (!isSupabaseConfigured || !supabase || !isCoachUser()) return null;
   const client = requireSupabase();
-  const [profilesResult, hrResult, completionsResult, sprintsResult, mileTestsResult, notesResult, identitiesResult, exclusionsResult, metaResult] = await Promise.allSettled([
+  const [profilesResult, hrResult, completionsResult, sprintsResult, mileTestsResult, notesResult, identitiesResult, exclusionsResult, metaResult, attachmentsResult] = await Promise.allSettled([
     loadCoachTable('athlete_profiles', 'user_id,athlete_name,fight_date,camp_length,training_tenure,camp_reset_at,default_modality,updated_at'),
     loadCoachTable('hr_info', 'user_id,max_hr,resting_hr,goal_weight,target_date,updated_at'),
     loadCoachTable('workout_completions', 'user_id,completion_key,week_index,workout_index,week_label,week_title,day_of_week,workout_type,description,warmup,target_zone,target_bpm,total_minutes,total_seconds,avg_bpm,max_bpm,distance,completed_at,attachment_id,proof_pending,record_json,updated_at'),
@@ -282,6 +284,7 @@ export async function loadCoachRosterPayload() {
     }),
     loadCoachTable('coach_roster_exclusions'),
     loadCoachTable('coach_athlete_meta'),
+    loadCoachTable('workout_attachments', COACH_ATTACHMENT_COLUMNS),
   ]);
   const sourceErrors = {};
   const results = {
@@ -294,12 +297,14 @@ export async function loadCoachRosterPayload() {
     identities: identitiesResult,
     exclusions: exclusionsResult,
     meta: metaResult,
+    attachments: attachmentsResult,
   };
   COACH_ROSTER_TABLES.forEach(([key]) => {
     const err = settledError(results[key]);
     if (err) sourceErrors[key] = err;
   });
   if (identitiesResult.status === 'rejected') sourceErrors.identities = settledError(identitiesResult);
+  if (attachmentsResult.status === 'rejected') sourceErrors.attachments = settledError(attachmentsResult);
   if (profilesResult.status === 'rejected') throw profilesResult.reason;
   return {
     profiles: settledRows(profilesResult),
@@ -311,6 +316,7 @@ export async function loadCoachRosterPayload() {
     identities: settledRows(identitiesResult),
     exclusions: settledRows(exclusionsResult),
     meta: settledRows(metaResult),
+    attachments: settledRows(attachmentsResult),
     sourceErrors,
   };
 }
