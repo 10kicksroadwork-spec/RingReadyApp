@@ -54,7 +54,6 @@ import {
 import { getCurrentUser, saveCloudSprintSession, clearCloudWorkoutCompletionWithProof } from './auth.js';
 import { isSupabaseConfigured } from './supabase-client.js';
 import {
-  getAutoCapturedHR,
   isHRConnected,
   hasFreshHRSample,
   clearHRBufferForInterval,
@@ -1140,7 +1139,6 @@ function updateCompleteWorkoutButton(record) {
     return;
   }
 
-  const waiver = resolveBleWaiverNeeds(record);
   const items = buildBleCompletionChecklistItems(record, {
     hasWorkoutProof: hasWorkoutProof('sprint'),
   });
