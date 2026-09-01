@@ -54,6 +54,16 @@ async function runCleanup(client, {
 } = {}) {
   const cleanupErrors = [];
   const uniqueAttachmentIds = [...new Set(attachmentIds)];
+
+  // Delete parent rows that reference attachments before removing attachment rows.
+  if (workoutIds.length) {
+    const { error: workoutCleanupError } = await client.from('workout_completions').delete().in('id', workoutIds);
+    if (workoutCleanupError) cleanupErrors.push(`Workout cleanup failed: ${workoutCleanupError.message}`);
+  }
+  if (mileTestIds.length) {
+    const { error: mileCleanupError } = await client.from('mile_tests').delete().in('id', mileTestIds);
+    if (mileCleanupError) cleanupErrors.push(`Mile test cleanup failed: ${mileCleanupError.message}`);
+  }
   if (uniqueAttachmentIds.length) {
     const { data: deletedCount, error: cleanupError } = await client.rpc('cleanup_test_workout_proof_attachments', {
       p_attachment_ids: uniqueAttachmentIds,
@@ -62,14 +72,6 @@ async function runCleanup(client, {
     else if (deletedCount !== uniqueAttachmentIds.length) {
       cleanupErrors.push(`Expected ${uniqueAttachmentIds.length} attachment rows deleted, got ${deletedCount}`);
     }
-  }
-  if (mileTestIds.length) {
-    const { error: mileCleanupError } = await client.from('mile_tests').delete().in('id', mileTestIds);
-    if (mileCleanupError) cleanupErrors.push(`Mile test cleanup failed: ${mileCleanupError.message}`);
-  }
-  if (workoutIds.length) {
-    const { error: workoutCleanupError } = await client.from('workout_completions').delete().in('id', workoutIds);
-    if (workoutCleanupError) cleanupErrors.push(`Workout cleanup failed: ${workoutCleanupError.message}`);
   }
   if (storagePaths.length) {
     const { error: storageCleanupError } = await client.storage.from('workout-proof-staging').remove([...new Set(storagePaths)]);
