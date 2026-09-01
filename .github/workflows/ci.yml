@@ -67,16 +67,6 @@ jobs:
       - run: npm ci
 
       - name: Verify live Supabase contract
-        run: |
-          missing=0
-          for var in RING_READY_SUPABASE_URL RING_READY_SUPABASE_ANON_KEY RING_READY_TEST_EMAIL RING_READY_TEST_PASSWORD; do
-            if [ -z "${!var}" ]; then
-              echo "Missing ${var}"
-              missing=1
-            fi
-          done
-          if [ "$missing" -eq 1 ]; then
-            echo "::warning::production-contract secrets not configured in GitHub Environment production-contract — skipping live gate until operator adds them"
-            exit 0
-          fi
-          RING_READY_REQUIRE_PROOF_TESTS=1 npm run test:proof-auth
+        env:
+          RING_READY_REQUIRE_PROOF_TESTS: '1'
+        run: npm run test:proof-auth

@@ -58,7 +58,7 @@ RING_READY_REQUIRE_PROOF_TESTS=1 npm run test:proof-auth
 
 Verifies proof authorization **and** migrations **014** (modality/output columns) and **015** (transactional clear RPC).
 
-Requires `RING_READY_SUPABASE_URL`, `RING_READY_SUPABASE_ANON_KEY`, `RING_READY_TEST_EMAIL`, and `RING_READY_TEST_PASSWORD`. Without credentials the script skips unless `RING_READY_REQUIRE_PROOF_TESTS=1` is set (then it fails).
+Requires `RING_READY_SUPABASE_URL`, `RING_READY_SUPABASE_ANON_KEY`, `RING_READY_TEST_EMAIL`, and `RING_READY_TEST_PASSWORD`. Without credentials the script skips unless `RING_READY_REQUIRE_PROOF_TESTS=1` is set (then it fails). The CI job always sets `RING_READY_REQUIRE_PROOF_TESTS=1` and **fails closed** when secrets are missing.
 
 This job is a **production deploy gate**, not a PR merge gate. Configure Vercel production promotion to depend on it passing on `main`.
 
