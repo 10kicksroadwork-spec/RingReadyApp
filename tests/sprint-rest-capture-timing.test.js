@@ -76,6 +76,20 @@ describe('rest capture checkpoint timing', () => {
       targetRestCaptureSec: 60,
     }, 60)).toBe(false);
   });
+
+  it('rejects tampered targetRestCaptureSec that differs from canonical target', () => {
+    expect(isRestCaptureAtPrescribedCheckpoint({
+      captureAtRestSec: 60,
+      targetRestCaptureSec: 90,
+    }, 60)).toBe(false);
+  });
+
+  it('rejects capture just outside tolerance at 63 seconds', () => {
+    expect(isRestCaptureAtPrescribedCheckpoint({
+      captureAtRestSec: 63,
+      targetRestCaptureSec: 60,
+    }, 60)).toBe(false);
+  });
 });
 
 describe('simulateRestTimerCaptureSequence', () => {

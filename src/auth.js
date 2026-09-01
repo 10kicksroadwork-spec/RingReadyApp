@@ -194,9 +194,11 @@ function toCloudSprintSession(record, userId) {
     ble_verified: verification.bleVerified,
     session_json: {
       ...record,
-      bleVerified: verification.bleVerified,
+      localBleEligible: record.localBleEligible ?? verification.bleVerified,
+      bleVerified: false,
+      bleVerificationPending: !!record.bleVerificationPending,
       hrSource,
-      bleVerificationReason: verification.reason,
+      bleVerificationReason: record.bleVerificationReason || verification.reason,
     },
     updated_at: new Date().toISOString(),
   };
@@ -705,11 +707,16 @@ export async function saveCloudSprintSession(record) {
 
   if (error) throw error;
 
+  const context = getRecordContext(record);
+  const verification = evaluateSprintBleVerification(record, context);
+
   return {
     ...record,
+    localBleEligible: record.localBleEligible ?? verification.bleVerified,
     bleVerified: data?.ble_verified === true,
+    bleVerificationPending: false,
     hrSource: data?.hr_source || record.hrSource || '',
-    bleVerificationReason: data?.ble_verified ? 'ble_verified' : (record.bleVerificationReason || ''),
+    bleVerificationReason: data?.ble_verified ? 'ble_verified' : (record.bleVerificationReason || verification.reason || ''),
   };
 }
 

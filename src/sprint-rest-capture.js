@@ -19,8 +19,14 @@ export function isRestCaptureAtPrescribedCheckpoint(
 ) {
   if (!capture || typeof capture !== 'object') return false;
   const actual = Number(capture.captureAtRestSec);
-  const target = Number(capture.targetRestCaptureSec ?? targetSeconds);
+  const target = Number(targetSeconds);
   if (!Number.isFinite(actual) || !Number.isFinite(target)) return false;
+
+  const capturedTarget = capture.targetRestCaptureSec == null
+    ? null
+    : Number(capture.targetRestCaptureSec);
+  if (capturedTarget != null && capturedTarget !== target) return false;
+
   const tolerance = Number.isFinite(toleranceSec) ? Math.max(0, toleranceSec) : REST_CAPTURE_TOLERANCE_SEC;
   return actual >= target && actual <= target + tolerance;
 }

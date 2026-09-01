@@ -42,7 +42,6 @@ import {
 } from './storage.js';
 import {
   applyCompletionActionState,
-  buildProofChecklistItem,
   renderCompletionHints,
 } from './completion-hints.js';
 import {
@@ -66,6 +65,14 @@ import {
   evaluateSprintBleVerification,
   deriveSessionHrSource,
 } from './sprint-ble-verification.js';
+import {
+  applyServerBleConfirmation,
+  buildPostLocalVerificationRecord,
+  buildBleCompletionChecklistItems,
+  markBleVerificationPending,
+  requiresServerBleConfirmation,
+  resolveBleWaiverNeeds,
+} from './sprint-ble-authority.js';
 import {
   buildAutoCaptureProvenance,
   buildManualCaptureProvenance,
@@ -1058,18 +1065,18 @@ export async function finishSession() {
   vibrate([100, 50, 100, 50, 200]);
   activeResultRecord = saveSessionToHistory(cfg, state.data);
   const verification = evaluateSprintBleVerification(activeResultRecord, cfg.workoutContext);
+  const requiresServer = requiresServerBleConfirmation(isSupabaseConfigured, !!getCurrentUser());
   activeResultRecord = {
-    ...activeResultRecord,
-    bleVerified: verification.bleVerified,
+    ...buildPostLocalVerificationRecord(activeResultRecord, verification, requiresServer),
     hrSource: deriveSessionHrSource(activeResultRecord.data),
-    bleVerificationReason: verification.reason,
   };
-  if (isSupabaseConfigured && getCurrentUser()) {
+  if (requiresServer) {
     try {
       const saved = await saveCloudSprintSession(activeResultRecord);
-      if (saved) activeResultRecord = saved;
+      if (saved) activeResultRecord = applyServerBleConfirmation(activeResultRecord, saved);
     } catch (error) {
       console.warn('Cloud sprint session save failed', error);
+      activeResultRecord = markBleVerificationPending(activeResultRecord);
     }
   }
   window.dispatchEvent(new CustomEvent('ringready:sprint-session-saved', { detail: activeResultRecord }));
@@ -1133,10 +1140,10 @@ function updateCompleteWorkoutButton(record) {
     return;
   }
 
-  const bleVerified = !!record?.bleVerified;
-  const items = bleVerified
-    ? []
-    : [buildProofChecklistItem(hasWorkoutProof('sprint'))];
+  const waiver = resolveBleWaiverNeeds(record);
+  const items = buildBleCompletionChecklistItems(record, {
+    hasWorkoutProof: hasWorkoutProof('sprint'),
+  });
   applyCompletionActionState(btn, items, {
     hintsRoot: hints,
     hintsId: 'sprint-completion-hints',
@@ -1151,6 +1158,7 @@ export function buildResults(record = activeResultRecord) {
   body.innerHTML = '';
 
   document.getElementById('results-date').textContent = formatResultDate(resultRecord);
+  const waiver = resolveBleWaiverNeeds(resultRecord);
   if (isProgramWorkoutRecord(resultRecord)) {
     const context = getRecordContext(resultRecord);
     const campLength = Number(getAthleteProfile().campLength) || 7;
@@ -1159,7 +1167,7 @@ export function buildResults(record = activeResultRecord) {
       context: { ...context, campLength },
       existingAttachment: resultRecord.attachment || null,
       legacy: !!(resultRecord.completedAt && !resultRecord.proofPolicyVersion),
-      exempt: !!resultRecord.bleVerified,
+      exempt: waiver.bleVerified,
     });
   } else {
     const proofHost = document.querySelector('[data-proof-host="sprint"]');
@@ -1241,8 +1249,24 @@ export async function completeWorkout() {
     return;
   }
 
-  const bleVerified = !!activeResultRecord.bleVerified;
-  const needsScreenshotProof = !bleVerified;
+  if (activeResultRecord.bleVerificationPending && requiresServerBleConfirmation(isSupabaseConfigured, !!getCurrentUser())) {
+    try {
+      const saved = await saveCloudSprintSession(activeResultRecord);
+      if (saved) activeResultRecord = applyServerBleConfirmation(activeResultRecord, saved);
+    } catch (error) {
+      console.warn('BLE verification retry failed', error);
+      showToast('BLE VERIFICATION PENDING — RECONNECT AND TRY AGAIN');
+      return;
+    }
+  }
+
+  const waiver = resolveBleWaiverNeeds(activeResultRecord);
+  if (waiver.pending) {
+    showToast('BLE VERIFICATION PENDING — RECONNECT AND TRY AGAIN');
+    return;
+  }
+
+  const needsScreenshotProof = waiver.needsScreenshotProof;
 
   if (needsScreenshotProof && !hasWorkoutProof('sprint')) {
     showToast(navigator.onLine ? 'ADD WORKOUT PROOF' : 'INTERNET REQUIRED FOR WORKOUT PROOF');
