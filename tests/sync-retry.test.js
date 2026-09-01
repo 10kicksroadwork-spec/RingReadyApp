@@ -107,13 +107,16 @@ describe('sync retry and queue trimming', () => {
   });
 
   it('includes clear metadata in workout_completion_clear payloads', () => {
-    enqueueWorkoutCompletionClearForSync({ weekIndex: 1, workoutIndex: 3, campLength: '7' }, 'record-456');
+    enqueueWorkoutCompletionClearForSync({ weekIndex: 1, workoutIndex: 3, campLength: '7', weekTab: 'Week 2 (Build)', dayOfWeek: 'Thursday' }, 'record-456');
     const item = getSyncQueue()[0];
     expect(item.payload.eventType).toBe('workout_completion_clear');
+    expect(item.payload.eventId).toBe('record-456');
     expect(item.payload.linkedRecordId).toBe('record-456');
     expect(item.payload.proofKey).toBe('program:7:1:3');
     expect(item.payload.weekIndex).toBe(1);
     expect(item.payload.workoutIndex).toBe(3);
+    expect(item.payload.weekTab).toBe('Week 2 (Build)');
+    expect(item.payload.dayOfWeek).toBe('Thursday');
   });
 
   it('workout_proof payload contains attachmentId only', () => {
