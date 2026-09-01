@@ -68,6 +68,9 @@ function doPost(e) {
     case 'daily_workout_skip':
       rrHandleDailyWorkout_(payload);
       break;
+    case 'workout_completion_clear':
+      rrHandleWorkoutCompletionClear_(payload);
+      break;
     default:
       rrAppendRawEvent_(payload, 'Unhandled eventType');
   }
@@ -215,6 +218,97 @@ function rrWriteProofMetaColumns_(sheet, rowNumber, meta) {
   sheet.getRange(rowNumber, indexes['Proof Key']).setValue(meta.proofKey || '');
   sheet.getRange(rowNumber, indexes['Week Index']).setValue(meta.weekIndex === '' ? '' : meta.weekIndex);
   sheet.getRange(rowNumber, indexes['Workout Index']).setValue(meta.workoutIndex === '' ? '' : meta.workoutIndex);
+}
+
+function rrRowMatchesClearMeta_(rowMeta, clearMeta) {
+  if (!clearMeta || !clearMeta.userId) return false;
+  if (String(rowMeta.userId || '') !== String(clearMeta.userId || '')) return false;
+
+  var linkedRecordId = String(clearMeta.linkedRecordId || '');
+  if (linkedRecordId && String(rowMeta.linkedRecordId || '') === linkedRecordId) {
+    return true;
+  }
+
+  var proofKey = String(clearMeta.proofKey || '');
+  if (proofKey && String(rowMeta.proofKey || '') === proofKey) {
+    return true;
+  }
+
+  if (clearMeta.weekIndex === '' || clearMeta.workoutIndex === '') return false;
+  return Number(rowMeta.weekIndex) === Number(clearMeta.weekIndex)
+    && Number(rowMeta.workoutIndex) === Number(clearMeta.workoutIndex);
+}
+
+function rrReadProofMetaRow_(sheet, rowNumber, indexes) {
+  return {
+    userId: String(sheet.getRange(rowNumber, indexes['User ID']).getDisplayValue() || ''),
+    linkedRecordId: String(sheet.getRange(rowNumber, indexes['Linked Record ID']).getDisplayValue() || ''),
+    proofKey: String(sheet.getRange(rowNumber, indexes['Proof Key']).getDisplayValue() || ''),
+    weekIndex: sheet.getRange(rowNumber, indexes['Week Index']).getValue(),
+    workoutIndex: sheet.getRange(rowNumber, indexes['Workout Index']).getValue()
+  };
+}
+
+function rrDeleteAthleteRawRowsByClearMeta_(clearMeta) {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(RR_ATHLETE_RAW_SHEET);
+  if (!sheet || sheet.getLastRow() < 2) return 0;
+
+  var indexes = rrEnsureColumns_(sheet, RR_PROOF_META_HEADERS);
+  var rowsToDelete = [];
+  for (var row = sheet.getLastRow(); row >= 2; row--) {
+    var rowMeta = rrReadProofMetaRow_(sheet, row, indexes);
+    if (rrRowMatchesClearMeta_(rowMeta, clearMeta)) rowsToDelete.push(row);
+  }
+
+  rowsToDelete.forEach(function(rowNumber) {
+    sheet.deleteRow(rowNumber);
+  });
+  return rowsToDelete.length;
+}
+
+function rrDeleteRowsByColumnValue_(sheetName, columnName, matchValue) {
+  var needle = String(matchValue || '');
+  if (!needle) return 0;
+
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  if (!sheet || sheet.getLastRow() < 2) return 0;
+
+  var indexes = rrEnsureColumns_(sheet, [columnName]);
+  var columnIndex = indexes[columnName];
+  var rowsToDelete = [];
+  for (var row = sheet.getLastRow(); row >= 2; row--) {
+    if (String(sheet.getRange(row, columnIndex).getDisplayValue() || '') === needle) {
+      rowsToDelete.push(row);
+    }
+  }
+
+  rowsToDelete.forEach(function(rowNumber) {
+    sheet.deleteRow(rowNumber);
+  });
+  return rowsToDelete.length;
+}
+
+function rrHandleWorkoutCompletionClear_(payload) {
+  var clearMeta = rrProofMetaFromPayload_(payload);
+  if (!clearMeta.userId) {
+    throw new Error('Workout clear is missing authenticated user ID.');
+  }
+
+  var removedRawRows = rrDeleteAthleteRawRowsByClearMeta_(clearMeta);
+  var linkedRecordId = String(clearMeta.linkedRecordId || '');
+  var removedSprintRows = 0;
+  var removedRepRows = 0;
+  var removedMileRows = 0;
+
+  if (linkedRecordId) {
+    removedSprintRows = rrDeleteRowsByColumnValue_(RR_SPRINT_SHEET, 'Session ID', linkedRecordId);
+    removedRepRows = rrDeleteRowsByColumnValue_(RR_SPRINT_REPS_SHEET, 'Session ID', linkedRecordId);
+    removedMileRows = rrDeleteRowsByColumnValue_(RR_MILE_SHEET, 'Linked Record ID', linkedRecordId);
+  }
+
+  rrAppendRawEvent_(payload, removedRawRows || removedSprintRows || removedRepRows || removedMileRows
+    ? 'Workout clear removed ' + removedRawRows + ' Athlete Raw row(s)'
+    : 'Workout clear matched no Athlete Raw rows');
 }
 
 function rrHandleProfileUpdate_(payload) {

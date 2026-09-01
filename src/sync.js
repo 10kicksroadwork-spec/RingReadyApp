@@ -508,6 +508,23 @@ export function enqueueDailyWorkoutForSync(workoutLog, workoutContext, linkedRec
   return enqueuePayloadForSync(buildDailyWorkoutPayload(workoutLog, workoutContext, linkedRecordId));
 }
 
+export function buildWorkoutCompletionClearPayload(workoutContext = {}, linkedRecordId = '') {
+  const proofMeta = buildProofMetadata(workoutContext, linkedRecordId);
+
+  return {
+    ...buildBasePayload('workout_completion_clear'),
+    linkedRecordId: proofMeta.linkedRecordId,
+    proofKey: proofMeta.proofKey,
+    weekIndex: proofMeta.weekIndex,
+    workoutIndex: proofMeta.workoutIndex,
+    workoutContext: Object.keys(workoutContext).length ? workoutContext : null,
+  };
+}
+
+export function enqueueWorkoutCompletionClearForSync(workoutContext = {}, linkedRecordId = '') {
+  return enqueuePayloadForSync(buildWorkoutCompletionClearPayload(workoutContext, linkedRecordId));
+}
+
 export function buildWorkoutProofPayload(attachment) {
   return {
     ...buildBasePayload('workout_proof'),

@@ -11,6 +11,7 @@ import {
   MAX_QUEUE_ITEMS,
   MAX_SYNC_ATTEMPTS,
   enqueuePayloadForSync,
+  enqueueWorkoutCompletionClearForSync,
   flushSyncQueue,
   getFailedSyncCount,
   getPendingSyncCount,
@@ -103,6 +104,16 @@ describe('sync retry and queue trimming', () => {
     expect(item.payload.linkedRecordId).toBe('record-123');
     expect(item.payload.proofKey).toBe('program:7:0:2');
     expect(getPendingSyncCount()).toBe(1);
+  });
+
+  it('includes clear metadata in workout_completion_clear payloads', () => {
+    enqueueWorkoutCompletionClearForSync({ weekIndex: 1, workoutIndex: 3, campLength: '7' }, 'record-456');
+    const item = getSyncQueue()[0];
+    expect(item.payload.eventType).toBe('workout_completion_clear');
+    expect(item.payload.linkedRecordId).toBe('record-456');
+    expect(item.payload.proofKey).toBe('program:7:1:3');
+    expect(item.payload.weekIndex).toBe(1);
+    expect(item.payload.workoutIndex).toBe(3);
   });
 
   it('workout_proof payload contains attachmentId only', () => {

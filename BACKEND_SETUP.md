@@ -15,6 +15,8 @@ Direct browser → Apps Script (`no-cors`, `VITE_RING_READY_SYNC_URL`, `?syncUrl
 - `mile_test`
 - `sprint_session`
 - `daily_workout`
+- `daily_workout_skip`
+- `workout_completion_clear`
 - `workout_proof`
 
 ## 1. Add the Apps Script receiver
