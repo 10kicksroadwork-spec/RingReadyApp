@@ -1,5 +1,5 @@
 -- Ring Ready coach camp start dates
--- Run in Supabase SQL Editor after scripts/supabase-coach-access.sql
+-- Run after scripts/migrations/002_coach_access.sql
 --
 -- Lets coaches set when each fighter's roadwork camp begins so missing-workout
 -- flags only count sessions that are due on the calendar.
@@ -33,7 +33,7 @@ create policy coach_athlete_meta_update_coach
   using (public.is_coach())
   with check (public.is_coach());
 -- Ring Ready coach roster exclusions
--- Run in Supabase SQL Editor after scripts/supabase-coach-access.sql
+-- Run after scripts/migrations/002_coach_access.sql
 --
 -- Hides specific auth accounts from the in-app coach roster. Athletes are
 -- unchanged: excluded users can still log in and use the fighter app.

@@ -1206,6 +1206,9 @@ export async function completeWorkout() {
   }
   const isNewProof = hasPendingWorkoutProof('sprint');
   try {
+    if (isSupabaseConfigured && getCurrentUser()) {
+      await saveCloudSprintSession(activeResultRecord);
+    }
     const attachment = await ensureWorkoutProofUploaded('sprint', activeResultRecord.id);
     if (attachment) {
       activeResultRecord = { ...activeResultRecord, proofPolicyVersion: PROOF_POLICY_VERSION, attachment };
@@ -1230,7 +1233,7 @@ export async function completeWorkout() {
   showToast('WORKOUT COMPLETE');
 }
 
-export function clearResultWorkoutCompletion() {
+export async function clearResultWorkoutCompletion() {
   const context = getRecordContext(activeResultRecord);
   if (!context) {
     showToast('NO WORKOUT TO CLEAR');
@@ -1249,7 +1252,12 @@ export function clearResultWorkoutCompletion() {
   activeResultRecord = { ...activeResultRecord };
   delete activeResultRecord.completedAt;
   delete activeResultRecord.completionKey;
-  markWorkoutProofCleared(attachmentId, true).catch((error) => console.warn('Could not mark sprint proof cleared', error));
+  try {
+    await markWorkoutProofCleared(attachmentId, true);
+  } catch (error) {
+    console.warn('Could not mark sprint proof cleared', error);
+    showToast(String(error?.message || error).toUpperCase());
+  }
   updateCompleteWorkoutButton(activeResultRecord);
   window.dispatchEvent(new CustomEvent('ringready:workout-completion-cleared', { detail: { weekIndex: context.weekIndex, workoutIndex: context.workoutIndex } }));
   showToast('WORKOUT MARKED INCOMPLETE');

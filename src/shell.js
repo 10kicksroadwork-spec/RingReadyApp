@@ -1411,13 +1411,22 @@ async function clearCompletionFromDetail(weekIndex, workoutIndex) {
   if (isSupabaseConfigured && getCurrentUser()) {
     cloudCleared = await deleteWorkoutCompletionFromCloud(safeWeekIndex, safeWorkoutIndex);
   }
-  markWorkoutProofCleared(existing?.attachment?.id, true).catch((error) => console.warn('Could not mark proof cleared', error));
+  let proofClearFailed = false;
+  if (existing?.attachment?.id) {
+    try {
+      await markWorkoutProofCleared(existing.attachment.id, true);
+    } catch (error) {
+      proofClearFailed = true;
+      console.warn('Could not mark proof cleared', error);
+      shellHooks?.showToast?.(String(error?.message || error).toUpperCase());
+    }
+  }
   setDetailSkipCard(false);
   renderShell();
   renderAthleteProfileDashboard();
   openWorkoutDetail(safeWeekIndex, safeWorkoutIndex);
   if (!cloudCleared) shellHooks?.showToast?.('CLEARED HERE · CLOUD DELETE FAILED');
-  else shellHooks?.showToast?.(isSkippedCompletion(existing) ? 'SKIP CLEARED' : 'WORKOUT CLEARED');
+  else if (!proofClearFailed) shellHooks?.showToast?.(isSkippedCompletion(existing) ? 'SKIP CLEARED' : 'WORKOUT CLEARED');
 }
 
 const SKIP_REASON_LABELS = {

@@ -1,5 +1,5 @@
 -- Ring Ready coach roster access
--- Run in Supabase SQL Editor after scripts/supabase-workout-data.sql
+-- Run after scripts/migrations/001_workout_data.sql
 --
 -- Allows Gene and Daniel to read every fighter's training data and to
 -- write shared coach notes. Athletes still only see their own rows.

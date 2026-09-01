@@ -12,6 +12,7 @@
  */
 
 import { createClient } from '@supabase/supabase-js';
+import { buildProvisionalMileTestCloudPayload } from '../src/cloud-record-mapper.js';
 
 const url = process.env.RING_READY_SUPABASE_URL || process.env.SUPABASE_URL || '';
 const anonKey = process.env.RING_READY_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || '';
@@ -148,6 +149,35 @@ async function run() {
     });
     assert(!!directInsertError, 'Direct INSERT must be rejected');
 
+    const { error: proofClearRpcError } = await client.rpc('set_workout_proof_cleared', {
+      attachment_id: '00000000-0000-0000-0000-000000000099',
+      cleared: true,
+    });
+    assert(!!proofClearRpcError, 'set_workout_proof_cleared RPC must exist and reject foreign attachment');
+
+    const provisionalMileKey = `${testPrefix}:provisional-mile`;
+    const provisionalClientId = `${testPrefix}:provisional-mile-client`;
+    const provisionalPayload = buildProvisionalMileTestCloudPayload(
+      { id: provisionalClientId, testKey: provisionalMileKey },
+      { testKey: provisionalMileKey },
+      user.id,
+    );
+    assert(provisionalPayload.saved_at === null, 'Provisional mile payload must use saved_at = null');
+    assert(provisionalPayload.distance === null, 'Provisional mile payload must use distance = null');
+    assert(provisionalPayload.total_minutes === null, 'Provisional mile payload must use total_minutes = null');
+    assert(provisionalPayload.proof_pending === true, 'Provisional mile payload must set proof_pending = true');
+
+    const { data: provisionalMileRow, error: provisionalMileError } = await client
+      .from('mile_tests')
+      .insert(provisionalPayload)
+      .select('id, proof_pending, saved_at, distance, total_minutes')
+      .single();
+    assert(
+      !provisionalMileError && provisionalMileRow?.id,
+      `Provisional mile staging insert must succeed: ${provisionalMileError?.message || 'unknown'}`,
+    );
+    createdMileTestIds.push(provisionalMileRow.id);
+
     const clientRecordId = `${testPrefix}:mile-client-id`;
     const ownedTestKey = `${testPrefix}:mile`;
     const { data: mileRow, error: mileInsertError } = await client.from('mile_tests').insert({
@@ -169,6 +199,18 @@ async function run() {
     });
     assert(!ownedLinkError && ownedProof?.id, `Owned client_record_id must be accepted: ${ownedLinkError?.message || 'unknown'}`);
     createdAttachmentIds.push(ownedProof.id);
+
+    const { error: clearProofError } = await client.rpc('set_workout_proof_cleared', {
+      attachment_id: ownedProof.id,
+      cleared: true,
+    });
+    assert(!clearProofError, `set_workout_proof_cleared must succeed: ${clearProofError?.message || 'unknown'}`);
+    const { data: clearedRow, error: clearedRowError } = await client
+      .from('workout_attachments')
+      .select('completion_cleared')
+      .eq('id', ownedProof.id)
+      .single();
+    assert(!clearedRowError && clearedRow?.completion_cleared === true, 'Proof clear RPC must set completion_cleared = true');
 
     const wrongContextPath = `${user.id}/${testPrefix}:wrong-context/owned.webp`;
     storagePaths.push(wrongContextPath);
