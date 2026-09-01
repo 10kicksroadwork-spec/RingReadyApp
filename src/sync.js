@@ -8,8 +8,8 @@ import {
 } from './constants.js';
 import { calculateAvgDrop, calculatePeakHR, isLoggedDrop } from './workout.js';
 import { hrState } from './hr-service.js';
-import { MODALITY_RUNNING, normalizeModality } from './modality.js';
-import { getCurrentUser } from './auth.js';
+import { MODALITY_RUNNING, normalizeModality, readOutputFromWorkoutLog } from './modality.js';
+import { getCurrentUser, getAccessToken } from './auth.js';
 
 export const MAX_QUEUE_ITEMS = 50;
 export const MAX_SYNC_ATTEMPTS = 5;
@@ -59,8 +59,8 @@ function cleanProfile(profile = {}) {
 function readJSON(key, fallback) {
   try {
     return JSON.parse(localStorage.getItem(key) || JSON.stringify(fallback));
-  } catch (err) {
-    console.warn(`Could not read ${key}`, err);
+  } catch {
+    console.warn(`Could not read ${key}`);
     return fallback;
   }
 }
@@ -79,7 +79,7 @@ function makeEventId() {
 function isProductionBuild() {
   try {
     return !!(import.meta.env && import.meta.env.PROD);
-  } catch (err) {
+  } catch {
     return false;
   }
 }
@@ -90,7 +90,7 @@ function isAllowedSyncEndpoint(value) {
   try {
     const url = new URL(trimmed);
     return url.hostname === ALLOWED_SYNC_HOST && ALLOWED_SYNC_PATH.test(url.pathname);
-  } catch (err) {
+  } catch {
     return false;
   }
 }
@@ -100,7 +100,7 @@ function getBuildEndpoint() {
     return import.meta.env && import.meta.env.VITE_RING_READY_SYNC_URL
       ? String(import.meta.env.VITE_RING_READY_SYNC_URL).trim()
       : '';
-  } catch (err) {
+  } catch {
     return '';
   }
 }
@@ -465,6 +465,7 @@ export function buildDailyWorkoutPayload(workoutLog, workoutContext = {}, linked
   const completedAt = workoutLog.completedAt || new Date().toISOString();
   const isSkip = workoutLog?.status === 'skipped';
   const proofMeta = buildProofMetadata(workoutContext, linkedRecordId);
+  const output = readOutputFromWorkoutLog(workoutLog || {});
 
   return {
     ...buildBasePayload(isSkip ? 'daily_workout_skip' : 'daily_workout'),
@@ -478,6 +479,7 @@ export function buildDailyWorkoutPayload(workoutLog, workoutContext = {}, linked
     warmup: workoutContext.warmup || '',
     targetZone: workoutContext.targetZone || '',
     targetBPM: Number(workoutContext.targetBPM) || '',
+    modality: normalizeModality(workoutContext.modality || output.modality || MODALITY_RUNNING),
     workoutLog: isSkip
       ? {
         status: 'skipped',
@@ -489,7 +491,11 @@ export function buildDailyWorkoutPayload(workoutLog, workoutContext = {}, linked
         completedAt,
       }
       : {
-        distance: Number(workoutLog.distance) || 0,
+        modality: output.modality,
+        outputType: output.outputType,
+        outputValue: output.outputValue ?? '',
+        distance: output.outputType === 'distance' ? (Number(output.outputValue) || 0) : '',
+        avgWatts: output.outputType === 'watts' ? (Number(output.outputValue) || 0) : '',
         totalMinutes: Number(workoutLog.totalMinutes) || 0,
         avgBpm: Number(workoutLog.avgBpm) || 0,
         maxBpm: Number(workoutLog.maxBpm) || 0,
@@ -514,8 +520,50 @@ export function enqueueWorkoutProofForSync(attachment) {
   return enqueuePayloadForSync(buildWorkoutProofPayload(attachment));
 }
 
+function getSyncRelayEndpoint() {
+  try {
+    const configured = import.meta.env && import.meta.env.VITE_RING_READY_SYNC_RELAY_URL
+      ? String(import.meta.env.VITE_RING_READY_SYNC_RELAY_URL).trim()
+      : '';
+    if (configured) return configured;
+    if (isProductionBuild()) return '/api/sync';
+  } catch {
+    // ignore
+  }
+  return '';
+}
+
 async function postSubmission(endpoint, item) {
   const body = JSON.stringify(item.payload);
+  const relayEndpoint = getSyncRelayEndpoint();
+
+  if (relayEndpoint) {
+    const token = await getAccessToken();
+    if (!token) throw new Error('Sign in required for Sheets sync');
+
+    const response = await fetch(relayEndpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body,
+    });
+
+    const raw = await response.text();
+    let result = {};
+    try {
+      result = raw ? JSON.parse(raw) : {};
+    } catch {
+      result = { ok: response.ok, raw };
+    }
+
+    if (!response.ok || result.ok === false) {
+      throw new Error(String(result.error || 'Sheets sync rejected'));
+    }
+
+    return result;
+  }
 
   await fetch(endpoint, {
     method: 'POST',
@@ -572,8 +620,13 @@ export async function flushSyncQueue(options = {}) {
     try {
       item.attempts = (item.attempts || 0) + 1;
       await postSubmission(endpoint, item);
-      item.status = 'dispatched';
-      item.dispatchedAt = new Date().toISOString();
+      if (getSyncRelayEndpoint()) {
+        item.status = 'acknowledged';
+        item.acknowledgedAt = new Date().toISOString();
+      } else {
+        item.status = 'dispatched';
+        item.dispatchedAt = new Date().toISOString();
+      }
       item.lastError = '';
       dispatched++;
     } catch (err) {

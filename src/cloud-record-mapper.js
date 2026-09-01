@@ -1,5 +1,7 @@
 /** Cloud payload builders shared by auth saves and proof-identity tests. */
 
+import { readOutputFromWorkoutLog } from './modality.js';
+
 function textOrEmpty(value) {
   return String(value || '').trim();
 }
@@ -35,6 +37,7 @@ export function getCompletionKeyFromRecord(record = {}) {
 export function buildWorkoutCloudPayload(record, userId) {
   const context = getRecordContext(record);
   const workoutLog = record.workoutLog || null;
+  const output = readOutputFromWorkoutLog(workoutLog || {});
   return {
     user_id: userId,
     client_record_id: textOrEmpty(record.id),
@@ -53,7 +56,11 @@ export function buildWorkoutCloudPayload(record, userId) {
     total_seconds: workoutLog ? integerOrNull(workoutLog.totalSeconds) : null,
     avg_bpm: workoutLog ? integerOrNull(workoutLog.avgBpm) : null,
     max_bpm: workoutLog ? integerOrNull(workoutLog.maxBpm) : null,
-    distance: workoutLog ? numberOrNull(workoutLog.distance) : null,
+    modality: output.modality,
+    output_type: output.outputType,
+    output_value: output.outputValue,
+    avg_watts: output.outputType === 'watts' ? output.outputValue : numberOrNull(workoutLog?.avgWatts),
+    distance: output.outputType === 'distance' ? output.outputValue : null,
     completed_at: workoutLog?.completedAt
       ? normalizeISODate(workoutLog.completedAt)
       : (record.completedAt || record.date ? normalizeISODate(record.completedAt || record.date) : null),

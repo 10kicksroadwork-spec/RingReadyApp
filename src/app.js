@@ -74,7 +74,6 @@ import {
   showToast,
   showExportModal,
   closeExportModal,
-  selectExportText,
   vibrate,
   unlockAudio,
   restCompleteAlert,
@@ -1286,7 +1285,7 @@ export async function copyResults() {
     await navigator.clipboard.writeText(text);
     showToast('COPIED TO CLIPBOARD');
     return;
-  } catch (err) {
+  } catch {
     // fall through
   }
 
@@ -1303,7 +1302,7 @@ export async function copyResults() {
       document.body.removeChild(ta);
       return;
     }
-  } catch (err) {
+  } catch {
     // fall through
   }
 

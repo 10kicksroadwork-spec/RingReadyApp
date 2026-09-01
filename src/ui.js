@@ -176,7 +176,7 @@ export function bindHoldAction(el, onComplete, options = {}) {
     }, holdMs);
 
     if (typeof event.pointerId === 'number') {
-      try { el.setPointerCapture(event.pointerId); } catch (err) { /* ignore */ }
+      try { el.setPointerCapture(event.pointerId); } catch { /* ignore */ }
     }
     event.preventDefault();
   };

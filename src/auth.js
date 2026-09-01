@@ -49,7 +49,7 @@ function safeJSON(value, fallback) {
   if (typeof value === 'object') return value;
   try {
     return JSON.parse(value);
-  } catch (error) {
+  } catch {
     return fallback;
   }
 }
@@ -419,7 +419,7 @@ export function clearAuthRedirectParams() {
       url.searchParams.delete(key);
     });
     window.history.replaceState({}, document.title, `${url.pathname}${url.search}`);
-  } catch (error) {
+  } catch {
     // Ignore history cleanup failures.
   }
 }
@@ -626,24 +626,44 @@ export async function deleteCloudWorkoutCompletion(weekIndex, workoutIndex) {
 
   // Prefer key delete, then fall back to week/workout columns in case older rows
   // were saved with a mismatched completion_key.
-  const { data: byKey, error: keyError } = await supabase
+  const { error: keyError } = await supabase
     .from('workout_completions')
     .delete()
     .eq('user_id', user.id)
-    .eq('completion_key', completionKey)
-    .select('completion_key');
+    .eq('completion_key', completionKey);
   if (keyError) throw keyError;
 
-  const { data: byIndex, error: indexError } = await supabase
+  const { error: indexError } = await supabase
     .from('workout_completions')
     .delete()
     .eq('user_id', user.id)
     .eq('week_index', week)
-    .eq('workout_index', workout)
-    .select('completion_key');
+    .eq('workout_index', workout);
   if (indexError) throw indexError;
 
   return true;
+}
+
+export async function clearCloudWorkoutCompletionWithProof(weekIndex, workoutIndex, attachmentId = null) {
+  const user = getCurrentUser();
+  if (!isSupabaseConfigured || !supabase || !user) return false;
+  const week = Number(weekIndex);
+  const workout = Number(workoutIndex);
+  const params = {
+    p_week_index: week,
+    p_workout_index: workout,
+    p_attachment_id: attachmentId || null,
+  };
+  const { error } = await supabase.rpc('clear_workout_completion_with_proof', params);
+  if (error) throw error;
+  return true;
+}
+
+export async function getAccessToken() {
+  if (!isSupabaseConfigured || !supabase) return '';
+  const { data, error } = await supabase.auth.getSession();
+  if (error) return '';
+  return data?.session?.access_token || '';
 }
 
 export async function loadCloudSprintSessions() {

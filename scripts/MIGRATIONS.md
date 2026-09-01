@@ -18,6 +18,8 @@ Run these **in order** on a fresh or partially migrated project. Do not run file
 | 12 | [011_mile_test_staging_nullable.sql](./migrations/011_mile_test_staging_nullable.sql) | Allow null `saved_at`/`distance`/`total_minutes` for mile-test staging |
 | 13 | [012_set_workout_proof_cleared.sql](./migrations/012_set_workout_proof_cleared.sql) | Reconcile `set_workout_proof_cleared` RPC on legacy production |
 | 14 | [013_attachment_write_revoke.sql](./migrations/013_attachment_write_revoke.sql) | Revoke direct authenticated INSERT/UPDATE on workout_attachments |
+| 15 | [014_workout_modality_output.sql](./migrations/014_workout_modality_output.sql) | First-class modality/output/watts columns on workout_completions |
+| 16 | [015_clear_workout_completion_with_proof.sql](./migrations/015_clear_workout_completion_with_proof.sql) | Transactional completion clear + proof attachment reconcile RPC |
 
 ## Fresh database
 
@@ -29,12 +31,17 @@ These migrations use `if not exists` / `drop policy if exists` patterns and are 
 
 For the Sprint proof-gap hotfix on an existing database that already ran 000–007, run **008** then **009** in the Supabase SQL editor before deploying the coach hotfix client.
 
-## Deploy order (proof + Sheets)
+## Production deployment procedure
 
-1. Supabase migrations **000–013** in the table above (required for current proof staging, mile-test staging, proof-clear RPC, and attachment write revoke)
-2. Production Apps Script receiver + proof handler (compatible with contextual proof RPC from 006+)
-3. Run the live proof contract gate (see below) against production credentials
-4. Deploy the compatible client (Vercel)
+1. Apply Supabase migrations **000–015** in the table above (required through attachment write revoke, modality output columns, and transactional clear RPC).
+2. Configure production Apps Script with `RING_READY_SYNC_RELAY_SECRET` matching the Vercel relay environment.
+3. Deploy the compatible client to Vercel with:
+   - `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY`
+   - `VITE_RING_READY_SYNC_URL` (Apps Script `/exec` URL used by the server relay)
+   - Relay env on Vercel: `RING_READY_APPS_SCRIPT_SYNC_URL`, `RING_READY_SYNC_RELAY_SECRET`, plus Supabase credentials for JWT validation
+4. Run the live proof contract gate (see below) against production credentials.
+5. Require GitHub **quality** and **production-contract** checks before merging to `main`.
+6. Protect `main`: PR required, status checks required, no force push, no branch deletion.
 
 ## Production seeds
 

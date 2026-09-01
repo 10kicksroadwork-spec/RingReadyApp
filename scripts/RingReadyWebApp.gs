@@ -15,11 +15,30 @@ var RR_ATHLETE_RAW_SHEET = 'Athlete Raw Data';
 
 var RR_PROOF_META_HEADERS = ['User ID', 'Linked Record ID', 'Proof Key', 'Week Index', 'Workout Index'];
 
+function rrSanitizeSheetText_(value) {
+  var text = String(value == null ? '' : value);
+  if (!text) return '';
+  if (/^[=+\-@]/.test(text)) return "'" + text;
+  return text;
+}
+
+function rrAssertRelayAuthorized_(payload) {
+  var expected = PropertiesService.getScriptProperties().getProperty('RING_READY_SYNC_RELAY_SECRET');
+  if (!expected) return;
+  var provided = String((payload && payload._relaySecret) || '');
+  if (provided !== expected) {
+    throw new Error('Unauthorized sync relay request.');
+  }
+  if (payload) delete payload._relaySecret;
+}
+
 function doPost(e) {
   var payload = rrParsePayload_(e);
   if (!payload || !payload.eventType) {
     return rrJsonResponse_({ ok: false, error: 'Missing eventType.' });
   }
+
+  rrAssertRelayAuthorized_(payload);
 
   if (payload.eventType === 'workout_proof') {
     if (typeof rrHandleWorkoutProofEvent === 'function') {
@@ -162,7 +181,7 @@ function rrAppendRawEvent_(payload, status) {
     new Date(),
     payload.eventType || '',
     payload.eventId || payload.sessionId || '',
-    payload.athleteName || '',
+    rrSanitizeSheetText_(payload.athleteName || ''),
     payload.userId || '',
     status || 'Received',
     JSON.stringify(payload).slice(0, 45000)
@@ -312,22 +331,30 @@ function rrHandleDailyWorkout_(payload) {
     return;
   }
   var indexes = rrEnsureColumns_(sheet, [
-    'Date', 'Athlete', 'Week', 'Day', 'Workout Type', 'Distance', 'Total Minutes',
-    'Avg BPM', 'Max BPM', 'Status', 'Skip Reason'
+    'Date', 'Athlete', 'Week', 'Day', 'Workout Type', 'Modality', 'Output Type', 'Output Value',
+    'Distance', 'Avg Watts', 'Total Minutes', 'Avg BPM', 'Max BPM', 'Status', 'Skip Reason'
   ].concat(RR_PROOF_META_HEADERS).concat(['Proof Status', 'Workout Proof', 'Proof Uploaded At']));
   var weekLabel = payload.weekTab || context.weekTab || (meta.weekIndex === '' ? '' : 'Week ' + (Number(meta.weekIndex) + 1));
   var row = sheet.getLastRow() + 1;
+  var outputType = String(log.outputType || '');
+  var outputValue = log.outputValue != null && log.outputValue !== '' ? log.outputValue : '';
+  var distanceValue = outputType === 'distance' ? (log.distance || outputValue || '') : '';
+  var wattsValue = outputType === 'watts' ? (log.avgWatts || outputValue || '') : '';
   sheet.getRange(row, indexes['Date'] || 1).setValue(log.completedAt ? new Date(log.completedAt) : new Date());
-  if (indexes['Athlete']) sheet.getRange(row, indexes['Athlete']).setValue(payload.athleteName || '');
-  if (indexes['Week']) sheet.getRange(row, indexes['Week']).setValue(weekLabel);
-  if (indexes['Day']) sheet.getRange(row, indexes['Day']).setValue(payload.dayOfWeek || context.dayOfWeek || '');
-  if (indexes['Workout Type']) sheet.getRange(row, indexes['Workout Type']).setValue(payload.workoutType || context.workoutType || '');
-  if (indexes['Distance']) sheet.getRange(row, indexes['Distance']).setValue(log.distance || '');
+  if (indexes['Athlete']) sheet.getRange(row, indexes['Athlete']).setValue(rrSanitizeSheetText_(payload.athleteName || ''));
+  if (indexes['Week']) sheet.getRange(row, indexes['Week']).setValue(rrSanitizeSheetText_(weekLabel));
+  if (indexes['Day']) sheet.getRange(row, indexes['Day']).setValue(rrSanitizeSheetText_(payload.dayOfWeek || context.dayOfWeek || ''));
+  if (indexes['Workout Type']) sheet.getRange(row, indexes['Workout Type']).setValue(rrSanitizeSheetText_(payload.workoutType || context.workoutType || ''));
+  if (indexes['Modality']) sheet.getRange(row, indexes['Modality']).setValue(rrSanitizeSheetText_(payload.modality || log.modality || context.modality || ''));
+  if (indexes['Output Type']) sheet.getRange(row, indexes['Output Type']).setValue(rrSanitizeSheetText_(outputType));
+  if (indexes['Output Value']) sheet.getRange(row, indexes['Output Value']).setValue(outputValue);
+  if (indexes['Distance']) sheet.getRange(row, indexes['Distance']).setValue(distanceValue);
+  if (indexes['Avg Watts']) sheet.getRange(row, indexes['Avg Watts']).setValue(wattsValue);
   if (indexes['Total Minutes']) sheet.getRange(row, indexes['Total Minutes']).setValue(log.totalMinutes || '');
   if (indexes['Avg BPM']) sheet.getRange(row, indexes['Avg BPM']).setValue(log.avgBpm || '');
   if (indexes['Max BPM']) sheet.getRange(row, indexes['Max BPM']).setValue(log.maxBpm || '');
   if (indexes['Status']) sheet.getRange(row, indexes['Status']).setValue(log.status === 'skipped' ? 'Skipped' : 'Completed');
-  if (indexes['Skip Reason']) sheet.getRange(row, indexes['Skip Reason']).setValue(log.skipReasonLabel || log.skipReason || '');
+  if (indexes['Skip Reason']) sheet.getRange(row, indexes['Skip Reason']).setValue(rrSanitizeSheetText_(log.skipReasonLabel || log.skipReason || ''));
   rrWriteProofMetaColumns_(sheet, row, meta);
   rrAppendRawEvent_(payload, 'Daily workout saved');
 }

@@ -1220,7 +1220,7 @@ function getAthlete(id) {
 function readNotes() {
   try {
     return JSON.parse(localStorage.getItem(NOTES_KEY) || '{}');
-  } catch (error) {
+  } catch {
     return {};
   }
 }

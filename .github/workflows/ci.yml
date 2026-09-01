@@ -2,19 +2,70 @@ name: CI
 
 on:
   push:
-    branches: [main, 'coach-review-*', 'cursor/**']
+    branches:
+      - main
+      - 'coach-review-*'
+      - 'cursor/**'
   pull_request:
+  workflow_dispatch:
 
 jobs:
-  test:
+  quality:
+    name: quality
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
+
       - run: npm ci
-      - run: npm run lint
-      - run: npm test
-      - run: npm run build
+
+      - name: Lint
+        run: npm run lint -- --max-warnings=0
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Manual HR smoke
+        run: node scripts/manual-rest-hr-smoke.mjs
+
+      - name: Modality smoke
+        run: node scripts/modality-performance-smoke.mjs
+
+      - name: Production build
+        run: npm run build
+
+  production-contract:
+    name: production-contract
+    needs: quality
+    runs-on: ubuntu-latest
+    environment: production-contract
+
+    # Do not expose protected production credentials to arbitrary fork PRs.
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.ref == 'refs/heads/main'
+
+    env:
+      RING_READY_SUPABASE_URL: ${{ secrets.RING_READY_SUPABASE_URL }}
+      RING_READY_SUPABASE_ANON_KEY: ${{ secrets.RING_READY_SUPABASE_ANON_KEY }}
+      RING_READY_TEST_EMAIL: ${{ secrets.RING_READY_TEST_EMAIL }}
+      RING_READY_TEST_PASSWORD: ${{ secrets.RING_READY_TEST_PASSWORD }}
+      RING_READY_REQUIRE_PROOF_TESTS: '1'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Verify live Supabase contract
+        run: npm run test:proof-auth
