@@ -19,6 +19,27 @@ describe('cloud record mapper', () => {
     expect(getCompletionKeyFromRecord(record)).toBe('0:2');
   });
 
+  it('maps machine workout watts to first-class cloud columns', () => {
+    const record = {
+      id: 'client-workout-bike',
+      workoutContext: { weekIndex: 3, workoutIndex: 1, workoutType: 'Benchmark Run' },
+      workoutLog: {
+        modality: 'assault_bike',
+        outputType: 'watts',
+        outputValue: 184,
+        avgWatts: 184,
+        totalMinutes: 30,
+        completedAt: '2026-08-31T12:00:00.000Z',
+      },
+    };
+    const payload = buildWorkoutCloudPayload(record, 'user-a');
+    expect(payload.modality).toBe('assault_bike');
+    expect(payload.output_type).toBe('watts');
+    expect(payload.output_value).toBe(184);
+    expect(payload.avg_watts).toBe(184);
+    expect(payload.distance).toBeNull();
+  });
+
   it('maps mile test client_record_id and test_key', () => {
     const result = {
       id: 'client-mile-456',

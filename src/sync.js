@@ -8,8 +8,8 @@ import {
 } from './constants.js';
 import { calculateAvgDrop, calculatePeakHR, isLoggedDrop } from './workout.js';
 import { hrState } from './hr-service.js';
-import { MODALITY_RUNNING, normalizeModality } from './modality.js';
-import { getCurrentUser } from './auth.js';
+import { MODALITY_RUNNING, normalizeModality, readOutputFromWorkoutLog } from './modality.js';
+import { getCurrentUser, getAccessToken } from './auth.js';
 
 export const MAX_QUEUE_ITEMS = 50;
 export const MAX_SYNC_ATTEMPTS = 5;
@@ -59,8 +59,8 @@ function cleanProfile(profile = {}) {
 function readJSON(key, fallback) {
   try {
     return JSON.parse(localStorage.getItem(key) || JSON.stringify(fallback));
-  } catch (err) {
-    console.warn(`Could not read ${key}`, err);
+  } catch {
+    console.warn(`Could not read ${key}`);
     return fallback;
   }
 }
@@ -79,7 +79,7 @@ function makeEventId() {
 function isProductionBuild() {
   try {
     return !!(import.meta.env && import.meta.env.PROD);
-  } catch (err) {
+  } catch {
     return false;
   }
 }
@@ -90,7 +90,7 @@ function isAllowedSyncEndpoint(value) {
   try {
     const url = new URL(trimmed);
     return url.hostname === ALLOWED_SYNC_HOST && ALLOWED_SYNC_PATH.test(url.pathname);
-  } catch (err) {
+  } catch {
     return false;
   }
 }
@@ -100,7 +100,7 @@ function getBuildEndpoint() {
     return import.meta.env && import.meta.env.VITE_RING_READY_SYNC_URL
       ? String(import.meta.env.VITE_RING_READY_SYNC_URL).trim()
       : '';
-  } catch (err) {
+  } catch {
     return '';
   }
 }
@@ -465,6 +465,7 @@ export function buildDailyWorkoutPayload(workoutLog, workoutContext = {}, linked
   const completedAt = workoutLog.completedAt || new Date().toISOString();
   const isSkip = workoutLog?.status === 'skipped';
   const proofMeta = buildProofMetadata(workoutContext, linkedRecordId);
+  const output = readOutputFromWorkoutLog(workoutLog || {});
 
   return {
     ...buildBasePayload(isSkip ? 'daily_workout_skip' : 'daily_workout'),
@@ -478,6 +479,7 @@ export function buildDailyWorkoutPayload(workoutLog, workoutContext = {}, linked
     warmup: workoutContext.warmup || '',
     targetZone: workoutContext.targetZone || '',
     targetBPM: Number(workoutContext.targetBPM) || '',
+    modality: normalizeModality(workoutContext.modality || output.modality || MODALITY_RUNNING),
     workoutLog: isSkip
       ? {
         status: 'skipped',
@@ -489,7 +491,11 @@ export function buildDailyWorkoutPayload(workoutLog, workoutContext = {}, linked
         completedAt,
       }
       : {
-        distance: Number(workoutLog.distance) || 0,
+        modality: output.modality,
+        outputType: output.outputType,
+        outputValue: output.outputValue ?? '',
+        distance: output.outputType === 'distance' ? (Number(output.outputValue) || 0) : '',
+        avgWatts: output.outputType === 'watts' ? (Number(output.outputValue) || 0) : '',
         totalMinutes: Number(workoutLog.totalMinutes) || 0,
         avgBpm: Number(workoutLog.avgBpm) || 0,
         maxBpm: Number(workoutLog.maxBpm) || 0,
@@ -514,10 +520,67 @@ export function enqueueWorkoutProofForSync(attachment) {
   return enqueuePayloadForSync(buildWorkoutProofPayload(attachment));
 }
 
-async function postSubmission(endpoint, item) {
-  const body = JSON.stringify(item.payload);
+function getSyncRelayEndpoint() {
+  try {
+    const configured = import.meta.env && import.meta.env.VITE_RING_READY_SYNC_RELAY_URL
+      ? String(import.meta.env.VITE_RING_READY_SYNC_RELAY_URL).trim()
+      : '';
+    if (configured) return configured;
+    if (isProductionBuild()) return '/api/sync';
+  } catch {
+    // ignore
+  }
+  return '';
+}
 
-  await fetch(endpoint, {
+export function isSyncTransportConfigured() {
+  if (getSyncRelayEndpoint()) return true;
+  if (isProductionBuild()) return false;
+  return !!getSyncEndpoint();
+}
+
+async function postSubmission(item) {
+  const body = JSON.stringify(item.payload);
+  const relayEndpoint = getSyncRelayEndpoint();
+
+  if (relayEndpoint) {
+    const token = await getAccessToken();
+    if (!token) throw new Error('Sign in required for Sheets sync');
+
+    const response = await fetch(relayEndpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body,
+    });
+
+    const raw = await response.text();
+    let result;
+    try {
+      result = raw ? JSON.parse(raw) : {};
+    } catch {
+      throw new Error('Invalid response from Sheets sync relay');
+    }
+
+    if (!response.ok || result.ok !== true) {
+      throw new Error(String(result.error || 'Sheets sync rejected'));
+    }
+
+    return result;
+  }
+
+  if (isProductionBuild()) {
+    throw new Error('Sheets sync relay unavailable');
+  }
+
+  const directEndpoint = getSyncEndpoint();
+  if (!directEndpoint) {
+    throw new Error('Sheets sync not configured');
+  }
+
+  await fetch(directEndpoint, {
     method: 'POST',
     mode: 'no-cors',
     headers: {
@@ -544,11 +607,10 @@ export async function flushSyncQueue(options = {}) {
 
   quarantineLegacySyncQueue();
 
-  const endpoint = getSyncEndpoint();
   const queue = getSyncQueue(userId);
   const pending = queue.filter((item) => item.status === 'pending' && item.userId === userId);
 
-  if (!endpoint) {
+  if (!isSyncTransportConfigured()) {
     updateSyncStatusUI();
     return { status: 'not-configured', dispatched: 0, pending: pending.length, manualRetryRequired: needsManualSyncRetry(userId) };
   }
@@ -571,9 +633,14 @@ export async function flushSyncQueue(options = {}) {
   for (const item of dispatchOrder) {
     try {
       item.attempts = (item.attempts || 0) + 1;
-      await postSubmission(endpoint, item);
-      item.status = 'dispatched';
-      item.dispatchedAt = new Date().toISOString();
+      await postSubmission(item);
+      if (getSyncRelayEndpoint()) {
+        item.status = 'acknowledged';
+        item.acknowledgedAt = new Date().toISOString();
+      } else {
+        item.status = 'dispatched';
+        item.dispatchedAt = new Date().toISOString();
+      }
       item.lastError = '';
       dispatched++;
     } catch (err) {
@@ -605,7 +672,7 @@ export function updateSyncStatusUI() {
   const pending = getPendingSyncCount();
   const retryableFailed = getRetryableFailedCount();
   const manualFailed = getFailedSyncCount();
-  const endpoint = getSyncEndpoint();
+  const endpoint = isSyncTransportConfigured();
   const online = navigator.onLine;
   const legacyCount = getLegacySyncQueueQuarantineCount();
 
@@ -613,7 +680,7 @@ export function updateSyncStatusUI() {
     title.textContent = pending ? `${pending} saved locally` : 'Local Save Ready';
     copy.textContent = legacyCount
       ? `${legacyCount} legacy Sheets events not migrated.`
-      : 'Sheets sync will activate after the Apps Script endpoint is connected.';
+      : 'Sheets sync will activate after the authenticated relay is connected.';
     btn.textContent = 'LOCAL';
     btn.disabled = true;
     btn.style.opacity = '0.55';

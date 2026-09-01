@@ -34,7 +34,12 @@ import {
   saveActiveSessionCheckpoint,
   resolveRestCaptureAttempted,
 } from './session-checkpoint.js';
-import { removeWorkoutCompletion, saveSessionToHistory, saveWorkoutCompletion } from './storage.js';
+import {
+  markWorkoutCompletionCleared,
+  removeWorkoutCompletion,
+  saveSessionToHistory,
+  saveWorkoutCompletion,
+} from './storage.js';
 import {
   applyCompletionActionState,
   buildProofChecklistItem,
@@ -47,7 +52,7 @@ import {
   getAthleteProfile,
   saveAthleteProfile,
 } from './sync.js';
-import { getCurrentUser, saveCloudSprintSession } from './auth.js';
+import { getCurrentUser, saveCloudSprintSession, clearCloudWorkoutCompletionWithProof } from './auth.js';
 import { isSupabaseConfigured } from './supabase-client.js';
 import {
   getAutoCapturedHR,
@@ -62,7 +67,6 @@ import {
   hasPendingWorkoutProof,
   hasWorkoutProof,
   initWorkoutProof,
-  markWorkoutProofCleared,
 } from './proof.js';
 import {
   showScreen,
@@ -74,7 +78,6 @@ import {
   showToast,
   showExportModal,
   closeExportModal,
-  selectExportText,
   vibrate,
   unlockAudio,
   restCompleteAlert,
@@ -1242,7 +1245,18 @@ export async function clearResultWorkoutCompletion() {
 
   if (!window.confirm('Clear this workout from this device and your account?')) return;
 
-  const attachmentId = activeResultRecord?.attachment?.id;
+  const attachmentId = activeResultRecord?.attachment?.id || null;
+  if (isSupabaseConfigured && getCurrentUser()) {
+    try {
+      await clearCloudWorkoutCompletionWithProof(context.weekIndex, context.workoutIndex, attachmentId);
+    } catch (error) {
+      console.warn('Could not clear sprint workout from cloud', error);
+      showToast(String(error?.message || error).toUpperCase());
+      return;
+    }
+  }
+
+  markWorkoutCompletionCleared(context.weekIndex, context.workoutIndex);
   const removed = removeWorkoutCompletion(context.weekIndex, context.workoutIndex);
   if (!removed) {
     showToast('NO COMPLETION TO CLEAR');
@@ -1252,14 +1266,14 @@ export async function clearResultWorkoutCompletion() {
   activeResultRecord = { ...activeResultRecord };
   delete activeResultRecord.completedAt;
   delete activeResultRecord.completionKey;
-  try {
-    await markWorkoutProofCleared(attachmentId, true);
-  } catch (error) {
-    console.warn('Could not mark sprint proof cleared', error);
-    showToast(String(error?.message || error).toUpperCase());
-  }
   updateCompleteWorkoutButton(activeResultRecord);
-  window.dispatchEvent(new CustomEvent('ringready:workout-completion-cleared', { detail: { weekIndex: context.weekIndex, workoutIndex: context.workoutIndex } }));
+  window.dispatchEvent(new CustomEvent('ringready:workout-completion-cleared', {
+    detail: {
+      weekIndex: context.weekIndex,
+      workoutIndex: context.workoutIndex,
+      cloudAlreadyCleared: true,
+    },
+  }));
   showToast('WORKOUT MARKED INCOMPLETE');
 }
 window.addEventListener('ringready:proof-state-changed', (event) => {
@@ -1280,7 +1294,7 @@ export async function copyResults() {
     await navigator.clipboard.writeText(text);
     showToast('COPIED TO CLIPBOARD');
     return;
-  } catch (err) {
+  } catch {
     // fall through
   }
 
@@ -1297,7 +1311,7 @@ export async function copyResults() {
       document.body.removeChild(ta);
       return;
     }
-  } catch (err) {
+  } catch {
     // fall through
   }
 

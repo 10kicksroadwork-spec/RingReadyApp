@@ -49,7 +49,7 @@ function safeJSON(value, fallback) {
   if (typeof value === 'object') return value;
   try {
     return JSON.parse(value);
-  } catch (error) {
+  } catch {
     return fallback;
   }
 }
@@ -274,7 +274,7 @@ export async function loadCoachRosterPayload() {
   const [profilesResult, hrResult, completionsResult, sprintsResult, mileTestsResult, notesResult, identitiesResult, exclusionsResult, metaResult, attachmentsResult] = await Promise.allSettled([
     loadCoachTable('athlete_profiles', 'user_id,athlete_name,fight_date,camp_length,training_tenure,camp_reset_at,default_modality,updated_at'),
     loadCoachTable('hr_info', 'user_id,max_hr,resting_hr,goal_weight,target_date,updated_at'),
-    loadCoachTable('workout_completions', 'user_id,completion_key,week_index,workout_index,week_label,week_title,day_of_week,workout_type,description,warmup,target_zone,target_bpm,total_minutes,total_seconds,avg_bpm,max_bpm,distance,completed_at,attachment_id,proof_pending,record_json,updated_at'),
+    loadCoachTable('workout_completions', 'user_id,completion_key,week_index,workout_index,week_label,week_title,day_of_week,workout_type,description,warmup,target_zone,target_bpm,total_minutes,total_seconds,avg_bpm,max_bpm,distance,modality,output_type,output_value,avg_watts,completed_at,attachment_id,proof_pending,record_json,updated_at'),
     loadCoachTable('sprint_sessions', 'user_id,session_id,session_at,week_index,workout_index,workout_type,avg_drop,peak_hr,intervals_completed,attachment_id,session_json,updated_at'),
     loadCoachTable('mile_tests', 'user_id,test_key,saved_at,distance,total_minutes,avg_bpm,max_bpm,attachment_id,proof_pending,result_json,updated_at'),
     loadCoachTable('coach_notes', 'athlete_user_id,note,updated_at'),
@@ -419,7 +419,7 @@ export function clearAuthRedirectParams() {
       url.searchParams.delete(key);
     });
     window.history.replaceState({}, document.title, `${url.pathname}${url.search}`);
-  } catch (error) {
+  } catch {
     // Ignore history cleanup failures.
   }
 }
@@ -626,24 +626,44 @@ export async function deleteCloudWorkoutCompletion(weekIndex, workoutIndex) {
 
   // Prefer key delete, then fall back to week/workout columns in case older rows
   // were saved with a mismatched completion_key.
-  const { data: byKey, error: keyError } = await supabase
+  const { error: keyError } = await supabase
     .from('workout_completions')
     .delete()
     .eq('user_id', user.id)
-    .eq('completion_key', completionKey)
-    .select('completion_key');
+    .eq('completion_key', completionKey);
   if (keyError) throw keyError;
 
-  const { data: byIndex, error: indexError } = await supabase
+  const { error: indexError } = await supabase
     .from('workout_completions')
     .delete()
     .eq('user_id', user.id)
     .eq('week_index', week)
-    .eq('workout_index', workout)
-    .select('completion_key');
+    .eq('workout_index', workout);
   if (indexError) throw indexError;
 
   return true;
+}
+
+export async function clearCloudWorkoutCompletionWithProof(weekIndex, workoutIndex, attachmentId = null) {
+  const user = getCurrentUser();
+  if (!isSupabaseConfigured || !supabase || !user) return false;
+  const week = Number(weekIndex);
+  const workout = Number(workoutIndex);
+  const params = {
+    p_week_index: week,
+    p_workout_index: workout,
+    p_attachment_id: attachmentId || null,
+  };
+  const { error } = await supabase.rpc('clear_workout_completion_with_proof', params);
+  if (error) throw error;
+  return true;
+}
+
+export async function getAccessToken() {
+  if (!isSupabaseConfigured || !supabase) return '';
+  const { data, error } = await supabase.auth.getSession();
+  if (error) return '';
+  return data?.session?.access_token || '';
 }
 
 export async function loadCloudSprintSessions() {

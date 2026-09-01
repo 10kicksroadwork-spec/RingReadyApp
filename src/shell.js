@@ -81,6 +81,7 @@ import {
 import {
   archiveAndResetCamp,
   clearAuthRedirectParams,
+  clearCloudWorkoutCompletionWithProof,
   deleteCloudWorkoutCompletion,
   ensureCloudMileTestIdentity,
   ensureCloudWorkoutIdentity,
@@ -114,8 +115,8 @@ import {
   hasPendingWorkoutProof,
   hasWorkoutProof,
   initWorkoutProof,
-  markWorkoutProofCleared,
 } from './proof.js';
+import { performSignOutCleanup } from './logout.js';
 import { resolveCanonicalClientRecordId } from './proof-staging.js';
 
 const WEEK_INDEX_KEY = 'ringReadyActiveWeekIndex';
@@ -151,7 +152,7 @@ function openExternalLink(url) {
   try {
     const popup = window.open(url, '_blank', 'noopener,noreferrer');
     if (!popup) window.location.assign(url);
-  } catch (error) {
+  } catch {
     window.location.assign(url);
   }
 }
@@ -245,8 +246,8 @@ import {
   mergeWorkoutCompletions,
 } from './shell-cloud-merge.js';
 
-function clearAccountLocalData() {
-  const userId = getCurrentUser()?.id;
+function clearAccountLocalData(explicitUserId = '') {
+  const userId = String(explicitUserId || getCurrentUser()?.id || '').trim();
   if (userId) clearSyncQueueForUser(userId);
   clearSharedLocalState();
 }
@@ -427,9 +428,6 @@ async function hydrateCloudData() {
 
   const localProfile = getAthleteProfile();
   const localHRInfo = getHRInfo();
-  const localCompletions = readJSON(WORKOUT_COMPLETIONS_STORAGE_KEY, {});
-  const localSessions = getSessionHistory();
-  const localMileTest = getMileTestResult();
 
   const cloudResults = await Promise.allSettled([
     loadCloudProfile(),
@@ -625,10 +623,13 @@ function openForgotPassword() {
 async function handleLogout() {
   try {
     closeWeekDrawer();
-    await signOut();
+    await performSignOutCleanup({
+      getCurrentUser,
+      signOut,
+      clearAccountLocalData,
+    });
     passwordRecoveryPending = false;
     authMode = 'sign-in';
-    clearAccountLocalData();
     localStorage.removeItem(AUTH_USER_STORAGE_KEY);
     syncSignOutControls();
     await refreshCoachPreview();
@@ -1403,30 +1404,26 @@ async function clearCompletionFromDetail(weekIndex, workoutIndex) {
     : 'Clear this workout log from this device and your account?';
   if (!window.confirm(label)) return;
 
+  const attachmentId = existing?.attachment?.id || null;
+  if (isSupabaseConfigured && getCurrentUser()) {
+    try {
+      await clearCloudWorkoutCompletionWithProof(safeWeekIndex, safeWorkoutIndex, attachmentId);
+    } catch (error) {
+      console.warn('Could not clear workout from cloud', error);
+      shellHooks?.showToast?.(String(error?.message || error).toUpperCase());
+      return;
+    }
+  }
+
   markWorkoutCompletionCleared(safeWeekIndex, safeWorkoutIndex);
   const removed = removeWorkoutCompletion(safeWeekIndex, safeWorkoutIndex);
   if (!removed) { shellHooks?.showToast?.('NO COMPLETION TO CLEAR'); return; }
 
-  let cloudCleared = true;
-  if (isSupabaseConfigured && getCurrentUser()) {
-    cloudCleared = await deleteWorkoutCompletionFromCloud(safeWeekIndex, safeWorkoutIndex);
-  }
-  let proofClearFailed = false;
-  if (existing?.attachment?.id) {
-    try {
-      await markWorkoutProofCleared(existing.attachment.id, true);
-    } catch (error) {
-      proofClearFailed = true;
-      console.warn('Could not mark proof cleared', error);
-      shellHooks?.showToast?.(String(error?.message || error).toUpperCase());
-    }
-  }
   setDetailSkipCard(false);
   renderShell();
   renderAthleteProfileDashboard();
   openWorkoutDetail(safeWeekIndex, safeWorkoutIndex);
-  if (!cloudCleared) shellHooks?.showToast?.('CLEARED HERE · CLOUD DELETE FAILED');
-  else if (!proofClearFailed) shellHooks?.showToast?.(isSkippedCompletion(existing) ? 'SKIP CLEARED' : 'WORKOUT CLEARED');
+  shellHooks?.showToast?.(isSkippedCompletion(existing) ? 'SKIP CLEARED' : 'WORKOUT CLEARED');
 }
 
 const SKIP_REASON_LABELS = {
@@ -2199,6 +2196,7 @@ export async function initAthleteShell(hooks) {
     renderShell();
     renderAthleteProfileDashboard();
     if (!event.detail) return;
+    if (event.detail.cloudAlreadyCleared) return;
     const weekIndex = Number(event.detail.weekIndex);
     const workoutIndex = Number(event.detail.workoutIndex);
     if (!Number.isFinite(weekIndex) || !Number.isFinite(workoutIndex)) return;
