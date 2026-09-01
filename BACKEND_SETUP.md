@@ -76,96 +76,37 @@ https://your-pwa-url.com/?clearSyncUrl=1
 The PWA still saves locally first. If the athlete is offline or the endpoint is not connected, the data stays in the local queue and can sync later.
 
 Because Google Apps Script web apps do not provide normal browser CORS responses, the PWA sends requests in `no-cors` mode. That means the app can confirm the browser accepted the send, while the receiver tabs are the source of truth that the Sheet wrote the data.
-## 4. Supabase workout data
+## 4. Supabase database migrations
 
-After creating the Supabase tables, run this SQL file in Supabase SQL Editor before testing cloud workout history:
+Follow the **canonical ordered migrations** in [`scripts/MIGRATIONS.md`](scripts/MIGRATIONS.md). Run each file in the Supabase SQL editor in order on a fresh or partially migrated project.
 
-```text
-scripts/supabase-workout-data.sql
+Do **not** run deprecated one-off scripts under `scripts/legacy/` or root `scripts/supabase-*.sql` on production. Those files are reference copies only.
+
+That migration chain covers:
+
+- Athlete workout data (completions, sprint sessions, mile tests)
+- Coach dashboard access and roster policies
+- Private workout proof staging and attachment RPCs
+- Camp reset, roster meta, client record IDs, and proof-staging flags
+
+Environment-specific seed data (for example coach roster exclusions) lives under [`scripts/seeds/`](scripts/seeds/) and runs after auth users exist.
+
+### Deploy gate (before client deploy)
+
+```bash
+npm run lint
+npm test
+npm run build
+RING_READY_REQUIRE_PROOF_TESTS=1 npm run test:proof-auth
 ```
 
-It adds the workout completion, sprint session, and Mile Test columns used by the app, plus the indexes and RLS policies needed for each athlete to only read and write their own rows.
+Requires `RING_READY_SUPABASE_URL`, `RING_READY_SUPABASE_ANON_KEY`, `RING_READY_TEST_EMAIL`, and `RING_READY_TEST_PASSWORD`.
 
-## 4b. Coach dashboard access
-
-Run this third SQL file so Gene and Daniel can open the in-app coach roster and see every fighter who logs in the PWA:
-
-```text
-scripts/supabase-coach-access.sql
-```
-
-Until that file is run, coaches will sign in but the roster will be empty (or show a permission error). Gene (`gene.byard@gmail.com`) and Daniel (`10kicksroadwork@gmail.com`) both see every fighter with a Ring Ready account and can both write the shared coach note. Athletes are unchanged: they still only see their own data. The Google Sheets dashboard can stay in use for deeper charts.
-
-If a coach account was created with **Add user** and cannot sign in on a new device, run `scripts/supabase-set-coach-password.sql` after replacing the password placeholder.
+If a coach account was created with **Add user** and cannot sign in on a new device, see [`scripts/legacy/supabase-set-coach-password.sql`](scripts/legacy/supabase-set-coach-password.sql) after replacing the password placeholder.
 
 Password reset from the app sign-in screen uses Supabase Auth email links. In Supabase → Authentication → URL Configuration, set **Site URL** to `https://ring-ready-app.vercel.app` and add that same origin under **Redirect URLs** so “Forgot password?” links open the app’s set-new-password screen.
 
-## 4c. Coach roster exclusions
-
-Run this after the coach access script to hide specific test or personal fighter accounts from the coach roster:
-
-```text
-scripts/supabase-coach-roster-exclusions.sql
-```
-
-That creates `coach_roster_exclusions` and currently hides:
-
-- `d.a.friend108@gmail.com` — Daniel's athlete-side test account
-- `kellimbergmann@gmail.com` — Kelli Bergmann
-- `ryankfisch@gmail.com` — Ryan Fisch
-- `simonbhyard@gmail.com` — Simon Byard
-
-To hide someone else later, insert another row into `coach_roster_exclusions` with their auth `user_id`.
-
-## 4d. Coach camp start dates
-
-Run this so coaches can set when each fighter's roadwork begins:
-
-```text
-scripts/supabase-coach-camp-start.sql
-```
-
-On the athlete detail screen, set a start date (for example `2026-08-24`). Missing-workout flags then follow the program calendar: Week 1 Monday is the start date, Tuesday is the next day, and so on. Sessions that have not reached their day yet stay off the missing list.
-
-## 4e. Athlete default modality
-
-Run this so profiles can store a camp default modality (Running by default):
-
-```text
-scripts/supabase-athlete-default-modality.sql
-```
-
-Athletes can change Default Modality on their profile. Anything other than running should be coach-approved before camp starts. Until this SQL runs, local profile saves still work; cloud profile saves with a non-default modality may fail.
-
-## 4f. Clean slate (archive camp + reset)
-
-Run this so athletes and coaches can archive a finished camp and clear live workouts for the next one:
-
-```text
-scripts/supabase-camp-clean-slate.sql
-```
-
-That creates `camp_archives`, adds `camp_reset_at` on profiles, and the `archive_and_reset_camp` RPC. Profile → **Start New Camp (Clean Slate)** archives then clears workouts (keeps name + HR). Coaches can also run it from an athlete’s detail screen. Until this SQL runs, the buttons will fail with a database error.
-
-## 5. Private workout proof
-
-Run this second migration in Supabase SQL Editor:
-
-```text
-scripts/supabase-workout-proof.sql
-```
-
-It creates the private staging bucket, attachment records and RLS policies, then adds proof fields to workout, sprint and Mile Test records. Do not make the bucket public.
-
-If proof uploads fail on iPhone with a MIME type error, also run:
-
-```text
-scripts/supabase-workout-proof-mime-fix.sql
-```
-
-That allows JPEG and PNG in the staging bucket (iOS Safari cannot encode WebP from canvas).
-
-Add `scripts/RingReadyWorkoutProof.gs` as a new file in the existing master-sheet Apps Script project. Keep the existing receiver and legacy extraction functions. In the current `doPost` dispatcher, pass proof events to the add-on:
+## 5. Private workout proof (Apps Script) Keep the existing receiver and legacy extraction functions. In the current `doPost` dispatcher, pass proof events to the add-on:
 
 ```js
 if (payload.eventType === 'workout_proof') {

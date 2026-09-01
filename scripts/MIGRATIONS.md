@@ -15,10 +15,13 @@ Run these **in order** on a fresh or partially migrated project. Do not run file
 | 9 | [008_backfill_sprint_proof_links.sql](./migrations/008_backfill_sprint_proof_links.sql) | Backfill sprint attachment_id from current proofs |
 | 10 | [009_coach_attachment_access.sql](./migrations/009_coach_attachment_access.sql) | Coach SELECT on workout_attachments (fixes 002→003 ordering gap) |
 | 11 | [010_completed_at_nullable.sql](./migrations/010_completed_at_nullable.sql) | Allow null `completed_at` for pending-proof staging rows |
+| 12 | [011_mile_test_staging_nullable.sql](./migrations/011_mile_test_staging_nullable.sql) | Allow null `saved_at`/`distance`/`total_minutes` for mile-test staging |
+| 13 | [012_set_workout_proof_cleared.sql](./migrations/012_set_workout_proof_cleared.sql) | Reconcile `set_workout_proof_cleared` RPC on legacy production |
+| 14 | [013_attachment_write_revoke.sql](./migrations/013_attachment_write_revoke.sql) | Revoke direct authenticated INSERT/UPDATE on workout_attachments |
 
 ## Fresh database
 
-Paste and run each file in the Supabase SQL editor in order (000 through 010).
+Paste and run each file in the Supabase SQL editor in order. Follow this table for the current canonical sequence.
 
 ## Upgrade from existing production
 
@@ -34,7 +37,7 @@ For the Sprint proof-gap hotfix on an existing database that already ran 000–0
 
 ## Production seeds
 
-Canonical migrations 000–010 are schema-only. Environment-specific data lives under [../seeds/](../seeds/), e.g. [production-coach-roster-exclusions.sql](../seeds/production-coach-roster-exclusions.sql) (run after auth users exist).
+Canonical migrations are schema-only. This file is the source of truth for migration order. Environment-specific data lives under [../seeds/](../seeds/), e.g. [production-coach-roster-exclusions.sql](../seeds/production-coach-roster-exclusions.sql) (run after auth users exist).
 
 ## Deploy gate: proof authorization
 

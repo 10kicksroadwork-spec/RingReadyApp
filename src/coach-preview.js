@@ -1403,7 +1403,7 @@ function renderRoster() {
   if (empty) {
     empty.hidden = athletes.length > 0;
     if (rosterSource === 'live' && counts.total === 0) {
-      empty.textContent = 'No fighter accounts yet. If athletes are already logging in, run scripts/supabase-coach-access.sql in the Supabase SQL editor, then refresh.';
+      empty.textContent = 'No fighter accounts yet. If athletes are already logging in, run the canonical Supabase migrations from scripts/MIGRATIONS.md, then refresh.';
     } else {
       empty.textContent = rosterSource === 'live'
         ? 'No fighters match that filter. Fighters appear after they create a Ring Ready account and save a profile.'
@@ -1759,7 +1759,7 @@ async function loadLiveRoster() {
     liveLoadState = 'error';
     const message = String(error?.message || error);
     liveLoadError = /permission|rls|policy|42501|42p01|does not exist|schema cache/i.test(message)
-      ? 'Coach access is not enabled yet. Run scripts/supabase-coach-access.sql in the Supabase SQL editor, then refresh.'
+      ? 'Coach access is not enabled yet. Run the canonical Supabase migrations from scripts/MIGRATIONS.md, then refresh.'
       : 'Could not load fighters. Check the connection and try again.';
   }
 }
