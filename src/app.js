@@ -34,7 +34,12 @@ import {
   saveActiveSessionCheckpoint,
   resolveRestCaptureAttempted,
 } from './session-checkpoint.js';
-import { removeWorkoutCompletion, saveSessionToHistory, saveWorkoutCompletion } from './storage.js';
+import {
+  markWorkoutCompletionCleared,
+  removeWorkoutCompletion,
+  saveSessionToHistory,
+  saveWorkoutCompletion,
+} from './storage.js';
 import {
   applyCompletionActionState,
   buildProofChecklistItem,
@@ -47,7 +52,7 @@ import {
   getAthleteProfile,
   saveAthleteProfile,
 } from './sync.js';
-import { getCurrentUser, saveCloudSprintSession } from './auth.js';
+import { getCurrentUser, saveCloudSprintSession, clearCloudWorkoutCompletionWithProof } from './auth.js';
 import { isSupabaseConfigured } from './supabase-client.js';
 import {
   getAutoCapturedHR,
@@ -62,7 +67,6 @@ import {
   hasPendingWorkoutProof,
   hasWorkoutProof,
   initWorkoutProof,
-  markWorkoutProofCleared,
 } from './proof.js';
 import {
   showScreen,
@@ -1241,19 +1245,18 @@ export async function clearResultWorkoutCompletion() {
 
   if (!window.confirm('Clear this workout from this device and your account?')) return;
 
-  const attachmentId = activeResultRecord?.attachment?.id;
-  // When connected to the account, do not report a successful clear if the
-  // authoritative proof-clear RPC fails.
-  if (attachmentId && isSupabaseConfigured && getCurrentUser()) {
+  const attachmentId = activeResultRecord?.attachment?.id || null;
+  if (isSupabaseConfigured && getCurrentUser()) {
     try {
-      await markWorkoutProofCleared(attachmentId, true);
+      await clearCloudWorkoutCompletionWithProof(context.weekIndex, context.workoutIndex, attachmentId);
     } catch (error) {
-      console.warn('Could not mark sprint proof cleared', error);
+      console.warn('Could not clear sprint workout from cloud', error);
       showToast(String(error?.message || error).toUpperCase());
       return;
     }
   }
 
+  markWorkoutCompletionCleared(context.weekIndex, context.workoutIndex);
   const removed = removeWorkoutCompletion(context.weekIndex, context.workoutIndex);
   if (!removed) {
     showToast('NO COMPLETION TO CLEAR');
@@ -1264,7 +1267,13 @@ export async function clearResultWorkoutCompletion() {
   delete activeResultRecord.completedAt;
   delete activeResultRecord.completionKey;
   updateCompleteWorkoutButton(activeResultRecord);
-  window.dispatchEvent(new CustomEvent('ringready:workout-completion-cleared', { detail: { weekIndex: context.weekIndex, workoutIndex: context.workoutIndex } }));
+  window.dispatchEvent(new CustomEvent('ringready:workout-completion-cleared', {
+    detail: {
+      weekIndex: context.weekIndex,
+      workoutIndex: context.workoutIndex,
+      cloudAlreadyCleared: true,
+    },
+  }));
   showToast('WORKOUT MARKED INCOMPLETE');
 }
 window.addEventListener('ringready:proof-state-changed', (event) => {

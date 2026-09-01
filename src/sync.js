@@ -533,7 +533,13 @@ function getSyncRelayEndpoint() {
   return '';
 }
 
-async function postSubmission(endpoint, item) {
+export function isSyncTransportConfigured() {
+  if (getSyncRelayEndpoint()) return true;
+  if (isProductionBuild()) return false;
+  return !!getSyncEndpoint();
+}
+
+async function postSubmission(item) {
   const body = JSON.stringify(item.payload);
   const relayEndpoint = getSyncRelayEndpoint();
 
@@ -551,21 +557,30 @@ async function postSubmission(endpoint, item) {
     });
 
     const raw = await response.text();
-    let result = {};
+    let result;
     try {
       result = raw ? JSON.parse(raw) : {};
     } catch {
-      result = { ok: response.ok, raw };
+      throw new Error('Invalid response from Sheets sync relay');
     }
 
-    if (!response.ok || result.ok === false) {
+    if (!response.ok || result.ok !== true) {
       throw new Error(String(result.error || 'Sheets sync rejected'));
     }
 
     return result;
   }
 
-  await fetch(endpoint, {
+  if (isProductionBuild()) {
+    throw new Error('Sheets sync relay unavailable');
+  }
+
+  const directEndpoint = getSyncEndpoint();
+  if (!directEndpoint) {
+    throw new Error('Sheets sync not configured');
+  }
+
+  await fetch(directEndpoint, {
     method: 'POST',
     mode: 'no-cors',
     headers: {
@@ -592,11 +607,10 @@ export async function flushSyncQueue(options = {}) {
 
   quarantineLegacySyncQueue();
 
-  const endpoint = getSyncEndpoint();
   const queue = getSyncQueue(userId);
   const pending = queue.filter((item) => item.status === 'pending' && item.userId === userId);
 
-  if (!endpoint) {
+  if (!isSyncTransportConfigured()) {
     updateSyncStatusUI();
     return { status: 'not-configured', dispatched: 0, pending: pending.length, manualRetryRequired: needsManualSyncRetry(userId) };
   }
@@ -619,7 +633,7 @@ export async function flushSyncQueue(options = {}) {
   for (const item of dispatchOrder) {
     try {
       item.attempts = (item.attempts || 0) + 1;
-      await postSubmission(endpoint, item);
+      await postSubmission(item);
       if (getSyncRelayEndpoint()) {
         item.status = 'acknowledged';
         item.acknowledgedAt = new Date().toISOString();
@@ -658,7 +672,7 @@ export function updateSyncStatusUI() {
   const pending = getPendingSyncCount();
   const retryableFailed = getRetryableFailedCount();
   const manualFailed = getFailedSyncCount();
-  const endpoint = getSyncEndpoint();
+  const endpoint = isSyncTransportConfigured();
   const online = navigator.onLine;
   const legacyCount = getLegacySyncQueueQuarantineCount();
 
@@ -666,7 +680,7 @@ export function updateSyncStatusUI() {
     title.textContent = pending ? `${pending} saved locally` : 'Local Save Ready';
     copy.textContent = legacyCount
       ? `${legacyCount} legacy Sheets events not migrated.`
-      : 'Sheets sync will activate after the Apps Script endpoint is connected.';
+      : 'Sheets sync will activate after the authenticated relay is connected.';
     btn.textContent = 'LOCAL';
     btn.disabled = true;
     btn.style.opacity = '0.55';

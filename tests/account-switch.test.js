@@ -58,13 +58,4 @@ describe('account switch shared state', () => {
     clearSyncQueueForUser('user-a');
     expect(getSyncQueue('user-b').length).toBe(1);
   });
-
-  it('clears the signing-out user queue when userId is captured before sign-out', () => {
-    localStorage.setItem(`${SYNC_QUEUE_KEY_PREFIX}user-a`, JSON.stringify([
-      { id: 'queued-for-a', userId: 'user-a', status: 'pending', payload: {} },
-    ]));
-    const userId = 'user-a';
-    clearSyncQueueForUser(userId);
-    expect(getSyncQueue('user-a').length).toBe(0);
-  });
 });

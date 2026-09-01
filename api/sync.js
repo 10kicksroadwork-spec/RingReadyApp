@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 
-const FORMULA_PREFIX = /^[=+\-@]/;
+const FORMULA_PREFIX = /^[\t\r\n ]*[=+\-@]/;
 
 function sanitizeSheetText(value) {
   const text = String(value ?? '');
@@ -8,85 +8,120 @@ function sanitizeSheetText(value) {
   return `'${text}`;
 }
 
-function sanitizePayloadStrings(payload) {
-  if (!payload || typeof payload !== 'object') return payload;
-  if (typeof payload.athleteName === 'string') {
-    payload.athleteName = sanitizeSheetText(payload.athleteName);
+function sanitizeForSheets(value) {
+  if (typeof value === 'string') {
+    return sanitizeSheetText(value);
   }
-  const log = payload.workoutLog;
-  if (log && typeof log === 'object') {
-    ['skipReason', 'skipReasonLabel', 'skipDetail', 'note'].forEach((key) => {
-      if (typeof log[key] === 'string') log[key] = sanitizeSheetText(log[key]);
-    });
+  if (Array.isArray(value)) {
+    return value.map(sanitizeForSheets);
   }
-  const context = payload.workoutContext;
-  if (context && typeof context === 'object') {
-    ['description', 'warmup', 'workoutType', 'dayOfWeek', 'weekTab'].forEach((key) => {
-      if (typeof context[key] === 'string') context[key] = sanitizeSheetText(context[key]);
-    });
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, child]) => [key, sanitizeForSheets(child)]),
+    );
   }
-  return payload;
+  return value;
 }
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
-    res.status(405).json({ ok: false, error: 'Method not allowed' });
-    return;
+    return res.status(405).json({
+      ok: false,
+      error: 'Method not allowed',
+    });
   }
 
-  const supabaseUrl = String(process.env.RING_READY_SUPABASE_URL || process.env.VITE_SUPABASE_URL || '').trim();
-  const supabaseAnonKey = String(process.env.RING_READY_SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '').trim();
-  const appsScriptUrl = String(process.env.RING_READY_APPS_SCRIPT_SYNC_URL || process.env.VITE_RING_READY_SYNC_URL || '').trim();
+  const supabaseUrl = String(process.env.RING_READY_SUPABASE_URL || '').trim();
+  const supabaseAnonKey = String(process.env.RING_READY_SUPABASE_ANON_KEY || '').trim();
+  const appsScriptUrl = String(process.env.RING_READY_APPS_SCRIPT_SYNC_URL || '').trim();
   const relaySecret = String(process.env.RING_READY_SYNC_RELAY_SECRET || '').trim();
 
-  if (!supabaseUrl || !supabaseAnonKey || !appsScriptUrl) {
-    res.status(503).json({ ok: false, error: 'Sync relay is not configured' });
-    return;
+  if (!supabaseUrl || !supabaseAnonKey || !appsScriptUrl || !relaySecret) {
+    return res.status(503).json({
+      ok: false,
+      error: 'Sync relay is not configured',
+    });
   }
 
   const authHeader = String(req.headers.authorization || '');
   const token = authHeader.replace(/^Bearer\s+/i, '').trim();
   if (!token) {
-    res.status(401).json({ ok: false, error: 'Missing access token' });
-    return;
+    return res.status(401).json({
+      ok: false,
+      error: 'Missing access token',
+    });
   }
 
-  let payload;
+  let incoming;
   try {
-    payload = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
+    incoming = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
   } catch {
-    res.status(400).json({ ok: false, error: 'Invalid JSON payload' });
-    return;
+    return res.status(400).json({
+      ok: false,
+      error: 'Invalid JSON payload',
+    });
+  }
+
+  if (
+    !incoming
+    || typeof incoming !== 'object'
+    || Array.isArray(incoming)
+    || !String(incoming.eventType || '').trim()
+  ) {
+    return res.status(400).json({
+      ok: false,
+      error: 'Invalid sync payload',
+    });
   }
 
   const supabase = createClient(supabaseUrl, supabaseAnonKey);
-  const { data: userData, error: userError } = await supabase.auth.getUser(token);
-  const user = userData?.user;
-  if (userError || !user) {
-    res.status(401).json({ ok: false, error: 'Invalid access token' });
-    return;
+  const { data, error } = await supabase.auth.getUser(token);
+  if (error || !data?.user) {
+    return res.status(401).json({
+      ok: false,
+      error: 'Invalid access token',
+    });
   }
 
-  payload.userId = user.id;
-  if (relaySecret) payload._relaySecret = relaySecret;
-  sanitizePayloadStrings(payload);
-
-  const headers = { 'Content-Type': 'application/json' };
-  if (relaySecret) headers['X-Ring-Ready-Relay-Secret'] = relaySecret;
-
-  const upstream = await fetch(appsScriptUrl, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(payload),
+  const payload = sanitizeForSheets({
+    ...incoming,
+    userId: data.user.id,
   });
+  payload._relaySecret = relaySecret;
+
+  let upstream;
+  try {
+    upstream = await fetch(appsScriptUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+  } catch {
+    return res.status(502).json({
+      ok: false,
+      error: 'Sheets receiver unavailable',
+    });
+  }
 
   const raw = await upstream.text();
   let body;
   try {
-    body = raw ? JSON.parse(raw) : { ok: upstream.ok };
+    body = JSON.parse(raw);
   } catch {
-    body = { ok: upstream.ok, raw };
+    return res.status(502).json({
+      ok: false,
+      error: 'Invalid response from Sheets receiver',
+    });
   }
 
-  res.status(upstream.ok ? 200 : 502).json(body);
+  if (!upstream.ok || body?.ok !== true) {
+    return res.status(502).json({
+      ok: false,
+      error: String(body?.error || 'Sheets receiver rejected sync'),
+    });
+  }
+
+  return res.status(200).json(body);
 }

@@ -274,7 +274,7 @@ export async function loadCoachRosterPayload() {
   const [profilesResult, hrResult, completionsResult, sprintsResult, mileTestsResult, notesResult, identitiesResult, exclusionsResult, metaResult, attachmentsResult] = await Promise.allSettled([
     loadCoachTable('athlete_profiles', 'user_id,athlete_name,fight_date,camp_length,training_tenure,camp_reset_at,default_modality,updated_at'),
     loadCoachTable('hr_info', 'user_id,max_hr,resting_hr,goal_weight,target_date,updated_at'),
-    loadCoachTable('workout_completions', 'user_id,completion_key,week_index,workout_index,week_label,week_title,day_of_week,workout_type,description,warmup,target_zone,target_bpm,total_minutes,total_seconds,avg_bpm,max_bpm,distance,completed_at,attachment_id,proof_pending,record_json,updated_at'),
+    loadCoachTable('workout_completions', 'user_id,completion_key,week_index,workout_index,week_label,week_title,day_of_week,workout_type,description,warmup,target_zone,target_bpm,total_minutes,total_seconds,avg_bpm,max_bpm,distance,modality,output_type,output_value,avg_watts,completed_at,attachment_id,proof_pending,record_json,updated_at'),
     loadCoachTable('sprint_sessions', 'user_id,session_id,session_at,week_index,workout_index,workout_type,avg_drop,peak_hr,intervals_completed,attachment_id,session_json,updated_at'),
     loadCoachTable('mile_tests', 'user_id,test_key,saved_at,distance,total_minutes,avg_bpm,max_bpm,attachment_id,proof_pending,result_json,updated_at'),
     loadCoachTable('coach_notes', 'athlete_user_id,note,updated_at'),

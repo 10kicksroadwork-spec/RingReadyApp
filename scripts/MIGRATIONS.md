@@ -34,26 +34,33 @@ For the Sprint proof-gap hotfix on an existing database that already ran 000–0
 ## Production deployment procedure
 
 1. Apply Supabase migrations **000–015** in the table above (required through attachment write revoke, modality output columns, and transactional clear RPC).
-2. Configure production Apps Script with `RING_READY_SYNC_RELAY_SECRET` matching the Vercel relay environment.
-3. Deploy the compatible client to Vercel with:
+2. Configure production Apps Script Script Property `RING_READY_SYNC_RELAY_SECRET` matching the Vercel relay environment.
+3. Deploy the compatible client to Vercel with client-side:
    - `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY`
-   - `VITE_RING_READY_SYNC_URL` (Apps Script `/exec` URL used by the server relay)
-   - Relay env on Vercel: `RING_READY_APPS_SCRIPT_SYNC_URL`, `RING_READY_SYNC_RELAY_SECRET`, plus Supabase credentials for JWT validation
-4. Run the live proof contract gate (see below) against production credentials.
-5. Require GitHub **quality** and **production-contract** checks before merging to `main`.
-6. Protect `main`: PR required, status checks required, no force push, no branch deletion.
+4. Configure server-only Vercel env for the authenticated relay:
+   - `RING_READY_APPS_SCRIPT_SYNC_URL` (Apps Script `/exec` URL — **not** exposed to the browser)
+   - `RING_READY_SYNC_RELAY_SECRET`
+   - `RING_READY_SUPABASE_URL` / `RING_READY_SUPABASE_ANON_KEY` (JWT validation for `/api/sync`)
+5. Run the extended live proof contract gate (see below) against production credentials **before promoting production**.
+6. GitHub merge gate: require the **quality** job on PRs to `main`.
+7. Production deploy gate: require **production-contract** to pass on `main` before Vercel promotes production (configure Vercel to wait for this check — it intentionally does not run on PR branches).
+8. Protect `main`: PR required, status checks required, no force push, no branch deletion.
 
 ## Production seeds
 
 Canonical migrations are schema-only. This file is the source of truth for migration order. Environment-specific data lives under [../seeds/](../seeds/), e.g. [production-coach-roster-exclusions.sql](../seeds/production-coach-roster-exclusions.sql) (run after auth users exist).
 
-## Deploy gate: proof authorization
+## Deploy gate: production contract
 
 ```bash
 RING_READY_REQUIRE_PROOF_TESTS=1 npm run test:proof-auth
 ```
 
+Verifies proof authorization **and** migrations **014** (modality/output columns) and **015** (transactional clear RPC).
+
 Requires `RING_READY_SUPABASE_URL`, `RING_READY_SUPABASE_ANON_KEY`, `RING_READY_TEST_EMAIL`, and `RING_READY_TEST_PASSWORD`. Without credentials the script skips unless `RING_READY_REQUIRE_PROOF_TESTS=1` is set (then it fails).
+
+This job is a **production deploy gate**, not a PR merge gate. Configure Vercel production promotion to depend on it passing on `main`.
 
 ## Legacy scripts
 

@@ -1,6 +1,7 @@
 /**
  * Ring Ready PWA receiver for the coach/master Google Sheet.
- * Deploy as a web app (/exec) and set VITE_RING_READY_SYNC_URL in the PWA build.
+ * Deploy as a web app (/exec). Production traffic must arrive through the
+ * authenticated Vercel relay using RING_READY_SYNC_RELAY_SECRET.
  *
  * Companion file: scripts/RingReadyWorkoutProof.gs (workout_proof events).
  */
@@ -24,7 +25,9 @@ function rrSanitizeSheetText_(value) {
 
 function rrAssertRelayAuthorized_(payload) {
   var expected = PropertiesService.getScriptProperties().getProperty('RING_READY_SYNC_RELAY_SECRET');
-  if (!expected) return;
+  if (!expected) {
+    throw new Error('Sync relay secret is not configured.');
+  }
   var provided = String((payload && payload._relaySecret) || '');
   if (provided !== expected) {
     throw new Error('Unauthorized sync relay request.');
@@ -221,14 +224,14 @@ function rrHandleProfileUpdate_(payload) {
   ]);
   sheet.appendRow([
     new Date(),
-    payload.athleteName || profile.athleteName || '',
+    rrSanitizeSheetText_(payload.athleteName || profile.athleteName || ''),
     payload.userId || '',
-    profile.age || '',
-    profile.gender || '',
-    profile.trainingTenure || '',
-    profile.fightDate || '',
-    profile.campLength || '',
-    profile.defaultModality || ''
+    rrSanitizeSheetText_(profile.age || ''),
+    rrSanitizeSheetText_(profile.gender || ''),
+    rrSanitizeSheetText_(profile.trainingTenure || ''),
+    rrSanitizeSheetText_(profile.fightDate || ''),
+    rrSanitizeSheetText_(profile.campLength || ''),
+    rrSanitizeSheetText_(profile.defaultModality || '')
   ]);
   rrAppendRawEvent_(payload, 'Profile saved');
 }
@@ -240,10 +243,10 @@ function rrHandleHRInfoUpdate_(payload) {
   ]);
   sheet.appendRow([
     new Date(),
-    payload.athleteName || '',
+    rrSanitizeSheetText_(payload.athleteName || ''),
     payload.userId || '',
-    hr.goalWeight || '',
-    hr.targetDate || '',
+    rrSanitizeSheetText_(hr.goalWeight || ''),
+    rrSanitizeSheetText_(hr.targetDate || ''),
     hr.maxHr || '',
     hr.restingHr || ''
   ]);
@@ -263,15 +266,15 @@ function rrHandleSprintSession_(payload) {
   sheet.appendRow([
     new Date(),
     meta.linkedRecordId,
-    payload.athleteName || '',
+    rrSanitizeSheetText_(payload.athleteName || ''),
     meta.userId,
     meta.linkedRecordId,
     meta.proofKey,
     meta.weekIndex,
     meta.workoutIndex,
-    payload.weekTab || context.weekTab || '',
-    payload.dayOfWeek || context.dayOfWeek || '',
-    payload.workoutType || context.workoutType || 'Sprint Intervals',
+    rrSanitizeSheetText_(payload.weekTab || context.weekTab || ''),
+    rrSanitizeSheetText_(payload.dayOfWeek || context.dayOfWeek || ''),
+    rrSanitizeSheetText_(payload.workoutType || context.workoutType || 'Sprint Intervals'),
     summary.intervals || (payload.reps || []).length,
     summary.avgDrop || '',
     summary.peakHR || '',
@@ -304,7 +307,7 @@ function rrHandleMileTest_(payload) {
   sheet.appendRow([
     new Date(),
     meta.linkedRecordId,
-    payload.athleteName || '',
+    rrSanitizeSheetText_(payload.athleteName || ''),
     meta.userId,
     meta.proofKey,
     meta.weekIndex === '' ? (context.weekIndex != null ? context.weekIndex : '') : meta.weekIndex,
@@ -369,10 +372,10 @@ function rrAppendAthleteRawSprintRow_(payload, meta) {
   ].concat(RR_PROOF_META_HEADERS));
   var row = sheet.getLastRow() + 1;
   if (indexes['Date']) sheet.getRange(row, indexes['Date']).setValue(new Date());
-  if (indexes['Athlete']) sheet.getRange(row, indexes['Athlete']).setValue(payload.athleteName || '');
-  if (indexes['Week']) sheet.getRange(row, indexes['Week']).setValue(payload.weekTab || context.weekTab || '');
-  if (indexes['Day']) sheet.getRange(row, indexes['Day']).setValue(payload.dayOfWeek || context.dayOfWeek || '');
-  if (indexes['Workout Type']) sheet.getRange(row, indexes['Workout Type']).setValue(payload.workoutType || context.workoutType || 'Sprint Intervals');
+  if (indexes['Athlete']) sheet.getRange(row, indexes['Athlete']).setValue(rrSanitizeSheetText_(payload.athleteName || ''));
+  if (indexes['Week']) sheet.getRange(row, indexes['Week']).setValue(rrSanitizeSheetText_(payload.weekTab || context.weekTab || ''));
+  if (indexes['Day']) sheet.getRange(row, indexes['Day']).setValue(rrSanitizeSheetText_(payload.dayOfWeek || context.dayOfWeek || ''));
+  if (indexes['Workout Type']) sheet.getRange(row, indexes['Workout Type']).setValue(rrSanitizeSheetText_(payload.workoutType || context.workoutType || 'Sprint Intervals'));
   if (indexes['Avg Drop']) sheet.getRange(row, indexes['Avg Drop']).setValue(summary.avgDrop || '');
   if (indexes['Peak HR']) sheet.getRange(row, indexes['Peak HR']).setValue(summary.peakHR || '');
   if (indexes['Intervals']) sheet.getRange(row, indexes['Intervals']).setValue(summary.intervals || '');
@@ -387,10 +390,10 @@ function rrAppendAthleteRawMileRow_(payload, meta, test, context) {
   ].concat(RR_PROOF_META_HEADERS));
   var row = sheet.getLastRow() + 1;
   if (indexes['Date']) sheet.getRange(row, indexes['Date']).setValue(test.savedAt ? new Date(test.savedAt) : new Date());
-  if (indexes['Athlete']) sheet.getRange(row, indexes['Athlete']).setValue(payload.athleteName || '');
-  if (indexes['Week']) sheet.getRange(row, indexes['Week']).setValue(context.weekTab || 'Mile Test');
-  if (indexes['Day']) sheet.getRange(row, indexes['Day']).setValue(context.dayOfWeek || '');
-  if (indexes['Workout Type']) sheet.getRange(row, indexes['Workout Type']).setValue(context.workoutType || 'Mile Test');
+  if (indexes['Athlete']) sheet.getRange(row, indexes['Athlete']).setValue(rrSanitizeSheetText_(payload.athleteName || ''));
+  if (indexes['Week']) sheet.getRange(row, indexes['Week']).setValue(rrSanitizeSheetText_(context.weekTab || 'Mile Test'));
+  if (indexes['Day']) sheet.getRange(row, indexes['Day']).setValue(rrSanitizeSheetText_(context.dayOfWeek || ''));
+  if (indexes['Workout Type']) sheet.getRange(row, indexes['Workout Type']).setValue(rrSanitizeSheetText_(context.workoutType || 'Mile Test'));
   if (indexes['Distance']) sheet.getRange(row, indexes['Distance']).setValue(test.distance || '');
   if (indexes['Total Minutes']) sheet.getRange(row, indexes['Total Minutes']).setValue(test.totalMinutes || '');
   if (indexes['Avg BPM']) sheet.getRange(row, indexes['Avg BPM']).setValue(test.avgBpm || '');

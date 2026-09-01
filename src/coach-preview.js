@@ -1087,11 +1087,11 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, mileTests, note
       })) missingProofs.push(key);
       const log = record.workoutLog || {};
       const output = readOutputFromWorkoutLog({
-        modality: log.modality,
-        outputType: log.outputType,
-        outputValue: log.outputValue,
+        modality: row.modality || log.modality,
+        outputType: row.output_type || log.outputType,
+        outputValue: row.output_value ?? log.outputValue,
         distance: log.distance ?? row.distance,
-        avgWatts: log.avgWatts,
+        avgWatts: row.avg_watts ?? log.avgWatts,
       });
       modalities[key] = output.modality;
       if (output.outputType === 'watts' && Number.isFinite(output.outputValue)) watts[key] = output.outputValue;

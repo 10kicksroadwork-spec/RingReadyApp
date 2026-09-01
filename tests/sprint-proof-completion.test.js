@@ -6,7 +6,7 @@ import {
 
 const mockUser = { id: 'user-a' };
 const showToast = vi.fn();
-const markWorkoutProofCleared = vi.fn();
+const clearCloudWorkoutCompletionWithProof = vi.fn();
 const saveCloudSprintSession = vi.fn();
 const ensureWorkoutProofUploaded = vi.fn();
 const hasWorkoutProof = vi.fn();
@@ -15,6 +15,7 @@ const hasPendingWorkoutProof = vi.fn();
 vi.mock('../src/auth.js', () => ({
   getCurrentUser: vi.fn(() => mockUser),
   saveCloudSprintSession: (...args) => saveCloudSprintSession(...args),
+  clearCloudWorkoutCompletionWithProof: (...args) => clearCloudWorkoutCompletionWithProof(...args),
 }));
 
 vi.mock('../src/supabase-client.js', () => ({
@@ -29,7 +30,6 @@ vi.mock('../src/proof.js', () => ({
   hasPendingWorkoutProof: (...args) => hasPendingWorkoutProof(...args),
   hasWorkoutProof: (...args) => hasWorkoutProof(...args),
   initWorkoutProof: vi.fn(),
-  markWorkoutProofCleared: (...args) => markWorkoutProofCleared(...args),
 }));
 
 vi.mock('../src/ui.js', () => ({
@@ -96,18 +96,18 @@ describe('sprint proof completion', () => {
     hasPendingWorkoutProof.mockReturnValue(false);
     saveCloudSprintSession.mockResolvedValue(undefined);
     ensureWorkoutProofUploaded.mockResolvedValue({ id: 'proof-attachment-1' });
-    markWorkoutProofCleared.mockResolvedValue(undefined);
+    clearCloudWorkoutCompletionWithProof.mockResolvedValue(undefined);
   });
 
-  it('does not show success toast or remove completion when proof-clear RPC fails', async () => {
+  it('does not show success toast or remove completion when transactional clear fails', async () => {
     const record = buildSprintResultRecord();
     const completed = saveWorkoutCompletion(record);
     showSavedWorkoutResult(completed);
-    markWorkoutProofCleared.mockRejectedValue(new Error('proof clear failed'));
+    clearCloudWorkoutCompletionWithProof.mockRejectedValue(new Error('proof clear failed'));
 
     await clearResultWorkoutCompletion();
 
-    expect(markWorkoutProofCleared).toHaveBeenCalledWith('proof-attachment-1', true);
+    expect(clearCloudWorkoutCompletionWithProof).toHaveBeenCalledWith(1, 0, 'proof-attachment-1');
     expect(showToast).toHaveBeenCalledWith('PROOF CLEAR FAILED');
     expect(showToast).not.toHaveBeenCalledWith('WORKOUT MARKED INCOMPLETE');
     expect(getWorkoutCompletion(1, 0)).toBeTruthy();

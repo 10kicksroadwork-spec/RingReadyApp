@@ -116,6 +116,7 @@ import {
   hasWorkoutProof,
   initWorkoutProof,
 } from './proof.js';
+import { performSignOutCleanup } from './logout.js';
 import { resolveCanonicalClientRecordId } from './proof-staging.js';
 
 const WEEK_INDEX_KEY = 'ringReadyActiveWeekIndex';
@@ -622,11 +623,13 @@ function openForgotPassword() {
 async function handleLogout() {
   try {
     closeWeekDrawer();
-    const userId = getCurrentUser()?.id;
-    await signOut();
+    await performSignOutCleanup({
+      getCurrentUser,
+      signOut,
+      clearAccountLocalData,
+    });
     passwordRecoveryPending = false;
     authMode = 'sign-in';
-    clearAccountLocalData(userId);
     localStorage.removeItem(AUTH_USER_STORAGE_KEY);
     syncSignOutControls();
     await refreshCoachPreview();
@@ -1404,15 +1407,7 @@ async function clearCompletionFromDetail(weekIndex, workoutIndex) {
   const attachmentId = existing?.attachment?.id || null;
   if (isSupabaseConfigured && getCurrentUser()) {
     try {
-      if (attachmentId) {
-        await clearCloudWorkoutCompletionWithProof(safeWeekIndex, safeWorkoutIndex, attachmentId);
-      } else {
-        const cloudCleared = await deleteWorkoutCompletionFromCloud(safeWeekIndex, safeWorkoutIndex);
-        if (!cloudCleared) {
-          shellHooks?.showToast?.('CLOUD DELETE FAILED');
-          return;
-        }
-      }
+      await clearCloudWorkoutCompletionWithProof(safeWeekIndex, safeWorkoutIndex, attachmentId);
     } catch (error) {
       console.warn('Could not clear workout from cloud', error);
       shellHooks?.showToast?.(String(error?.message || error).toUpperCase());
@@ -2201,6 +2196,7 @@ export async function initAthleteShell(hooks) {
     renderShell();
     renderAthleteProfileDashboard();
     if (!event.detail) return;
+    if (event.detail.cloudAlreadyCleared) return;
     const weekIndex = Number(event.detail.weekIndex);
     const workoutIndex = Number(event.detail.workoutIndex);
     if (!Number.isFinite(weekIndex) || !Number.isFinite(workoutIndex)) return;

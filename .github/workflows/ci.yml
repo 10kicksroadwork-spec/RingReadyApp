@@ -45,7 +45,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: production-contract
 
-    # Do not expose protected production credentials to arbitrary fork PRs.
+    # Production deploy gate only — intentionally skipped on PR branches.
     if: >
       github.event_name == 'workflow_dispatch' ||
       github.ref == 'refs/heads/main'

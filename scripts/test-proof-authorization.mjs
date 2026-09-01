@@ -12,7 +12,7 @@
  */
 
 import { createClient } from '@supabase/supabase-js';
-import { buildProvisionalMileTestCloudPayload } from '../src/cloud-record-mapper.js';
+import { buildProvisionalMileTestCloudPayload, buildWorkoutCloudPayload } from '../src/cloud-record-mapper.js';
 
 const url = process.env.RING_READY_SUPABASE_URL || process.env.SUPABASE_URL || '';
 const anonKey = process.env.RING_READY_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || '';
@@ -307,6 +307,146 @@ async function run() {
     assert(await countCurrentProofs(client, user.id, concurrentMileKey) === 1, 'Concurrent replacements must leave one current proof');
     if (first.data?.id) createdAttachmentIds.push(first.data.id);
     if (second.data?.id) createdAttachmentIds.push(second.data.id);
+
+    const machineRecord = {
+      id: `${testPrefix}:machine-client`,
+      workoutContext: { weekIndex: 9, workoutIndex: 8, workoutType: 'Benchmark Run' },
+      workoutLog: {
+        modality: 'assault_bike',
+        outputType: 'watts',
+        outputValue: 184,
+        avgWatts: 184,
+        totalMinutes: 30,
+        avgBpm: 137,
+        maxBpm: 165,
+        completedAt: new Date().toISOString(),
+      },
+      completedAt: new Date().toISOString(),
+    };
+    const machinePayload = buildWorkoutCloudPayload(machineRecord, user.id);
+    const { data: machineRow, error: machineUpsertError } = await client
+      .from('workout_completions')
+      .upsert(machinePayload, { onConflict: 'user_id,completion_key' })
+      .select('id, modality, output_type, output_value, avg_watts, distance')
+      .single();
+    assert(
+      !machineUpsertError && machineRow?.id,
+      `Migration 014 machine upsert must succeed: ${machineUpsertError?.message || 'unknown'}`,
+    );
+    assert(machineRow.modality === 'assault_bike', 'Migration 014 must persist modality');
+    assert(machineRow.output_type === 'watts', 'Migration 014 must persist output_type');
+    assert(Number(machineRow.output_value) === 184, 'Migration 014 must persist output_value');
+    assert(Number(machineRow.avg_watts) === 184, 'Migration 014 must persist avg_watts');
+    assert(machineRow.distance === null, 'Migration 014 machine rows must keep distance null');
+    createdWorkoutIds.push(machineRow.id);
+
+    const clearClientId = `${testPrefix}:clear-client`;
+    const clearWeek = 9;
+    const clearWorkout = 7;
+    const clearProofKey = `${testPrefix}:program:7:${clearWeek}:${clearWorkout}`;
+    const clearPath = `${user.id}/${clearProofKey}/clear.webp`;
+    storagePaths.push(clearPath);
+    const { data: clearCompletionRow, error: clearCompletionError } = await client.from('workout_completions').insert({
+      user_id: user.id,
+      completion_key: `${clearWeek}:${clearWorkout}`,
+      client_record_id: clearClientId,
+      week_index: clearWeek,
+      workout_index: clearWorkout,
+    }).select('id').single();
+    assert(!clearCompletionError && clearCompletionRow?.id, `Could not seed clear-test completion: ${clearCompletionError?.message || 'unknown'}`);
+    createdWorkoutIds.push(clearCompletionRow.id);
+    await uploadProofBlob(client, clearPath);
+    const { data: clearProof, error: seedClearProofError } = await createProof(client, {
+      p_proof_key: clearProofKey,
+      p_linked_record_id: clearClientId,
+      p_storage_path: clearPath,
+      p_week_index: clearWeek,
+      p_workout_index: clearWorkout,
+    });
+    assert(!seedClearProofError && clearProof?.id, `Could not seed clear-test proof: ${seedClearProofError?.message || 'unknown'}`);
+    createdAttachmentIds.push(clearProof.id);
+    const { error: linkClearProofError } = await client
+      .from('workout_completions')
+      .update({ attachment_id: clearProof.id })
+      .eq('id', clearCompletionRow.id);
+    assert(!linkClearProofError, `Could not link clear-test proof: ${linkClearProofError?.message || 'unknown'}`);
+
+    const { error: transactionalClearError } = await client.rpc('clear_workout_completion_with_proof', {
+      p_week_index: clearWeek,
+      p_workout_index: clearWorkout,
+      p_attachment_id: null,
+    });
+    assert(!transactionalClearError, `Migration 015 clear RPC must succeed: ${transactionalClearError?.message || 'unknown'}`);
+    const { data: clearedCompletion } = await client
+      .from('workout_completions')
+      .select('id')
+      .eq('id', clearCompletionRow.id)
+      .maybeSingle();
+    assert(!clearedCompletion, 'Migration 015 must delete the completion row');
+    const { data: clearedAttachment, error: clearedAttachmentError } = await client
+      .from('workout_attachments')
+      .select('completion_cleared')
+      .eq('id', clearProof.id)
+      .single();
+    assert(!clearedAttachmentError && clearedAttachment?.completion_cleared === true, 'Migration 015 must mark proof completion_cleared = true');
+    const clearedIndex = createdWorkoutIds.indexOf(clearCompletionRow.id);
+    if (clearedIndex >= 0) createdWorkoutIds.splice(clearedIndex, 1);
+
+    const mismatchClientA = `${testPrefix}:mismatch-a`;
+    const mismatchClientB = `${testPrefix}:mismatch-b`;
+    const mismatchWeekA = 9;
+    const mismatchWorkoutA = 5;
+    const mismatchWeekB = 9;
+    const mismatchWorkoutB = 6;
+    const mismatchProofKeyA = `${testPrefix}:program:7:${mismatchWeekA}:${mismatchWorkoutA}`;
+    const mismatchProofKeyB = `${testPrefix}:program:7:${mismatchWeekB}:${mismatchWorkoutB}`;
+    const mismatchPathA = `${user.id}/${mismatchProofKeyA}/a.webp`;
+    const mismatchPathB = `${user.id}/${mismatchProofKeyB}/b.webp`;
+    storagePaths.push(mismatchPathA, mismatchPathB);
+    const { data: mismatchRowA } = await client.from('workout_completions').insert({
+      user_id: user.id,
+      completion_key: `${mismatchWeekA}:${mismatchWorkoutA}`,
+      client_record_id: mismatchClientA,
+      week_index: mismatchWeekA,
+      workout_index: mismatchWorkoutA,
+    }).select('id').single();
+    const { data: mismatchRowB } = await client.from('workout_completions').insert({
+      user_id: user.id,
+      completion_key: `${mismatchWeekB}:${mismatchWorkoutB}`,
+      client_record_id: mismatchClientB,
+      week_index: mismatchWeekB,
+      workout_index: mismatchWorkoutB,
+    }).select('id').single();
+    createdWorkoutIds.push(mismatchRowA.id, mismatchRowB.id);
+    await uploadProofBlob(client, mismatchPathA);
+    await uploadProofBlob(client, mismatchPathB);
+    const { data: mismatchProofA } = await createProof(client, {
+      p_proof_key: mismatchProofKeyA,
+      p_linked_record_id: mismatchClientA,
+      p_storage_path: mismatchPathA,
+      p_week_index: mismatchWeekA,
+      p_workout_index: mismatchWorkoutA,
+    });
+    const { data: mismatchProofB } = await createProof(client, {
+      p_proof_key: mismatchProofKeyB,
+      p_linked_record_id: mismatchClientB,
+      p_storage_path: mismatchPathB,
+      p_week_index: mismatchWeekB,
+      p_workout_index: mismatchWorkoutB,
+    });
+    createdAttachmentIds.push(mismatchProofA.id, mismatchProofB.id);
+    await client.from('workout_completions').update({ attachment_id: mismatchProofA.id }).eq('id', mismatchRowA.id);
+    await client.from('workout_completions').update({ attachment_id: mismatchProofB.id }).eq('id', mismatchRowB.id);
+
+    const { error: mismatchClearError } = await client.rpc('clear_workout_completion_with_proof', {
+      p_week_index: mismatchWeekA,
+      p_workout_index: mismatchWorkoutA,
+      p_attachment_id: mismatchProofB.id,
+    });
+    assert(!!mismatchClearError, 'Migration 015 must reject mismatched attachment/workout pairing');
+    const { data: stillThereA } = await client.from('workout_completions').select('id').eq('id', mismatchRowA.id).maybeSingle();
+    const { data: stillThereB } = await client.from('workout_completions').select('id').eq('id', mismatchRowB.id).maybeSingle();
+    assert(stillThereA && stillThereB, 'Mismatched clear attempt must leave both completions intact');
 
     console.log('PASS: proof authorization matrix');
   } finally {
