@@ -31,9 +31,10 @@ For the Sprint proof-gap hotfix on an existing database that already ran 000–0
 
 ## Deploy order (proof + Sheets)
 
-1. Supabase migrations 003 and 006 (atomic RPC + client record identity validation)
-2. Production Apps Script receiver + proof handler
-3. Compatible client deployment
+1. Supabase migrations **000–013** in the table above (required for current proof staging, mile-test staging, proof-clear RPC, and attachment write revoke)
+2. Production Apps Script receiver + proof handler (compatible with contextual proof RPC from 006+)
+3. Run the live proof contract gate (see below) against production credentials
+4. Deploy the compatible client (Vercel)
 
 ## Production seeds
 

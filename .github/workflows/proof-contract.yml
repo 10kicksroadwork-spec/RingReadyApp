@@ -1,0 +1,27 @@
+name: Proof contract
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  proof-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Live Supabase proof authorization contract
+        env:
+          RING_READY_REQUIRE_PROOF_TESTS: '1'
+          RING_READY_SUPABASE_URL: ${{ secrets.RING_READY_SUPABASE_URL }}
+          RING_READY_SUPABASE_ANON_KEY: ${{ secrets.RING_READY_SUPABASE_ANON_KEY }}
+          RING_READY_TEST_EMAIL: ${{ secrets.RING_READY_TEST_EMAIL }}
+          RING_READY_TEST_PASSWORD: ${{ secrets.RING_READY_TEST_PASSWORD }}
+        run: npm run test:proof-auth

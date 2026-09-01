@@ -1243,6 +1243,18 @@ export async function clearResultWorkoutCompletion() {
   if (!window.confirm('Clear this workout from this device and your account?')) return;
 
   const attachmentId = activeResultRecord?.attachment?.id;
+  // When connected to the account, do not report a successful clear if the
+  // authoritative proof-clear RPC fails.
+  if (attachmentId && isSupabaseConfigured && getCurrentUser()) {
+    try {
+      await markWorkoutProofCleared(attachmentId, true);
+    } catch (error) {
+      console.warn('Could not mark sprint proof cleared', error);
+      showToast(String(error?.message || error).toUpperCase());
+      return;
+    }
+  }
+
   const removed = removeWorkoutCompletion(context.weekIndex, context.workoutIndex);
   if (!removed) {
     showToast('NO COMPLETION TO CLEAR');
@@ -1252,12 +1264,6 @@ export async function clearResultWorkoutCompletion() {
   activeResultRecord = { ...activeResultRecord };
   delete activeResultRecord.completedAt;
   delete activeResultRecord.completionKey;
-  try {
-    await markWorkoutProofCleared(attachmentId, true);
-  } catch (error) {
-    console.warn('Could not mark sprint proof cleared', error);
-    showToast(String(error?.message || error).toUpperCase());
-  }
   updateCompleteWorkoutButton(activeResultRecord);
   window.dispatchEvent(new CustomEvent('ringready:workout-completion-cleared', { detail: { weekIndex: context.weekIndex, workoutIndex: context.workoutIndex } }));
   showToast('WORKOUT MARKED INCOMPLETE');
