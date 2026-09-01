@@ -340,6 +340,35 @@ async function run() {
     assert(machineRow.distance === null, 'Migration 014 machine rows must keep distance null');
     createdWorkoutIds.push(machineRow.id);
 
+    const legacyClientId = `${testPrefix}:legacy-distance`;
+    const legacyWeek = 9;
+    const legacyWorkout = 4;
+    const { data: legacyRow, error: legacyInsertError } = await client.from('workout_completions').insert({
+      user_id: user.id,
+      completion_key: `${legacyWeek}:${legacyWorkout}`,
+      client_record_id: legacyClientId,
+      week_index: legacyWeek,
+      workout_index: legacyWorkout,
+      distance: 3.2,
+      record_json: {
+        id: legacyClientId,
+        workoutContext: { weekIndex: legacyWeek, workoutIndex: legacyWorkout, workoutType: 'Benchmark Run' },
+      },
+    }).select('id, distance, modality, output_type, output_value').single();
+    assert(!legacyInsertError && legacyRow?.id, `Could not seed legacy distance row: ${legacyInsertError?.message || 'unknown'}`);
+    assert(Number(legacyRow.distance) === 3.2, 'Legacy SQL distance must remain intact on insert');
+    createdWorkoutIds.push(legacyRow.id);
+    const { data: legacyReadback, error: legacyReadbackError } = await client
+      .from('workout_completions')
+      .select('distance, modality, output_type, output_value')
+      .eq('id', legacyRow.id)
+      .single();
+    assert(!legacyReadbackError, `Could not read legacy distance row: ${legacyReadbackError?.message || 'unknown'}`);
+    assert(Number(legacyReadback.distance) === 3.2, 'Migration 014 must preserve existing SQL distance for legacy rows');
+    if (legacyReadback.output_type === 'distance' && legacyReadback.output_value != null) {
+      assert(Number(legacyReadback.output_value) === 3.2, 'Migration 014 must backfill output_value from SQL distance');
+    }
+
     const clearClientId = `${testPrefix}:clear-client`;
     const clearWeek = 9;
     const clearWorkout = 7;
@@ -391,6 +420,57 @@ async function run() {
     assert(!clearedAttachmentError && clearedAttachment?.completion_cleared === true, 'Migration 015 must mark proof completion_cleared = true');
     const clearedIndex = createdWorkoutIds.indexOf(clearCompletionRow.id);
     if (clearedIndex >= 0) createdWorkoutIds.splice(clearedIndex, 1);
+
+    const strandedClientId = `${testPrefix}:stranded-client`;
+    const strandedWeek = 9;
+    const strandedWorkout = 3;
+    const strandedProofKey = `${testPrefix}:program:7:${strandedWeek}:${strandedWorkout}`;
+    const strandedPath = `${user.id}/${strandedProofKey}/stranded.webp`;
+    storagePaths.push(strandedPath);
+    const { data: strandedCompletionRow, error: strandedCompletionError } = await client.from('workout_completions').insert({
+      user_id: user.id,
+      completion_key: `${strandedWeek}:${strandedWorkout}`,
+      client_record_id: strandedClientId,
+      week_index: strandedWeek,
+      workout_index: strandedWorkout,
+      attachment_id: null,
+    }).select('id').single();
+    assert(!strandedCompletionError && strandedCompletionRow?.id, `Could not seed stranded completion: ${strandedCompletionError?.message || 'unknown'}`);
+    createdWorkoutIds.push(strandedCompletionRow.id);
+    await uploadProofBlob(client, strandedPath);
+    const { data: strandedProof, error: strandedProofError } = await createProof(client, {
+      p_proof_key: strandedProofKey,
+      p_linked_record_id: strandedClientId,
+      p_storage_path: strandedPath,
+      p_week_index: strandedWeek,
+      p_workout_index: strandedWorkout,
+    });
+    assert(!strandedProofError && strandedProof?.id, `Could not seed stranded proof: ${strandedProofError?.message || 'unknown'}`);
+    createdAttachmentIds.push(strandedProof.id);
+
+    const { error: strandedClearError } = await client.rpc('clear_workout_completion_with_proof', {
+      p_week_index: strandedWeek,
+      p_workout_index: strandedWorkout,
+      p_attachment_id: null,
+    });
+    assert(!strandedClearError, `Migration 015 must clear stranded proof by linked_record_id: ${strandedClearError?.message || 'unknown'}`);
+    const { data: strandedCompletionAfter } = await client
+      .from('workout_completions')
+      .select('id')
+      .eq('id', strandedCompletionRow.id)
+      .maybeSingle();
+    assert(!strandedCompletionAfter, 'Stranded clear must delete the completion row');
+    const { data: strandedAttachmentAfter, error: strandedAttachmentAfterError } = await client
+      .from('workout_attachments')
+      .select('completion_cleared')
+      .eq('id', strandedProof.id)
+      .single();
+    assert(
+      !strandedAttachmentAfterError && strandedAttachmentAfter?.completion_cleared === true,
+      'Stranded clear must mark linked current proof completion_cleared = true',
+    );
+    const strandedIndex = createdWorkoutIds.indexOf(strandedCompletionRow.id);
+    if (strandedIndex >= 0) createdWorkoutIds.splice(strandedIndex, 1);
 
     const mismatchClientA = `${testPrefix}:mismatch-a`;
     const mismatchClientB = `${testPrefix}:mismatch-b`;

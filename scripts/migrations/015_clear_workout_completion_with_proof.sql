@@ -60,6 +60,21 @@ begin
     raise exception 'Workout completion not found or not owned by caller';
   end if;
 
+  -- Recover the current authoritative proof for legacy/stranded rows whose
+  -- completion attachment_id was never populated.
+  if v_db_attachment_id is null
+     and coalesce(v_client_record_id, '') <> ''
+  then
+    select wa.id
+    into v_db_attachment_id
+    from public.workout_attachments wa
+    where wa.user_id = v_user_id
+      and wa.linked_record_id = v_client_record_id
+      and wa.is_current = true
+    order by wa.uploaded_at desc
+    limit 1;
+  end if;
+
   if
     p_attachment_id is not null
     and v_db_attachment_id is not null
