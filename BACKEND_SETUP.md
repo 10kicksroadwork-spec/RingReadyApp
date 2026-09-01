@@ -1,44 +1,47 @@
 # Ring Ready Backend Setup
 
-The PWA now queues four backend event types:
+The PWA queues backend event types through an authenticated relay in production:
+
+```text
+Athlete browser  →  JWT  →  /api/sync  →  shared server secret  →  Apps Script
+```
+
+Direct browser → Apps Script (`no-cors`, `VITE_RING_READY_SYNC_URL`, `?syncUrl=`) is **deprecated** for production.
+
+## Event types
 
 - `profile_update`
 - `hr_info_update`
 - `mile_test`
 - `sprint_session`
+- `daily_workout`
+- `workout_proof`
 
 ## 1. Add the Apps Script receiver
 
-Copy `Updated 7 Week with Mile Test/Master Code/RingReadyWebApp.gs` into the Apps Script project bound to the coach/master Google Sheet.
+Copy `scripts/RingReadyWebApp.gs` and `scripts/RingReadyWorkoutProof.gs` into the Apps Script project bound to the coach/master Google Sheet.
 
 In Apps Script, run:
 
 ```js
 rrSetupBackendSheets()
+rrSetupWorkoutProofs()
 ```
 
-That creates or verifies the receiver tabs and the `Athlete Raw Data` bridge headers:
+That creates or verifies receiver tabs, coach-facing proof columns, and the 15-minute proof retry trigger.
 
-- `Ring Ready Raw Events`
-- `Ring Ready Sprint Sessions`
-- `Ring Ready Sprint Reps`
-- `Ring Ready Mile Tests`
-- `Ring Ready Profiles`
-- `Ring Ready HR Info`
-- `Athlete Raw Data` bridge rows for sprint sessions and mile tests
-
-Optional quick test from Apps Script. This writes a test receiver event and a compatible `Athlete Raw Data` row:
+Optional quick test from Apps Script:
 
 ```js
 rrTestBackendReceiver()
 ```
 
-
-If `Athlete Raw Data` is rebuilt by older extraction tools and the PWA rows disappear, run this from Apps Script to re-import all stored PWA sprint/mile events without duplicating rows:
+If `Athlete Raw Data` is rebuilt by older extraction tools and PWA rows disappear, run:
 
 ```js
 rrImportPwaReceiverToAthleteRawData()
 ```
+
 ## 2. Deploy as a Google Web App
 
 In Apps Script:
@@ -49,47 +52,46 @@ In Apps Script:
 4. Who has access: Anyone with the link
 5. Copy the `/exec` web app URL
 
-## 3. Connect the PWA to that URL
+Store this URL **server-side only** — do not expose it in `VITE_*` variables.
 
-For a build-time connection, set this Vite env var before building/deploying:
+## 3. Configure the authenticated relay (production)
 
-```bash
-VITE_RING_READY_SYNC_URL="https://script.google.com/macros/s/.../exec"
-```
-
-For a no-code/test connection, open the PWA once with this query parameter:
+### Vercel server environment
 
 ```text
-https://your-pwa-url.com/?syncUrl=https%3A%2F%2Fscript.google.com%2Fmacros%2Fs%2F...%2Fexec
+RING_READY_APPS_SCRIPT_SYNC_URL=https://script.google.com/macros/s/.../exec
+RING_READY_SYNC_RELAY_SECRET=<shared-secret>
+RING_READY_SUPABASE_URL=https://your-project.supabase.co
+RING_READY_SUPABASE_ANON_KEY=<anon-key>
 ```
 
-The app stores that endpoint locally, removes the query string from the address bar, and future saves will sync to the Sheet.
-
-To clear the stored endpoint on a device:
+### Apps Script Script Properties
 
 ```text
-https://your-pwa-url.com/?clearSyncUrl=1
+RING_READY_SUPABASE_URL
+RING_READY_SUPABASE_SERVICE_ROLE_KEY
+RING_READY_DRIVE_ROOT_FOLDER_ID
+RING_READY_SYNC_RELAY_SECRET
 ```
 
-## Notes
+`RING_READY_SYNC_RELAY_SECRET` must match the Vercel value. The relay rejects requests without it.
 
-The PWA still saves locally first. If the athlete is offline or the endpoint is not connected, the data stays in the local queue and can sync later.
+### Athlete client (production)
 
-Because Google Apps Script web apps do not provide normal browser CORS responses, the PWA sends requests in `no-cors` mode. That means the app can confirm the browser accepted the send, while the receiver tabs are the source of truth that the Sheet wrote the data.
+```text
+VITE_SUPABASE_URL
+VITE_SUPABASE_ANON_KEY
+```
+
+Do **not** set `VITE_RING_READY_SYNC_URL` in production. The client posts to `/api/sync`, which validates the athlete JWT and forwards to Apps Script with the relay secret.
+
 ## 4. Supabase database migrations
 
 Follow the **canonical ordered migrations** in [`scripts/MIGRATIONS.md`](scripts/MIGRATIONS.md). Run each file in the Supabase SQL editor in order on a fresh or partially migrated project.
 
-Do **not** run deprecated one-off scripts under `scripts/legacy/` or root `scripts/supabase-*.sql` on production. Those files are reference copies only.
+Do **not** run deprecated one-off scripts under `scripts/legacy/` or root `scripts/supabase-*.sql` on production.
 
-That migration chain covers:
-
-- Athlete workout data (completions, sprint sessions, mile tests)
-- Coach dashboard access and roster policies
-- Private workout proof staging and attachment RPCs
-- Camp reset, roster meta, client record IDs, and proof-staging flags
-
-Environment-specific seed data (for example coach roster exclusions) lives under [`scripts/seeds/`](scripts/seeds/) and runs after auth users exist.
+Environment-specific seed data lives under [`scripts/seeds/`](scripts/seeds/) and runs after auth users exist.
 
 ### Deploy gate (before client deploy)
 
@@ -100,13 +102,19 @@ npm run build
 RING_READY_REQUIRE_PROOF_TESTS=1 npm run test:proof-auth
 ```
 
-Requires `RING_READY_SUPABASE_URL`, `RING_READY_SUPABASE_ANON_KEY`, `RING_READY_TEST_EMAIL`, and `RING_READY_TEST_PASSWORD`.
+Requires `RING_READY_SUPABASE_URL`, `RING_READY_SUPABASE_ANON_KEY`, `RING_READY_TEST_EMAIL`, and `RING_READY_TEST_PASSWORD` in the GitHub Environment `production-contract`. Missing credentials **fail** the gate.
 
-If a coach account was created with **Add user** and cannot sign in on a new device, see [`scripts/legacy/supabase-set-coach-password.sql`](scripts/legacy/supabase-set-coach-password.sql) after replacing the password placeholder.
+### Branch protection
 
-Password reset from the app sign-in screen uses Supabase Auth email links. In Supabase → Authentication → URL Configuration, set **Site URL** to `https://ring-ready-app.vercel.app` and add that same origin under **Redirect URLs** so “Forgot password?” links open the app’s set-new-password screen.
+Protect `main`: PR required, `quality` status check required, block force push and branch deletion.
 
-## 5. Private workout proof (Apps Script) Keep the existing receiver and legacy extraction functions. In the current `doPost` dispatcher, pass proof events to the add-on:
+If a coach account was created with **Add user** and cannot sign in on a new device, see [`scripts/legacy/supabase-set-coach-password.sql`](scripts/legacy/supabase-set-coach-password.sql).
+
+Password reset uses Supabase Auth email links. In Supabase → Authentication → URL Configuration, set **Site URL** to `https://ring-ready-app.vercel.app` and add that origin under **Redirect URLs**.
+
+## 5. Private workout proof (Apps Script)
+
+In the `doPost` dispatcher:
 
 ```js
 if (payload.eventType === 'workout_proof') {
@@ -114,26 +122,14 @@ if (payload.eventType === 'workout_proof') {
 }
 ```
 
-In Apps Script Project Settings, create these Script Properties:
+Relay-triggered proof transfers require `payload.userId` (set by `/api/sync` from the athlete JWT) and bind attachment lookup to that user. Completed proofs are idempotent on replay — a lost acknowledgement does not downgrade a successful transfer.
 
-```text
-RING_READY_SUPABASE_URL
-RING_READY_SUPABASE_SERVICE_ROLE_KEY
-RING_READY_DRIVE_ROOT_FOLDER_ID
-```
-
-The URL is the Supabase project URL. The service-role key belongs only in Apps Script Properties; never put it in GitHub, Vercel or a `VITE_` variable. Create a private Drive folder named `Ring Ready Workout Proof` and use the folder ID from its URL.
-
-Run this once from Apps Script and approve its permissions:
-
-```js
-rrSetupWorkoutProofs()
-```
-
-That creates the audit tab, adds coach-facing proof columns and installs the 15-minute retry trigger. Redeploy the existing Apps Script web app afterward so the new `workout_proof` handler is live.
+Create a private Drive folder named `Ring Ready Workout Proof` and use its ID for `RING_READY_DRIVE_ROOT_FOLDER_ID`.
 
 To retry missed transfers manually:
 
 ```js
 rrSyncPendingWorkoutProofs()
 ```
+
+Redeploy the Apps Script web app after updating proof handlers.

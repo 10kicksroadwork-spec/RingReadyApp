@@ -31,18 +31,40 @@ function rrHandleWorkoutProofEvent(payload) {
   if (!payload || payload.eventType !== 'workout_proof') {
     throw new Error('Invalid workout_proof event.');
   }
-  var attachmentId = String(payload.attachmentId || (payload.attachment && payload.attachment.id) || '');
-  if (!attachmentId) throw new Error('Workout proof is missing its attachment ID.');
-  return rrTransferWorkoutProof_(attachmentId);
+  var attachmentId = String(
+    payload.attachmentId
+      || (payload.attachment && payload.attachment.id)
+      || ''
+  );
+  var expectedUserId = String(payload.userId || '');
+  if (!attachmentId) {
+    throw new Error('Workout proof is missing its attachment ID.');
+  }
+  if (!expectedUserId) {
+    throw new Error('Workout proof is missing authenticated user ID.');
+  }
+  return rrTransferWorkoutProof_(attachmentId, expectedUserId);
 }
 
-function rrFetchAttachmentRow_(attachmentId) {
-  var response = rrSupabaseFetch_(
-    '/rest/v1/workout_attachments?select=*&id=eq.' + encodeURIComponent(attachmentId) + '&limit=1',
-    { method: 'get' }
-  );
+function rrFetchAttachmentRow_(attachmentId, expectedUserId) {
+  var path =
+    '/rest/v1/workout_attachments'
+    + '?select=*'
+    + '&id=eq.' + encodeURIComponent(attachmentId);
+  if (expectedUserId) {
+    path += '&user_id=eq.' + encodeURIComponent(expectedUserId);
+  }
+  path += '&limit=1';
+  var response = rrSupabaseFetch_(path, {
+    method: 'get'
+  });
   var rows = JSON.parse(response.getContentText() || '[]');
-  if (!rows.length) throw new Error('Workout proof attachment not found: ' + attachmentId);
+  if (!rows.length) {
+    throw new Error(
+      'Workout proof attachment not found or not owned by caller: '
+      + attachmentId
+    );
+  }
   return rows[0];
 }
 
@@ -75,68 +97,200 @@ function rrBuildProofPayloadFromRow_(row) {
   };
 }
 
-function rrTransferWorkoutProof_(attachmentId) {
-  var row = rrFetchAttachmentRow_(attachmentId);
-  var payload = rrBuildProofPayloadFromRow_(row);
-  var attachment = payload.attachment || {};
-  var storagePath = String(attachment.storagePath || '');
-  if (!storagePath) throw new Error('Workout proof is missing its storage path.');
-
+function rrTransferWorkoutProof_(attachmentId, expectedUserId) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
   try {
-    rrPatchAttachment_(attachmentId, {
-      transfer_status: 'processing',
-      transfer_error: '',
-      updated_at: new Date().toISOString()
-    });
-
-    var imageResponse = rrSupabaseFetch_(
-      '/storage/v1/object/authenticated/' + encodeURIComponent(RR_PROOF_BUCKET) + '/' + rrEncodeStoragePath_(storagePath),
-      { method: 'get' }
+    // Re-read while holding the lock so replay/concurrent requests see
+    // the latest transfer status.
+    var row = rrFetchAttachmentRow_(
+      attachmentId,
+      expectedUserId || ''
     );
-    var root = DriveApp.getFolderById(rrRequiredProperty_('RING_READY_DRIVE_ROOT_FOLDER_ID'));
-    var athleteName = String(payload.athleteName || rrLookupAthleteName_(payload.userId || '') || 'Unknown Athlete');
-    var context = payload.workoutContext || {};
-    var athleteFolder = rrGetOrCreateFolder_(root, rrSafeDriveName_(athleteName));
-    var weekName = context.weekIndex === null || context.weekIndex === undefined || context.weekIndex === ''
-      ? 'Mile Tests'
-      : 'Week ' + (Number(context.weekIndex) + 1);
-    var weekFolder = rrGetOrCreateFolder_(athleteFolder, weekName);
-    var uploadedAt = attachment.uploadedAt ? new Date(attachment.uploadedAt) : new Date();
-    var datePart = Utilities.formatDate(uploadedAt, Session.getScriptTimeZone(), 'yyyy-MM-dd');
-    var workoutPart = rrSafeDriveName_(context.workoutType || 'Workout');
-    var filename = datePart + '_' + workoutPart + '_' + attachmentId.slice(0, 8) + '.webp';
-    var blob = imageResponse.getBlob().setName(filename);
-    var file = weekFolder.createFile(blob);
-    file.setSharing(DriveApp.Access.PRIVATE, DriveApp.Permission.NONE);
-    var driveUrl = file.getUrl();
-    var transferredAt = new Date().toISOString();
-
-    rrPatchAttachment_(attachmentId, {
-      transfer_status: 'complete',
-      transfer_error: '',
-      drive_file_id: file.getId(),
-      drive_url: driveUrl,
-      transferred_at: transferredAt,
-      updated_at: transferredAt
-    });
-    rrDeleteStagedProof_(storagePath);
-    rrWriteProofAudit_(payload, 'Complete', driveUrl, file.getId(), '');
-    rrApplyProofToCoachRows_(payload, 'Complete', driveUrl, transferredAt);
-    return { ok: true, attachmentId: attachmentId, driveUrl: driveUrl };
-  } catch (error) {
-    var message = String(error && error.message ? error.message : error);
+    if (row.is_current !== true) {
+      throw new Error(
+        'Workout proof is no longer the current attachment.'
+      );
+    }
+    if (row.completion_cleared === true) {
+      throw new Error(
+        'Workout proof belongs to a cleared completion.'
+      );
+    }
+    if (String(row.storage_bucket || '') !== RR_PROOF_BUCKET) {
+      throw new Error('Unexpected workout proof storage bucket.');
+    }
+    var expectedPathPrefix =
+      String(row.user_id || '') + '/';
+    if (
+      String(row.storage_path || '')
+        .indexOf(expectedPathPrefix) !== 0
+    ) {
+      throw new Error(
+        'Workout proof storage path does not match owner.'
+      );
+    }
+    var payload = rrBuildProofPayloadFromRow_(row);
+    // Idempotent replay:
+    // the original transfer succeeded, so return the existing result.
+    if (row.transfer_status === 'complete') {
+      if (!row.drive_url || !row.drive_file_id) {
+        throw new Error(
+          'Completed proof is missing Drive metadata.'
+        );
+      }
+      rrApplyProofToCoachRows_(
+        payload,
+        'Complete',
+        row.drive_url,
+        row.transferred_at
+          || row.updated_at
+          || new Date().toISOString()
+      );
+      return {
+        ok: true,
+        attachmentId: attachmentId,
+        driveUrl: row.drive_url,
+        alreadyComplete: true
+      };
+    }
+    var attachment = payload.attachment || {};
+    var storagePath =
+      String(attachment.storagePath || '');
+    if (!storagePath) {
+      throw new Error(
+        'Workout proof is missing its storage path.'
+      );
+    }
     try {
       rrPatchAttachment_(attachmentId, {
-        transfer_status: 'failed',
-        transfer_error: message.slice(0, 1000),
+        transfer_status: 'processing',
+        transfer_error: '',
         updated_at: new Date().toISOString()
-      }, true);
-    } catch (patchError) {
-      console.error('Could not record proof transfer failure', patchError);
+      });
+      var imageResponse = rrSupabaseFetch_(
+        '/storage/v1/object/authenticated/'
+          + encodeURIComponent(RR_PROOF_BUCKET)
+          + '/'
+          + rrEncodeStoragePath_(storagePath),
+        { method: 'get' }
+      );
+      var root = DriveApp.getFolderById(
+        rrRequiredProperty_(
+          'RING_READY_DRIVE_ROOT_FOLDER_ID'
+        )
+      );
+      var athleteName = String(
+        payload.athleteName
+          || rrLookupAthleteName_(payload.userId || '')
+          || 'Unknown Athlete'
+      );
+      var context = payload.workoutContext || {};
+      var athleteFolder = rrGetOrCreateFolder_(
+        root,
+        rrSafeDriveName_(athleteName)
+      );
+      var weekName =
+        context.weekIndex === null
+        || context.weekIndex === undefined
+        || context.weekIndex === ''
+          ? 'Mile Tests'
+          : 'Week ' + (Number(context.weekIndex) + 1);
+      var weekFolder = rrGetOrCreateFolder_(
+        athleteFolder,
+        weekName
+      );
+      var uploadedAt = attachment.uploadedAt
+        ? new Date(attachment.uploadedAt)
+        : new Date();
+      var datePart = Utilities.formatDate(
+        uploadedAt,
+        Session.getScriptTimeZone(),
+        'yyyy-MM-dd'
+      );
+      var workoutPart = rrSafeDriveName_(
+        context.workoutType || 'Workout'
+      );
+      var filename =
+        datePart
+        + '_'
+        + workoutPart
+        + '_'
+        + attachmentId.slice(0, 8)
+        + '.webp';
+      var blob = imageResponse
+        .getBlob()
+        .setName(filename);
+      var file = weekFolder.createFile(blob);
+      file.setSharing(
+        DriveApp.Access.PRIVATE,
+        DriveApp.Permission.NONE
+      );
+      var driveUrl = file.getUrl();
+      var transferredAt =
+        new Date().toISOString();
+      rrPatchAttachment_(attachmentId, {
+        transfer_status: 'complete',
+        transfer_error: '',
+        drive_file_id: file.getId(),
+        drive_url: driveUrl,
+        transferred_at: transferredAt,
+        updated_at: transferredAt
+      });
+      rrDeleteStagedProof_(storagePath);
+      rrWriteProofAudit_(
+        payload,
+        'Complete',
+        driveUrl,
+        file.getId(),
+        ''
+      );
+      rrApplyProofToCoachRows_(
+        payload,
+        'Complete',
+        driveUrl,
+        transferredAt
+      );
+      return {
+        ok: true,
+        attachmentId: attachmentId,
+        driveUrl: driveUrl
+      };
+    } catch (error) {
+      var message = String(
+        error && error.message
+          ? error.message
+          : error
+      );
+      try {
+        rrPatchAttachment_(attachmentId, {
+          transfer_status: 'failed',
+          transfer_error: message.slice(0, 1000),
+          updated_at: new Date().toISOString()
+        }, true);
+      } catch (patchError) {
+        console.error(
+          'Could not record proof transfer failure',
+          patchError
+        );
+      }
+      rrWriteProofAudit_(
+        payload,
+        'Transfer Pending',
+        '',
+        '',
+        message
+      );
+      rrApplyProofToCoachRows_(
+        payload,
+        'Transfer Pending',
+        '',
+        new Date().toISOString()
+      );
+      throw error;
     }
-    rrWriteProofAudit_(payload, 'Transfer Pending', '', '', message);
-    rrApplyProofToCoachRows_(payload, 'Transfer Pending', '', new Date().toISOString());
-    throw error;
+  } finally {
+    lock.releaseLock();
   }
 }
 
