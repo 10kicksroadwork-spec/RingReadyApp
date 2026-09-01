@@ -1,6 +1,19 @@
--- First-class machine output fields on workout_completions.
--- Safe to re-run.
--- Existing first-class values and legacy SQL distance values are preserved.
+-- Ring Ready workout modality + modality-specific output
+-- Run after scripts/migrations/013_attachment_write_revoke.sql
+--
+-- Running:
+--   output_type = 'distance'
+--   distance contains miles
+--   avg_watts is NULL
+--
+-- Machine modalities:
+--   output_type = 'watts'
+--   avg_watts contains average watts
+--   distance is NULL
+--
+-- output_value is the modality-neutral performance output.
+
+begin;
 
 alter table public.workout_completions
   add column if not exists modality text;
@@ -14,71 +27,203 @@ alter table public.workout_completions
 alter table public.workout_completions
   add column if not exists avg_watts numeric;
 
--- 1) Backfill modality without overwriting an existing value.
+-- ------------------------------------------------------------
+-- Backfill modality from existing record_json.
+-- Existing legacy running rows default to running.
+-- ------------------------------------------------------------
 update public.workout_completions
-set modality = coalesce(
-  modality,
-  nullif(record_json #>> '{workoutLog,modality}', ''),
-  nullif(record_json #>> '{cfg,workoutContext,modality}', ''),
-  'running'
-)
-where modality is null;
+set modality =
+  case
+    when record_json #>> '{workoutLog,modality}' in (
+      'running',
+      'assault_bike',
+      'rower',
+      'stationary_bike'
+    )
+      then record_json #>> '{workoutLog,modality}'
+    when distance is not null and distance > 0
+      then 'running'
+    else 'running'
+  end
+where modality is null
+   or btrim(modality) = '';
 
--- 2) Backfill output type without overwriting an existing value.
+-- ------------------------------------------------------------
+-- Backfill average watts from JSON where a numeric JSON value
+-- exists.
+-- ------------------------------------------------------------
 update public.workout_completions
-set output_type = coalesce(
-  output_type,
-  nullif(record_json #>> '{workoutLog,outputType}', ''),
+set avg_watts =
+  (record_json #>> '{workoutLog,avgWatts}')::numeric
+where avg_watts is null
+  and jsonb_typeof(record_json #> '{workoutLog,avgWatts}') = 'number';
+
+-- ------------------------------------------------------------
+-- Determine canonical output type.
+-- ------------------------------------------------------------
+update public.workout_completions
+set output_type =
   case
     when modality = 'running' then 'distance'
-    else 'watts'
+    when modality in (
+      'assault_bike',
+      'rower',
+      'stationary_bike'
+    ) then 'watts'
+    else null
   end
-)
-where output_type is null;
+where output_type is null
+   or btrim(output_type) = '';
 
--- 3) Backfill average watts first.
+-- ------------------------------------------------------------
+-- Backfill generic output value.
+-- Prefer explicitly stored JSON outputValue when present.
+-- Otherwise use modality-specific relational field.
+-- ------------------------------------------------------------
 update public.workout_completions
-set avg_watts = case
-  when avg_watts is not null then avg_watts
-  when nullif(record_json #>> '{workoutLog,avgWatts}', '') ~ '^[0-9]+(\.[0-9]+)?$'
-    then (record_json #>> '{workoutLog,avgWatts}')::numeric
-  when output_type = 'watts'
-    and nullif(record_json #>> '{workoutLog,outputValue}', '') ~ '^[0-9]+(\.[0-9]+)?$'
-    then (record_json #>> '{workoutLog,outputValue}')::numeric
-  else null
-end
-where avg_watts is null
-  and output_type = 'watts';
-
--- 4) Backfill output_value.
--- Existing SQL distance is an authoritative fallback for running rows.
-update public.workout_completions
-set output_value = case
-  when output_value is not null then output_value
-  when nullif(record_json #>> '{workoutLog,outputValue}', '') ~ '^[0-9]+(\.[0-9]+)?$'
-    then (record_json #>> '{workoutLog,outputValue}')::numeric
-  when output_type = 'distance'
-    and distance is not null
-    then distance
-  when output_type = 'distance'
-    and nullif(record_json #>> '{workoutLog,distance}', '') ~ '^[0-9]+(\.[0-9]+)?$'
-    then (record_json #>> '{workoutLog,distance}')::numeric
-  when output_type = 'watts'
-    and avg_watts is not null
-    then avg_watts
-  else null
-end
+set output_value =
+  case
+    when jsonb_typeof(record_json #> '{workoutLog,outputValue}') = 'number'
+      then (record_json #>> '{workoutLog,outputValue}')::numeric
+    when output_type = 'watts'
+      then avg_watts
+    when output_type = 'distance'
+      then distance
+    else null
+  end
 where output_value is null;
 
--- 5) Machine sessions must not carry fake running distance.
+-- ------------------------------------------------------------
+-- Repair legacy null→0 mapper artifacts on machine rows.
+-- ------------------------------------------------------------
 update public.workout_completions
 set distance = null
-where output_type = 'watts'
-  and distance is not null;
+where modality in ('assault_bike', 'rower', 'stationary_bike')
+  and distance = 0;
 
--- 6) Restore running distance from output_value only when distance is missing.
+-- ------------------------------------------------------------
+-- Anomaly gate: positive machine distance requires investigation.
+-- ------------------------------------------------------------
+do $$
+begin
+  if exists (
+    select 1
+    from public.workout_completions
+    where modality in ('assault_bike', 'rower', 'stationary_bike')
+      and distance > 0
+  ) then
+    raise exception
+      'Migration 014 aborted: machine workout rows contain positive distance values.';
+  end if;
+end $$;
+
+-- ------------------------------------------------------------
+-- Defaults / integrity
+-- ------------------------------------------------------------
+alter table public.workout_completions
+  alter column modality set default 'running';
+
 update public.workout_completions
-set distance = output_value
-where output_type = 'distance'
-  and distance is null
-  and output_value is not null;
+set modality = 'running'
+where modality is null;
+
+alter table public.workout_completions
+  alter column modality set not null;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'workout_completions_modality_check'
+  ) then
+    alter table public.workout_completions
+      add constraint workout_completions_modality_check
+      check (
+        modality in (
+          'running',
+          'assault_bike',
+          'rower',
+          'stationary_bike'
+        )
+      );
+  end if;
+end $$;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'workout_completions_output_type_check'
+  ) then
+    alter table public.workout_completions
+      add constraint workout_completions_output_type_check
+      check (
+        output_type is null
+        or output_type in ('distance', 'watts')
+      );
+  end if;
+end $$;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'workout_completions_output_value_positive_check'
+  ) then
+    alter table public.workout_completions
+      add constraint workout_completions_output_value_positive_check
+      check (
+        output_value is null
+        or output_value > 0
+      );
+  end if;
+end $$;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'workout_completions_avg_watts_positive_check'
+  ) then
+    alter table public.workout_completions
+      add constraint workout_completions_avg_watts_positive_check
+      check (
+        avg_watts is null
+        or avg_watts > 0
+      );
+  end if;
+end $$;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'workout_completions_modality_output_check'
+  ) then
+    alter table public.workout_completions
+      add constraint workout_completions_modality_output_check
+      check (
+        (
+          modality = 'running'
+          and avg_watts is null
+          and (output_type is null or output_type = 'distance')
+        )
+        or
+        (
+          modality in ('assault_bike', 'rower', 'stationary_bike')
+          and distance is null
+          and (output_type is null or output_type = 'watts')
+        )
+      );
+  end if;
+end $$;
+
+create index if not exists workout_completions_user_modality_idx
+  on public.workout_completions(user_id, modality);
+
+commit;

@@ -20,6 +20,7 @@ import {
   MODALITY_RUNNING,
   normalizeModality,
   readOutputFromWorkoutLog,
+  validModalityOrNull,
 } from './modality.js';
 import { scoreZoneAdherence } from './hr-analytics.js';
 import { sessionHasProof } from './coach-proof.js';
@@ -1087,11 +1088,14 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, mileTests, note
       })) missingProofs.push(key);
       const log = record.workoutLog || {};
       const output = readOutputFromWorkoutLog({
-        modality: row.modality || log.modality,
-        outputType: row.output_type || log.outputType,
-        outputValue: row.output_value ?? log.outputValue,
+        modality:
+          validModalityOrNull(log.modality)
+          ?? validModalityOrNull(row.modality)
+          ?? MODALITY_RUNNING,
+        outputType: log.outputType || row.output_type || null,
+        outputValue: log.outputValue ?? row.output_value,
         distance: log.distance ?? row.distance,
-        avgWatts: row.avg_watts ?? log.avgWatts,
+        avgWatts: log.avgWatts ?? row.avg_watts,
       });
       modalities[key] = output.modality;
       if (output.outputType === 'watts' && Number.isFinite(output.outputValue)) watts[key] = output.outputValue;

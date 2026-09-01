@@ -1533,10 +1533,12 @@ function renderAthleteProfileDashboard() {
     .map((row) => ({ ...row, log: row.completion.workoutLog || null }))
     .filter((row) => row.log && !isSkippedCompletion(row.completion))
     .sort((a, b) => getRecordDate(b.completion) - getRecordDate(a.completion));
-  const latestRun = dailyLogs[0] || null;
-  const totalMiles = dailyLogs.reduce((sum, row) => sum + (Number(row.log.distance) || 0), 0);
+  const latestSession = dailyLogs[0] || null;
+  const totalMiles = dailyLogs
+    .filter((row) => normalizeModality(row.log?.modality) === MODALITY_RUNNING)
+    .reduce((sum, row) => sum + (Number(row.log.distance) || 0), 0);
   const totalMinutes = dailyLogs.reduce((sum, row) => sum + (Number(row.log.totalMinutes) || 0), 0);
-  const averageRunHR = average(dailyLogs.map((row) => row.log.avgBpm));
+  const averageSessionHR = average(dailyLogs.map((row) => row.log.avgBpm));
   const completedSprintRecords = completions.map((row) => row.completion).filter((record) => hasSessionResults(record));
   const sessionHistory = getSessionHistory().filter((record) => hasSessionResults(record));
   const sprintRecords = completedSprintRecords.length ? completedSprintRecords : sessionHistory;
@@ -1549,19 +1551,19 @@ function renderAthleteProfileDashboard() {
   });
   const nextWorkout = slots.find((slot) => !getWorkoutCompletion(slot.weekIndex, slot.workoutIndex));
   const nextCopy = nextWorkout ? `${nextWorkout.week.label} / ${nextWorkout.workout.day} / ${nextWorkout.workout.type}` : 'Camp complete';
-  const latestRunCopy = latestRun
-    ? `${latestRun.week.label} / ${latestRun.workout.type} / ${
-      normalizeModality(latestRun.log.modality) !== MODALITY_RUNNING && Number(latestRun.log.avgWatts || latestRun.log.outputValue) > 0
-        ? `${formatWholeNumber(latestRun.log.avgWatts || latestRun.log.outputValue)} W · ${formatModalityLabel(latestRun.log.modality)}`
-        : `${formatDistance(latestRun.log.distance ?? latestRun.log.outputValue)} mi`
+  const latestSessionCopy = latestSession
+    ? `${latestSession.week.label} / ${latestSession.workout.type} / ${
+      normalizeModality(latestSession.log.modality) !== MODALITY_RUNNING && Number(latestSession.log.avgWatts || latestSession.log.outputValue) > 0
+        ? `${formatWholeNumber(latestSession.log.avgWatts || latestSession.log.outputValue)} W · ${formatModalityLabel(latestSession.log.modality)}`
+        : `${formatDistance(latestSession.log.distance ?? latestSession.log.outputValue)} mi`
     }`
-    : 'No run logged yet';
+    : 'No session logged yet';
   const mileCopy = mileTest ? `${formatWholeNumber(mileTest.totalMinutes)} min / ${formatWholeNumber(mileTest.maxBpm)} max bpm` : 'No Mile Test saved yet';
   root.innerHTML = `
     <article class="dash-card dash-progress-card"><div><div class="info-kicker">Progress Dashboard</div><h3>${escapeHTML(profile.athleteName || 'Fighter')} is ${completionPct}% through camp.</h3><p>${completedWorkouts} of ${totalWorkouts} roadwork sessions completed across the ${getCampWeekLimit()} week plan.</p></div><div class="dash-ring" style="--progress:${completionPct * 3.6}deg" aria-label="${completionPct}% complete"><strong>${completionPct}%</strong><span>${completedWorkouts}/${totalWorkouts}</span></div></article>
-    <div class="dash-stat-grid"><article class="dash-card dash-stat-card"><span>Distance</span><strong>${formatDistance(totalMiles)}</strong><em>miles logged</em></article><article class="dash-card dash-stat-card"><span>Total Time</span><strong>${formatWholeNumber(totalMinutes)}</strong><em>minutes logged</em></article><article class="dash-card dash-stat-card"><span>Avg Run HR</span><strong>${formatWholeNumber(averageRunHR)}</strong><em>bpm</em></article><article class="dash-card dash-stat-card"><span>Sprint Drop</span><strong>${formatWholeNumber(sprintDrop)}</strong><em>avg bpm</em></article></div>
+    <div class="dash-stat-grid"><article class="dash-card dash-stat-card"><span>Distance</span><strong>${formatDistance(totalMiles)}</strong><em>miles logged</em></article><article class="dash-card dash-stat-card"><span>Total Time</span><strong>${formatWholeNumber(totalMinutes)}</strong><em>minutes logged</em></article><article class="dash-card dash-stat-card"><span>Avg Session HR</span><strong>${formatWholeNumber(averageSessionHR)}</strong><em>bpm</em></article><article class="dash-card dash-stat-card"><span>Sprint Drop</span><strong>${formatWholeNumber(sprintDrop)}</strong><em>avg bpm</em></article></div>
     <article class="dash-card dash-chart-card"><div class="dash-card-head"><div><span>Weekly Completion</span><strong>Camp work by week</strong></div><em>${completedWorkouts}/${totalWorkouts}</em></div><div class="week-bar-list">${weeklyRows.map((row, index) => `<div class="week-bar-row"><span>W${index + 1}</span><div class="week-bar-track"><i style="width:${row.pct}%"></i></div><em>${row.done}/${row.total}</em></div>`).join('')}</div></article>
-    <div class="dash-detail-grid"><article class="dash-card dash-detail-card"><span>Latest Run</span><strong>${escapeHTML(latestRunCopy)}</strong><p>${latestRun ? `${formatWholeNumber(latestRun.log.totalMinutes)} min / ${formatWholeNumber(latestRun.log.avgBpm)} avg bpm / ${formatDashboardDate(latestRun.completion.completedAt)}` : 'Complete a non-sprint workout to fill this in.'}</p></article><article class="dash-card dash-detail-card"><span>HR Profile</span><strong>${formatWholeNumber(hrInfo.maxHr)} max / ${formatWholeNumber(hrInfo.restingHr)} resting</strong><p>Mile Test: ${escapeHTML(mileCopy)}</p></article><article class="dash-card dash-detail-card"><span>Next Up</span><strong>${escapeHTML(nextCopy)}</strong><p>${nextWorkout ? 'Open the week plan when you are ready to complete it.' : 'Everything currently visible in this camp is marked complete.'}</p></article><article class="dash-card dash-detail-card"><span>Sprint Work</span><strong>${sprintRecords.length ? `${sprintRecords.length} session${sprintRecords.length === 1 ? '' : 's'}` : 'No sprint data yet'}</strong><p>${sprintRecords.length ? `${formatWholeNumber(sprintPeak)} peak bpm across saved sprint work.` : 'Finish a sprint timer session to see recovery stats.'}</p></article></div>`;
+    <div class="dash-detail-grid"><article class="dash-card dash-detail-card"><span>Latest Session</span><strong>${escapeHTML(latestSessionCopy)}</strong><p>${latestSession ? `${formatWholeNumber(latestSession.log.totalMinutes)} min / ${formatWholeNumber(latestSession.log.avgBpm)} avg bpm / ${formatDashboardDate(latestSession.completion.completedAt)}` : 'Complete a non-sprint workout to fill this in.'}</p></article><article class="dash-card dash-detail-card"><span>HR Profile</span><strong>${formatWholeNumber(hrInfo.maxHr)} max / ${formatWholeNumber(hrInfo.restingHr)} resting</strong><p>Mile Test: ${escapeHTML(mileCopy)}</p></article><article class="dash-card dash-detail-card"><span>Next Up</span><strong>${escapeHTML(nextCopy)}</strong><p>${nextWorkout ? 'Open the week plan when you are ready to complete it.' : 'Everything currently visible in this camp is marked complete.'}</p></article><article class="dash-card dash-detail-card"><span>Sprint Work</span><strong>${sprintRecords.length ? `${sprintRecords.length} session${sprintRecords.length === 1 ? '' : 's'}` : 'No sprint data yet'}</strong><p>${sprintRecords.length ? `${formatWholeNumber(sprintPeak)} peak bpm across saved sprint work.` : 'Finish a sprint timer session to see recovery stats.'}</p></article></div>`;
 }
 function isProfileFormCollapsed(profile = getAthleteProfile()) {
   if (!profile.athleteName) return false;
