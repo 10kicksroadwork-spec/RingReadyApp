@@ -557,5 +557,6 @@ describe('Bravo proof upload pipeline', () => {
     const state = __getProofStateForTest('detail');
     expect(state.ambiguousRpcPending).toBe('upload-identity-1');
     expect(state.ambiguousLinkedRecordId).toBe('record-1');
+    expect(storageRemove).not.toHaveBeenCalled();
   });
 });

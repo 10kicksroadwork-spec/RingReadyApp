@@ -118,7 +118,7 @@ import {
 } from './proof.js';
 import { performSignOutCleanup } from './logout.js';
 import { resolveCanonicalClientRecordId } from './proof-staging.js';
-import { isProofErrorDeterministic, shouldRollbackProvisionalIdentity } from './proof-diagnostics.js';
+import { shouldRollbackProvisionalIdentity } from './proof-diagnostics.js';
 import { OPERATION_TIMEOUT_MS, withOperationTimeout } from './operation-timeout.js';
 import { runSingleFlight } from './single-flight.js';
 import { withSavingButton } from './ui.js';

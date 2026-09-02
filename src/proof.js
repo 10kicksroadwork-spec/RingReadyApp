@@ -191,6 +191,18 @@ function createProofRetryIdentityMismatchError() {
   return err;
 }
 
+async function maybeRemoveStagedStorageAfterProofFailure(attempt, error, hadUnresolvedAmbiguity) {
+  const classified = error?.proofFailureKind ? error : createProofUploadError(error);
+  if (
+    isProofErrorDeterministic(classified)
+    && !hadUnresolvedAmbiguity
+    && !classified.proofPreserveProvisionalIdentity
+    && classified.proofFailurePhase === PROOF_UPLOAD_PHASE.RPC
+  ) {
+    await removeStagedStorageBestEffort(attempt.storagePath);
+  }
+}
+
 function finalizeProofFailure(state, attempt, error, hadUnresolvedAmbiguity) {
   if (error?.contractHealthStatus === 'mismatch') {
     if (hadUnresolvedAmbiguity) {
@@ -496,11 +508,7 @@ async function executeProofAttempt(attempt) {
   const { data, error: rowError } = rpcResult;
 
   if (rowError) {
-    const rpcError = createProofUploadError(rowError, PROOF_UPLOAD_PHASE.RPC);
-    if (isProofErrorDeterministic(rpcError)) {
-      await removeStagedStorageBestEffort(attempt.storagePath);
-    }
-    throw rpcError;
+    throw createProofUploadError(rowError, PROOF_UPLOAD_PHASE.RPC);
   }
 
   return attachmentFromRow(data);
@@ -550,7 +558,7 @@ async function ensureWorkoutProofUploadedInner(surface, linkedRecordId = '') {
           detail: error.contractHealth?.reason || 'mismatch',
           message: error.message,
         });
-        finalizeProofFailure(state, attempt, error, hadUnresolvedAmbiguity);
+        throw error;
       }
       captureRuntimeDiagnostic({
         kind: 'contract_health_unavailable',
@@ -564,6 +572,7 @@ async function ensureWorkoutProofUploadedInner(surface, linkedRecordId = '') {
     reconcileAttemptSuccess(state, attempt);
     return attachment;
   } catch (error) {
+    await maybeRemoveStagedStorageAfterProofFailure(attempt, error, hadUnresolvedAmbiguity);
     finalizeProofFailure(state, attempt, error, hadUnresolvedAmbiguity);
   } finally {
     state.uploading = false;
