@@ -257,20 +257,24 @@ function hasCustomHRInfo(hrInfo = {}) {
     || Number(hrInfo.restingHr) !== Number(HR_INFO_DEFAULTS.restingHr);
 }
 import {
-  chooseLatestMileResult,
-  getCloudTimestamp,
   getRecordUpdatedAt,
   mergeHRByTimestamp,
   mergeProfileByTimestamp,
-  mergeSprintSessions,
-  mergeWorkoutCompletions,
+  reconcileSprintSessionsFromCloud,
+  reconcileWorkoutCompletionsFromCloud,
 } from './shell-cloud-merge.js';
+import {
+  clearCloudOutbox,
+  getPendingSprintSessions,
+  removePendingSprintSession,
+} from './cloud-outbox.js';
 
 function clearAccountLocalData(explicitUserId = '') {
   const userId = String(explicitUserId || getCurrentUser()?.id || '').trim();
   if (userId) {
     clearSyncQueueForUser(userId);
     clearActiveSessionCheckpoint(userId);
+    clearCloudOutbox(userId);
   }
   clearSharedLocalState();
 }
@@ -299,31 +303,17 @@ function prepareCoachSession() {
   const userId = getCurrentUser()?.id;
   if (userId) setStorageItem(AUTH_USER_STORAGE_KEY, userId);
 }
-function mergeWorkoutCompletionsLocal(localCompletions = {}, cloudCompletions = {}) {
-  return mergeWorkoutCompletions(localCompletions, cloudCompletions, isWorkoutCompletionCleared);
-}
-function completionsNeedingCloudBackfill(localCompletions = {}, cloudCompletions = {}) {
-  const out = {};
-  Object.entries(localCompletions || {}).forEach(([key, record]) => {
-    if (!record || isWorkoutCompletionCleared(key)) return;
-    const cloud = cloudCompletions?.[key];
-    if (!cloud) {
-      out[key] = record;
-      return;
-    }
-    if (getCloudTimestamp(record) > getCloudTimestamp(cloud)) out[key] = record;
-  });
-  return out;
-}
-async function saveTrainingDataToCloud({ completions = {}, sessions = [], mileTest = null } = {}) {
-  if (!isSupabaseConfigured || !getCurrentUser()) return;
-  const saves = [
-    ...Object.values(completions).filter(Boolean).map((record) => saveCloudWorkoutCompletion(record)),
-    ...sessions.filter(Boolean).map((record) => saveCloudSprintSession(record)),
-  ];
-  if (mileTest) saves.push(saveCloudMileTest(mileTest, getHRInfo(), { weekTab: 'Mile Test', workoutType: MILE_TEST_INFO.workout, dayOfWeek: MILE_TEST_INFO.day, description: MILE_TEST_INFO.description, warmup: MILE_TEST_INFO.warmup }));
-  const results = await Promise.allSettled(saves);
-  results.filter((result) => result.status === 'rejected').forEach((result) => console.warn('Cloud training save failed', result.reason));
+async function boundedCloudWrite(label, writer) {
+  try {
+    await withOperationTimeout(writer(), {
+      timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_HYDRATION,
+      operation: `cloud_hydration_${label}`,
+    });
+    return { ok: true };
+  } catch (error) {
+    console.warn(`Cloud ${label} write failed`, error);
+    return { ok: false, error };
+  }
 }
 async function saveWorkoutCompletionToCloud(record, successMessage = '') {
   if (!record || !isSupabaseConfigured || !getCurrentUser()) return false;
@@ -496,28 +486,14 @@ async function applyCloudHydrationResults(userId, generation, {
 } = {}) {
   if (!shouldApplyCloudHydration(userId, generation)) return;
 
-  const localProfile = getAthleteProfile();
-  const localHRInfo = getHRInfo();
-
   if (profileResult?.ok) {
     const cloudProfile = profileResult.value;
     if (cloudProfile && hasProfileData(cloudProfile)) {
       applyCampResetIfNeeded(cloudProfile);
-      const mergedProfile = mergeProfileByTimestamp(localProfile, cloudProfile);
-      saveAthleteProfile(mergedProfile, { preserveUpdatedAt: true });
-      if (getRecordUpdatedAt(localProfile) > getRecordUpdatedAt(cloudProfile) && hasProfileData(localProfile)) {
-        try {
-          await saveCloudProfile(mergedProfile);
-        } catch (error) {
-          console.warn('Cloud profile conflict save failed', error);
-        }
-      }
-    } else if (hasProfileData(localProfile)) {
-      try {
-        await saveCloudProfile(localProfile);
-      } catch (error) {
-        console.warn('Cloud profile backfill failed', error);
-      }
+      saveAthleteProfile(
+        mergeProfileByTimestamp(getAthleteProfile(), cloudProfile),
+        { preserveUpdatedAt: true },
+      );
     }
   }
 
@@ -526,87 +502,111 @@ async function applyCloudHydrationResults(userId, generation, {
   if (hrResult?.ok) {
     const cloudHRInfo = hrResult.value;
     if (cloudHRInfo && hasCustomHRInfo(cloudHRInfo)) {
-      const mergedHR = mergeHRByTimestamp(localHRInfo, cloudHRInfo, HR_INFO_DEFAULTS);
-      saveHRInfo(mergedHR, { preserveUpdatedAt: true });
-      if (getRecordUpdatedAt(localHRInfo) > getRecordUpdatedAt(cloudHRInfo) && hasCustomHRInfo(localHRInfo)) {
-        try {
-          await saveCloudHRInfo(mergedHR);
-        } catch (error) {
-          console.warn('Cloud HR info conflict save failed', error);
-        }
-      }
-    } else if (hasCustomHRInfo(localHRInfo)) {
-      try {
-        await saveCloudHRInfo(localHRInfo);
-      } catch (error) {
-        console.warn('Cloud HR info backfill failed', error);
-      }
+      saveHRInfo(
+        mergeHRByTimestamp(getHRInfo(), cloudHRInfo, HR_INFO_DEFAULTS),
+        { preserveUpdatedAt: true },
+      );
     }
   }
 
   if (!shouldApplyCloudHydration(userId, generation)) return;
 
-  let mergedCompletions = readJSON(WORKOUT_COMPLETIONS_STORAGE_KEY, {});
-  let mergedSessions = getSessionHistory();
-  let latestMileTest = getMileTestResult();
-  const backfillPayload = {
-    completions: {},
-    sessions: [],
-    mileTest: null,
-  };
+  const pendingSessions = getPendingSprintSessions(userId);
 
   if (completionsResult?.ok) {
     const cloudCompletions = completionsResult.value || {};
-    mergedCompletions = mergeWorkoutCompletionsLocal(mergedCompletions, cloudCompletions);
-    persistJSON(WORKOUT_COMPLETIONS_STORAGE_KEY, mergedCompletions);
-
-    const staleCloudClears = Object.keys(cloudCompletions).filter((key) => {
-      const cloudStamp = cloudCompletions[key]?.updatedAt || cloudCompletions[key]?.completedAt || '';
-      return isWorkoutCompletionCleared(key, null, cloudStamp);
-    });
-    if (staleCloudClears.length) {
-      await Promise.allSettled(staleCloudClears.map((key) => {
-        const [weekIndex, workoutIndex] = key.split(':').map(Number);
-        return deleteCloudWorkoutCompletion(weekIndex, workoutIndex);
-      }));
-    }
-
-    if (shouldApplyCloudHydration(userId, generation)) {
-      backfillPayload.completions = completionsNeedingCloudBackfill(mergedCompletions, cloudCompletions);
-    }
+    const mergedCompletions = reconcileWorkoutCompletionsFromCloud(cloudCompletions, isWorkoutCompletionCleared);
+    writeJSON(WORKOUT_COMPLETIONS_STORAGE_KEY, mergedCompletions);
   }
 
   if (!shouldApplyCloudHydration(userId, generation)) return;
 
   if (sessionsResult?.ok) {
     const cloudSessions = sessionsResult.value || [];
-    mergedSessions = mergeSprintSessions(mergedSessions, cloudSessions);
-    persistJSON(STORAGE_KEY, mergedSessions);
-    backfillPayload.sessions = mergedSessions.filter((session) => {
-      const id = String(session?.id || '');
-      return id && !cloudSessions.some((row) => String(row?.id || '') === id);
-    });
+    const mergedSessions = reconcileSprintSessionsFromCloud(cloudSessions, pendingSessions);
+    writeJSON(STORAGE_KEY, mergedSessions);
   }
 
   if (!shouldApplyCloudHydration(userId, generation)) return;
 
   if (mileResult?.ok) {
-    const cloudMileTest = mileResult.value;
-    latestMileTest = chooseLatestMileResult(latestMileTest, cloudMileTest);
-    if (latestMileTest) persistJSON(MILE_TEST_STORAGE_KEY, latestMileTest);
+    const cloudMileTest = mileResult.value ?? null;
+    if (cloudMileTest) writeJSON(MILE_TEST_STORAGE_KEY, cloudMileTest);
     else removeStorageKey(MILE_TEST_STORAGE_KEY);
-    if (!cloudMileTest && latestMileTest) {
-      backfillPayload.mileTest = latestMileTest;
-    }
   }
 
   if (!shouldApplyCloudHydration(userId, generation)) return;
 
-  await saveTrainingDataToCloud(backfillPayload);
+  renderAllPages();
 
-  if (shouldApplyCloudHydration(userId, generation)) {
-    renderAllPages();
+  void runCloudHydrationMaintenance(userId, generation, {
+    profileResult,
+    hrResult,
+    completionsResult,
+    sessionsResult,
+    mileResult,
+  }).catch((error) => {
+    console.warn('Background cloud hydration maintenance failed', error);
+  });
+}
+
+async function runCloudHydrationMaintenance(userId, generation, {
+  profileResult,
+  hrResult,
+  completionsResult,
+} = {}) {
+  if (!shouldApplyCloudHydration(userId, generation)) return;
+
+  const maintenanceTasks = [];
+
+  if (profileResult?.ok) {
+    const cloudProfile = profileResult.value;
+    const localProfile = getAthleteProfile();
+    if (cloudProfile && hasProfileData(cloudProfile) && getRecordUpdatedAt(localProfile) > getRecordUpdatedAt(cloudProfile) && hasProfileData(localProfile)) {
+      maintenanceTasks.push(() => boundedCloudWrite('profile_backfill', () => saveCloudProfile(
+        mergeProfileByTimestamp(localProfile, cloudProfile),
+      )));
+    } else if ((!cloudProfile || !hasProfileData(cloudProfile)) && hasProfileData(localProfile)) {
+      maintenanceTasks.push(() => boundedCloudWrite('profile_backfill', () => saveCloudProfile(localProfile)));
+    }
   }
+
+  if (hrResult?.ok) {
+    const cloudHRInfo = hrResult.value;
+    const localHRInfo = getHRInfo();
+    if (cloudHRInfo && hasCustomHRInfo(cloudHRInfo) && getRecordUpdatedAt(localHRInfo) > getRecordUpdatedAt(cloudHRInfo) && hasCustomHRInfo(localHRInfo)) {
+      maintenanceTasks.push(() => boundedCloudWrite('hr_backfill', () => saveCloudHRInfo(
+        mergeHRByTimestamp(localHRInfo, cloudHRInfo, HR_INFO_DEFAULTS),
+      )));
+    } else if ((!cloudHRInfo || !hasCustomHRInfo(cloudHRInfo)) && hasCustomHRInfo(localHRInfo)) {
+      maintenanceTasks.push(() => boundedCloudWrite('hr_backfill', () => saveCloudHRInfo(localHRInfo)));
+    }
+  }
+
+  if (completionsResult?.ok) {
+    const cloudCompletions = completionsResult.value || {};
+    Object.keys(cloudCompletions).forEach((key) => {
+      const cloudStamp = cloudCompletions[key]?.updatedAt || cloudCompletions[key]?.completedAt || '';
+      if (!isWorkoutCompletionCleared(key, null, cloudStamp)) return;
+      const [weekIndex, workoutIndex] = key.split(':').map(Number);
+      maintenanceTasks.push(() => boundedCloudWrite(`stale_clear_${key}`, () => deleteCloudWorkoutCompletion(weekIndex, workoutIndex)));
+    });
+  }
+
+  getPendingSprintSessions(userId).forEach((session) => {
+    const sessionId = String(session?.id || '');
+    if (!sessionId) return;
+    maintenanceTasks.push(async () => {
+      if (!shouldApplyCloudHydration(userId, generation)) return { ok: false };
+      const result = await boundedCloudWrite(`sprint_outbox_${sessionId}`, () => saveCloudSprintSession(session));
+      if (result.ok && shouldApplyCloudHydration(userId, generation)) {
+        removePendingSprintSession(sessionId, userId);
+      }
+      return result;
+    });
+  });
+
+  await Promise.allSettled(maintenanceTasks.map((task) => task()));
 }
 
 async function hydrateCloudDataInBackground() {
@@ -1665,13 +1665,15 @@ async function clearCompletionFromDetail(weekIndex, workoutIndex) {
 
   markWorkoutCompletionCleared(safeWeekIndex, safeWorkoutIndex);
   const removed = removeWorkoutCompletion(safeWeekIndex, safeWorkoutIndex);
-  if (!removed) { shellHooks?.showToast?.('NO COMPLETION TO CLEAR'); return; }
+  if (!removed.logicalOk) { shellHooks?.showToast?.('NO COMPLETION TO CLEAR'); return; }
 
   setDetailSkipCard(false);
   renderShell();
   renderAthleteProfileDashboard();
   openWorkoutDetail(safeWeekIndex, safeWorkoutIndex);
-  shellHooks?.showToast?.(isSkippedCompletion(existing) ? 'SKIP CLEARED' : 'WORKOUT CLEARED');
+  shellHooks?.showToast?.(removed.persisted
+    ? (isSkippedCompletion(existing) ? 'SKIP CLEARED' : 'WORKOUT CLEARED')
+    : 'CLEARED FROM ACCOUNT · LOCAL CACHE WILL REFRESH');
 }
 
 const SKIP_REASON_LABELS = {
@@ -2524,6 +2526,7 @@ export const cloudHydrationTestHooks = {
   getHydrationGeneration: () => hydrationGeneration,
   boundedCloudLoad,
   applyCloudHydrationResults,
+  runCloudHydrationMaintenance,
   hydrateCloudDataInBackground,
   enterSignedInAthleteHome,
   rehydrateWorkoutCompletionFromCloud,

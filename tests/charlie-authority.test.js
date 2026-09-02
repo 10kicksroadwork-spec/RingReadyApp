@@ -1,12 +1,21 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { WORKOUT_COMPLETIONS_STORAGE_KEY } from '../src/constants.js';
-import { writeJSON, resetVolatileStorageForTest, resetStorageAvailabilityCache } from '../src/safe-storage.js';
+import {
+  getStorageItem,
+  writeJSON,
+  resetVolatileStorageForTest,
+  resetStorageAvailabilityCache,
+  isStorageKeyTombstoned,
+  removeStorageKey,
+} from '../src/safe-storage.js';
 import { getWorkoutCompletion } from '../src/storage.js';
+import { enqueuePendingSprintSession, getPendingSprintSessions, readCloudOutbox } from '../src/cloud-outbox.js';
 
 const mockUser = { id: 'user-a' };
 const saveCloudWorkoutCompletion = vi.fn();
 const saveCloudSprintSession = vi.fn();
 const saveCloudMileTest = vi.fn();
+const saveCloudProfile = vi.fn();
 const loadCloudWorkoutCompletions = vi.fn();
 const loadCloudProfile = vi.fn();
 const loadCloudHRInfo = vi.fn();
@@ -19,7 +28,7 @@ vi.mock('../src/auth.js', () => ({
   saveCloudSprintSession: (...args) => saveCloudSprintSession(...args),
   saveCloudMileTest: (...args) => saveCloudMileTest(...args),
   saveCloudHRInfo: vi.fn(),
-  saveCloudProfile: vi.fn(),
+  saveCloudProfile: (...args) => saveCloudProfile(...args),
   loadCloudWorkoutCompletions: (...args) => loadCloudWorkoutCompletions(...args),
   loadCloudProfile: (...args) => loadCloudProfile(...args),
   loadCloudHRInfo: (...args) => loadCloudHRInfo(...args),
@@ -68,6 +77,7 @@ describe('Charlie hydration authority', () => {
     saveCloudWorkoutCompletion.mockResolvedValue(undefined);
     saveCloudSprintSession.mockResolvedValue(undefined);
     saveCloudMileTest.mockResolvedValue(undefined);
+    saveCloudProfile.mockResolvedValue(undefined);
     loadCloudProfile.mockResolvedValue(null);
     loadCloudHRInfo.mockResolvedValue(null);
     loadCloudSprintSessions.mockResolvedValue([]);
@@ -75,14 +85,14 @@ describe('Charlie hydration authority', () => {
   });
 
   it('does not backfill completions when the cloud read failed', async () => {
-    writeJSON(WORKOUT_COMPLETIONS_STORAGE_KEY, {
+    localStorage.setItem(WORKOUT_COMPLETIONS_STORAGE_KEY, JSON.stringify({
       '0:1': {
         id: 'local-stale',
         completionKey: '0:1',
         completedAt: '2026-01-01T00:00:00.000Z',
         workoutContext: { weekIndex: 0, workoutIndex: 1 },
       },
-    });
+    }));
 
     const generation = cloudHydrationTestHooks.getHydrationGeneration();
     await cloudHydrationTestHooks.applyCloudHydrationResults('user-a', generation, {
@@ -92,21 +102,25 @@ describe('Charlie hydration authority', () => {
       sessionsResult: { ok: true, value: [] },
       mileResult: { ok: true, value: null },
     });
+    await cloudHydrationTestHooks.runCloudHydrationMaintenance('user-a', generation, {
+      profileResult: { ok: true, value: null },
+      hrResult: { ok: true, value: null },
+      completionsResult: { ok: false, error: new Error('timeout') },
+    });
 
     expect(saveCloudWorkoutCompletion).not.toHaveBeenCalled();
     expect(getWorkoutCompletion(0, 1)?.id).toBe('local-stale');
   });
 
-  it('allows completion backfill only after a successful empty cloud read', async () => {
-    writeJSON(WORKOUT_COMPLETIONS_STORAGE_KEY, {
+  it('does not recreate stale local completions when cloud successfully returns empty', async () => {
+    localStorage.setItem(WORKOUT_COMPLETIONS_STORAGE_KEY, JSON.stringify({
       '0:1': {
-        id: 'local-only',
+        id: 'local-stale',
         completionKey: '0:1',
         completedAt: '2026-01-01T00:00:00.000Z',
-        workoutContext: { weekIndex: 0, workoutIndex: 1 },
         cfg: { workoutContext: { weekIndex: 0, workoutIndex: 1 } },
       },
-    });
+    }));
 
     const generation = cloudHydrationTestHooks.getHydrationGeneration();
     await cloudHydrationTestHooks.applyCloudHydrationResults('user-a', generation, {
@@ -116,8 +130,14 @@ describe('Charlie hydration authority', () => {
       sessionsResult: { ok: true, value: [] },
       mileResult: { ok: true, value: null },
     });
+    await cloudHydrationTestHooks.runCloudHydrationMaintenance('user-a', generation, {
+      profileResult: { ok: true, value: null },
+      hrResult: { ok: true, value: null },
+      completionsResult: { ok: true, value: {} },
+    });
 
-    expect(saveCloudWorkoutCompletion).toHaveBeenCalledTimes(1);
+    expect(saveCloudWorkoutCompletion).not.toHaveBeenCalled();
+    expect(getWorkoutCompletion(0, 1)).toBeNull();
   });
 
   it('does not backfill sprint sessions when the cloud read failed', async () => {
@@ -131,8 +151,32 @@ describe('Charlie hydration authority', () => {
       sessionsResult: { ok: false, error: new Error('timeout') },
       mileResult: { ok: true, value: null },
     });
+    await cloudHydrationTestHooks.runCloudHydrationMaintenance('user-a', generation, {
+      completionsResult: { ok: true, value: {} },
+      sessionsResult: { ok: false, error: new Error('timeout') },
+    });
 
     expect(saveCloudSprintSession).not.toHaveBeenCalled();
+  });
+
+  it('retries only explicit outbox sprint sessions after successful cloud read', async () => {
+    const pendingSession = {
+      id: 'session-pending',
+      date: '2026-01-01T00:00:00.000Z',
+      cloudPending: true,
+    };
+    enqueuePendingSprintSession(pendingSession, 'user-a');
+    writeJSON('sprintTrainerHistory', [{ id: 'session-local-only', date: '2026-01-02T00:00:00.000Z' }]);
+
+    const generation = cloudHydrationTestHooks.getHydrationGeneration();
+    await cloudHydrationTestHooks.runCloudHydrationMaintenance('user-a', generation, {
+      completionsResult: { ok: true, value: {} },
+      sessionsResult: { ok: true, value: [] },
+    });
+
+    expect(saveCloudSprintSession).toHaveBeenCalledTimes(1);
+    expect(saveCloudSprintSession.mock.calls[0][0].id).toBe('session-pending');
+    expect(getPendingSprintSessions('user-a')).toHaveLength(0);
   });
 
   it('does not backfill mile test when the cloud read failed', async () => {
@@ -151,8 +195,49 @@ describe('Charlie hydration authority', () => {
       sessionsResult: { ok: true, value: [] },
       mileResult: { ok: false, error: new Error('timeout') },
     });
+    await cloudHydrationTestHooks.runCloudHydrationMaintenance('user-a', generation, {
+      mileResult: { ok: false, error: new Error('timeout') },
+    });
 
     expect(saveCloudMileTest).not.toHaveBeenCalled();
+  });
+
+  it('reconciles successful cloud slices before maintenance writes finish', async () => {
+    writeJSON(WORKOUT_COMPLETIONS_STORAGE_KEY, {
+      '0:1': { id: 'local-stale', completionKey: '0:1', completedAt: '2026-01-01T00:00:00.000Z' },
+    });
+    saveCloudProfile.mockImplementation(() => new Promise(() => {}));
+
+    const generation = cloudHydrationTestHooks.getHydrationGeneration();
+    await cloudHydrationTestHooks.applyCloudHydrationResults('user-a', generation, {
+      profileResult: { ok: true, value: null },
+      hrResult: { ok: true, value: null },
+      completionsResult: {
+        ok: true,
+        value: {
+          '0:2': {
+            id: 'cloud-fresh',
+            completionKey: '0:2',
+            completedAt: '2026-02-01T00:00:00.000Z',
+            cfg: { workoutContext: { weekIndex: 0, workoutIndex: 2 } },
+          },
+        },
+      },
+      sessionsResult: { ok: true, value: [] },
+      mileResult: { ok: true, value: null },
+    });
+
+    expect(getWorkoutCompletion(0, 1)).toBeNull();
+    expect(getWorkoutCompletion(0, 2)?.id).toBe('cloud-fresh');
+
+    const maintenancePromise = cloudHydrationTestHooks.runCloudHydrationMaintenance('user-a', generation, {
+      profileResult: { ok: true, value: null },
+      hrResult: { ok: true, value: null },
+      completionsResult: { ok: true, value: {} },
+    });
+    await Promise.resolve();
+    expect(getWorkoutCompletion(0, 2)?.id).toBe('cloud-fresh');
+    await maintenancePromise;
   });
 
   it('discards targeted workout rehydrate after logout invalidates generation', async () => {
@@ -220,5 +305,49 @@ describe('Charlie hydration authority', () => {
     resolveProfile(null);
     await hydrationPromise;
     expect(hydrationDone).toBe(true);
+  });
+});
+
+describe('Charlie volatile deletion tombstones', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    resetVolatileStorageForTest();
+    resetStorageAvailabilityCache();
+  });
+
+  it('keeps keys logically absent after persistent removal fails and storage recovers', () => {
+    localStorage.setItem('ringReadySharedKey', 'user-a-value');
+    const originalRemove = Storage.prototype.removeItem;
+    Storage.prototype.removeItem = function blockingRemoveItem(key) {
+      if (String(key) === 'ringReadySharedKey') {
+        throw new DOMException('Access to storage is not allowed', 'SecurityError');
+      }
+      return originalRemove.call(this, key);
+    };
+
+    try {
+      const result = removeStorageKey('ringReadySharedKey');
+      expect(result.logicalOk).toBe(true);
+      expect(isStorageKeyTombstoned('ringReadySharedKey')).toBe(true);
+      expect(getStorageItem('ringReadySharedKey', 'fallback').value).toBe('fallback');
+    } finally {
+      Storage.prototype.removeItem = originalRemove;
+      expect(getStorageItem('ringReadySharedKey', 'fallback').value).toBe('fallback');
+    }
+  });
+});
+
+describe('Charlie cloud outbox', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    resetVolatileStorageForTest();
+  });
+
+  it('stores pending sprint sessions explicitly', () => {
+    enqueuePendingSprintSession({ id: 'session-1', date: '2026-01-01T00:00:00.000Z' }, 'user-a');
+    const pending = getPendingSprintSessions('user-a');
+    expect(pending).toHaveLength(1);
+    expect(pending[0].cloudPending).toBe(true);
+    expect(readCloudOutbox('user-a').sprintSessions[0].id).toBe('session-1');
   });
 });

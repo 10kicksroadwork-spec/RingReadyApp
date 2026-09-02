@@ -92,6 +92,7 @@ import {
 } from './ui.js';
 import { runSingleFlight } from './single-flight.js';
 import { OPERATION_TIMEOUT_MS, withOperationTimeout } from './operation-timeout.js';
+import { enqueuePendingSprintSession } from './cloud-outbox.js';
 
 export const cfg = { reps: null, rest: null, maxHR: 183, targetPct: 90, workoutContext: null };
 
@@ -1045,13 +1046,20 @@ export async function finishSession() {
   let cloudSessionSaved = false;
   if (isSupabaseConfigured && getCurrentUser()) {
     try {
-      await saveCloudSprintSession(activeResultRecord);
+      await withOperationTimeout(
+        saveCloudSprintSession(activeResultRecord),
+        { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_COMPLETION, operation: 'cloud_completion' },
+      );
       cloudSessionSaved = true;
     } catch (error) {
       console.warn('Cloud sprint session save failed', error);
     }
   }
-  const { localCacheOk } = persistSessionRecord(activeResultRecord);
+  const sessionPersist = persistSessionRecord(activeResultRecord);
+  const localCacheOk = sessionPersist.localCacheOk;
+  if (!cloudSessionSaved && sessionPersist.logicalOk && isSupabaseConfigured && getCurrentUser()) {
+    enqueuePendingSprintSession(activeResultRecord, getCurrentUser().id);
+  }
   if (cloudSessionSaved || localCacheOk) {
     clearActiveSessionCheckpoint();
   } else {
@@ -1314,7 +1322,7 @@ export async function clearResultWorkoutCompletion() {
 
   markWorkoutCompletionCleared(context.weekIndex, context.workoutIndex);
   const removed = removeWorkoutCompletion(context.weekIndex, context.workoutIndex);
-  if (!removed) {
+  if (!removed.logicalOk) {
     showToast('NO COMPLETION TO CLEAR');
     return;
   }
@@ -1330,7 +1338,9 @@ export async function clearResultWorkoutCompletion() {
       cloudAlreadyCleared: true,
     },
   }));
-  showToast('WORKOUT MARKED INCOMPLETE');
+  showToast(removed.persisted
+    ? 'WORKOUT MARKED INCOMPLETE'
+    : 'CLEARED FROM ACCOUNT · LOCAL CACHE WILL REFRESH');
 }
 window.addEventListener('ringready:proof-state-changed', (event) => {
   if (event.detail?.surface === 'sprint' && activeResultRecord) updateCompleteWorkoutButton(activeResultRecord);

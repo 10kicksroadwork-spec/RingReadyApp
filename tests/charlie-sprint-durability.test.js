@@ -46,6 +46,7 @@ vi.mock('../src/hr-service.js', () => ({
 }));
 
 import { saveActiveSessionCheckpoint } from '../src/session-checkpoint.js';
+import { getPendingSprintSessions } from '../src/cloud-outbox.js';
 import { cfg, finishSession, state } from '../src/app.js';
 
 describe('Charlie sprint durability', () => {
@@ -104,5 +105,27 @@ describe('Charlie sprint durability', () => {
     } finally {
       Storage.prototype.setItem = original;
     }
+  });
+
+  it('attempts local persistence after bounded cloud sprint save times out', async () => {
+    vi.useFakeTimers();
+    saveCloudSprintSession.mockImplementation(() => new Promise(() => {}));
+
+    const finishPromise = finishSession();
+    await vi.advanceTimersByTimeAsync(12_001);
+    await finishPromise;
+
+    expect(getPendingSprintSessions('user-a')).toHaveLength(1);
+    expect(getPendingSprintSessions('user-a')[0].cloudPending).toBe(true);
+    vi.useRealTimers();
+  });
+
+  it('marks explicit cloud pending when cloud fails and local history succeeds', async () => {
+    saveCloudSprintSession.mockRejectedValue(new Error('cloud save failed'));
+
+    await finishSession();
+
+    expect(getPendingSprintSessions('user-a')).toHaveLength(1);
+    expect(getPendingSprintSessions('user-a')[0].cloudPending).toBe(true);
   });
 });
