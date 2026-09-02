@@ -3,9 +3,11 @@ import {
   buildMileTestCloudPayload,
   buildProvisionalMileTestCloudPayload,
   buildProvisionalWorkoutCloudPayload,
+  buildSprintCloudPayload,
   buildWorkoutCloudPayload,
   getCompletionKeyFromRecord,
   getRecordContext,
+  mapCloudSprintSessionRow,
 } from './cloud-record-mapper.js';
 import {
   canRollbackProvisionalStaging,
@@ -154,41 +156,11 @@ function mapCloudWorkoutCompletion(row) {
 }
 
 function mapCloudSprintSession(row) {
-  if (!row) return null;
-  const record = safeJSON(row.session_json, {});
-  return {
-    ...record,
-    id: record.id || row.session_id || row.id,
-    date: row.session_at || record.date || row.created_at,
-    avgDrop: record.avgDrop ?? row.avg_drop ?? null,
-    peakHR: record.peakHR ?? row.peak_hr ?? null,
-  };
+  return mapCloudSprintSessionRow(row, safeJSON);
 }
 
 function toCloudSprintSession(record, userId) {
-  const context = getRecordContext(record);
-  const data = Array.isArray(record.data) ? record.data : [];
-  return {
-    user_id: userId,
-    session_id: String(record.id || crypto.randomUUID?.() || Date.now()),
-    session_at: normalizeISODate(record.date || record.completedAt),
-    week_index: integerOrNull(context.weekIndex),
-    workout_index: integerOrNull(context.workoutIndex),
-    workout_type: textOrEmpty(context.workoutType || 'Sprint Intervals'),
-    hr_source: textOrEmpty(record.hrSource || record.cfg?.hrSource || ''),
-    reps_planned: integerOrNull(record.cfg?.reps || context.reps),
-    rest_seconds: integerOrNull(record.cfg?.rest || context.restSeconds),
-    max_hr: integerOrNull(record.cfg?.maxHR),
-    target_pct: numberOrNull(record.cfg?.targetPct || context.targetPct),
-    target_bpm: integerOrNull(context.targetBPM),
-    intervals_completed: data.length,
-    avg_drop: numberOrNull(record.avgDrop),
-    peak_hr: integerOrNull(record.peakHR),
-    proof_policy_version: integerOrNull(record.proofPolicyVersion),
-    attachment_id: record.attachment?.id || null,
-    session_json: record,
-    updated_at: new Date().toISOString(),
-  };
+  return buildSprintCloudPayload(record, userId);
 }
 
 function mapCloudMileTest(row) {

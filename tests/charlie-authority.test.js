@@ -9,6 +9,7 @@ import {
   isStorageKeyTombstoned,
 } from '../src/safe-storage.js';
 import { getWorkoutCompletion, getClearedWorkoutCompletions, isWorkoutCompletionCleared, getCloudPendingSprintSessions } from '../src/storage.js';
+import { mapCloudSprintSessionRow } from '../src/cloud-record-mapper.js';
 import { reconcileWorkoutCompletionsFromCloud } from '../src/shell-cloud-merge.js';
 
 const mockUser = { id: 'user-a' };
@@ -175,6 +176,38 @@ describe('Charlie hydration authority', () => {
 
     expect(saveCloudSprintSession).toHaveBeenCalledTimes(1);
     expect(saveCloudSprintSession.mock.calls[0][0].id).toBe('session-pending');
+    expect(getCloudPendingSprintSessions()).toHaveLength(0);
+  });
+
+  it('does not re-queue cloud sessions that carry legacy cloudPending metadata', async () => {
+    const cloudSession = mapCloudSprintSessionRow({
+      session_id: 'session-pending',
+      session_at: '2026-01-01T00:00:00.000Z',
+      session_json: {
+        id: 'session-pending',
+        cloudPending: true,
+        date: '2026-01-01T00:00:00.000Z',
+      },
+    });
+
+    const generation = cloudHydrationTestHooks.getHydrationGeneration();
+    await cloudHydrationTestHooks.applyCloudHydrationResults('user-a', generation, {
+      profileResult: { ok: true, value: null },
+      hrResult: { ok: true, value: null },
+      completionsResult: { ok: true, value: {} },
+      sessionsResult: { ok: true, value: [cloudSession] },
+      mileResult: { ok: true, value: null },
+    });
+
+    expect(getCloudPendingSprintSessions()).toHaveLength(0);
+    saveCloudSprintSession.mockClear();
+
+    await cloudHydrationTestHooks.runCloudHydrationMaintenance('user-a', generation, {
+      completionsResult: { ok: true, value: {} },
+      sessionsResult: { ok: true, value: [cloudSession] },
+    });
+
+    expect(saveCloudSprintSession).not.toHaveBeenCalled();
     expect(getCloudPendingSprintSessions()).toHaveLength(0);
   });
 

@@ -5,6 +5,8 @@ import {
   resetVolatileStorageForTest,
   resetStorageAvailabilityCache,
   writeJSON,
+  isStorageKeyTombstoned,
+  readJSONValue,
 } from '../src/safe-storage.js';
 import {
   clearSharedLocalState,
@@ -128,6 +130,37 @@ describe('Charlie cache ownership', () => {
 
     mockUser.id = 'user-b';
     cloudHydrationTestHooks.prepareAccountSwitchSafety();
+    expect(hasSharedAthleteCacheData()).toBe(false);
+  });
+
+  it('fails closed when localStorage is unreadable during sign-in and keeps A hidden after recovery', () => {
+    localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify({ athleteName: 'Athlete A' }));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify([{ id: 'session-a', date: '2026-01-01T00:00:00.000Z' }]));
+
+    const originalDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      get() {
+        throw new DOMException('Access to storage is not allowed', 'SecurityError');
+      },
+    });
+
+    try {
+      mockUser.id = 'user-b';
+      cloudHydrationTestHooks.prepareAccountSwitchSafety();
+      expect(isStorageKeyTombstoned(PROFILE_STORAGE_KEY)).toBe(true);
+      expect(isStorageKeyTombstoned(STORAGE_KEY)).toBe(true);
+    } finally {
+      if (originalDescriptor) {
+        Object.defineProperty(globalThis, 'localStorage', originalDescriptor);
+      } else {
+        delete globalThis.localStorage;
+      }
+    }
+
+    resetStorageAvailabilityCache();
+    expect(JSON.parse(localStorage.getItem(PROFILE_STORAGE_KEY)).athleteName).toBe('Athlete A');
+    expect(readJSONValue(PROFILE_STORAGE_KEY, null)).toBeNull();
     expect(hasSharedAthleteCacheData()).toBe(false);
   });
 });

@@ -38,6 +38,7 @@ import {
 } from './session-checkpoint.js';
 import {
   buildSessionRecord,
+  createSessionId,
   finalizeWorkoutCompletionRecord,
   markWorkoutCompletionCleared,
   persistSessionRecord,
@@ -108,6 +109,7 @@ export const state = {
 };
 
 let activeResultRecord = null;
+let activeSessionId = '';
 const STRIDES_VIDEO_URL = 'https://www.youtube.com/watch?v=YA_u3F5aCdU';
 const SKIPS_VIDEO_URL = 'https://www.youtube.com/watch?v=A7r6yCpmSrA';
 
@@ -136,7 +138,7 @@ function persistSessionCheckpoint() {
     clearActiveSessionCheckpoint();
     return;
   }
-  saveActiveSessionCheckpoint(cfg, state, timerCheckpoint.kind ? { ...timerCheckpoint } : null);
+  saveActiveSessionCheckpoint(cfg, state, timerCheckpoint.kind ? { ...timerCheckpoint } : null, activeSessionId);
 }
 
 function rebuildSessionDots() {
@@ -190,6 +192,9 @@ function restoreSessionUI() {
 }
 
 function applyCheckpoint(checkpoint) {
+  activeSessionId = String(checkpoint.sessionId || '').trim();
+  if (!activeSessionId) activeSessionId = createSessionId();
+
   const savedCfg = checkpoint.cfg || {};
   const savedReps = Number(savedCfg.reps);
   const savedRest = Number(savedCfg.rest);
@@ -501,6 +506,7 @@ function runStartSession({ forceFresh = false } = {}) {
 
   saveAthleteProfile({ athleteName });
   activeResultRecord = null;
+  activeSessionId = createSessionId();
   clearSessionTimer();
   clearTimerCheckpoint();
 
@@ -1026,6 +1032,7 @@ export function cancelSession() {
     capturedRestHR: null,
   });
 
+  activeSessionId = '';
   showScreen('home');
   showToast('SESSION CANCELLED');
 }
@@ -1041,7 +1048,8 @@ export async function finishSession() {
   syncHoldToCancelLabels();
   vibrate([100, 50, 100, 50, 200]);
 
-  activeResultRecord = buildSessionRecord(cfg, state.data);
+  activeResultRecord = buildSessionRecord(cfg, state.data, activeSessionId || createSessionId());
+  if (!activeSessionId) activeSessionId = activeResultRecord.id;
   let cloudSessionSaved = false;
   if (isSupabaseConfigured && getCurrentUser()) {
     try {
@@ -1416,6 +1424,7 @@ export function resetSessionUI() {
 export function newSession() {
   resetSessionUI();
   activeResultRecord = null;
+  activeSessionId = '';
   clearTimerCheckpoint();
   clearActiveSessionCheckpoint();
 
@@ -1433,3 +1442,8 @@ export function newSession() {
 
   showScreen('home');
 }
+
+export const sprintLifecycleTestHooks = {
+  getActiveSessionId: () => activeSessionId,
+  applyCheckpoint,
+};

@@ -72,6 +72,61 @@ export function buildWorkoutCloudPayload(record, userId) {
   };
 }
 
+/** Client-local retry metadata must never cross the cloud boundary. */
+export function stripClientSprintMetadata(record = {}) {
+  if (!record || typeof record !== 'object') return {};
+  const cloudSafeRecord = { ...record };
+  delete cloudSafeRecord.cloudPending;
+  return cloudSafeRecord;
+}
+
+export function mapCloudSprintSessionRow(row, parseJSON = (value, fallback) => {
+  if (!value) return fallback;
+  if (typeof value === 'object') return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}) {
+  if (!row) return null;
+  const record = stripClientSprintMetadata(parseJSON(row.session_json, {}));
+  return {
+    ...record,
+    id: record.id || row.session_id || row.id,
+    date: row.session_at || record.date || row.created_at,
+    avgDrop: record.avgDrop ?? row.avg_drop ?? null,
+    peakHR: record.peakHR ?? row.peak_hr ?? null,
+  };
+}
+
+export function buildSprintCloudPayload(record, userId) {
+  const cloudSafeRecord = stripClientSprintMetadata(record);
+  const context = getRecordContext(cloudSafeRecord);
+  const data = Array.isArray(cloudSafeRecord.data) ? cloudSafeRecord.data : [];
+  return {
+    user_id: userId,
+    session_id: String(cloudSafeRecord.id || globalThis.crypto?.randomUUID?.() || Date.now()),
+    session_at: normalizeISODate(cloudSafeRecord.date || cloudSafeRecord.completedAt),
+    week_index: integerOrNull(context.weekIndex),
+    workout_index: integerOrNull(context.workoutIndex),
+    workout_type: textOrEmpty(context.workoutType || 'Sprint Intervals'),
+    hr_source: textOrEmpty(cloudSafeRecord.hrSource || cloudSafeRecord.cfg?.hrSource || ''),
+    reps_planned: integerOrNull(cloudSafeRecord.cfg?.reps || context.reps),
+    rest_seconds: integerOrNull(cloudSafeRecord.cfg?.rest || context.restSeconds),
+    max_hr: integerOrNull(cloudSafeRecord.cfg?.maxHR),
+    target_pct: numberOrNull(cloudSafeRecord.cfg?.targetPct || context.targetPct),
+    target_bpm: integerOrNull(context.targetBPM),
+    intervals_completed: data.length,
+    avg_drop: numberOrNull(cloudSafeRecord.avgDrop),
+    peak_hr: integerOrNull(cloudSafeRecord.peakHR),
+    proof_policy_version: integerOrNull(cloudSafeRecord.proofPolicyVersion),
+    attachment_id: cloudSafeRecord.attachment?.id || null,
+    session_json: cloudSafeRecord,
+    updated_at: new Date().toISOString(),
+  };
+}
+
 export function buildMileTestCloudPayload(result, hrInfo, testContext, userId) {
   const testKey = String(testContext?.testKey || result.testKey || 'mile-test:baseline');
   const resultWithContext = { ...result, testKey };

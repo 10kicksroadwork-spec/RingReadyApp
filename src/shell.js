@@ -424,12 +424,17 @@ function prepareAccountSwitchSafety() {
   if (!isSupabaseConfigured || !getCurrentUser()) return;
   invalidateCloudHydration();
   const user = getCurrentUser();
-  const lastUserId = getStorageItem(AUTH_USER_STORAGE_KEY).value;
-  if (
-    shouldClearSharedStateOnSwitch(lastUserId, user.id)
-    || shouldFailClosedClearSharedCache(lastUserId, user.id)
-  ) {
+  const ownerResult = getStorageItem(AUTH_USER_STORAGE_KEY, null);
+  if (!ownerResult.ok) {
     clearSharedLocalState();
+  } else {
+    const lastUserId = ownerResult.value;
+    if (
+      shouldClearSharedStateOnSwitch(lastUserId, user.id)
+      || shouldFailClosedClearSharedCache(lastUserId, user.id)
+    ) {
+      clearSharedLocalState();
+    }
   }
   setStorageItem(AUTH_USER_STORAGE_KEY, user.id);
   quarantineLegacySyncQueue();
@@ -607,7 +612,10 @@ async function runCloudHydrationMaintenance(userId, generation, {
       if (!shouldApplyCloudHydration(userId, generation)) return { ok: false };
       const result = await boundedCloudWrite(`sprint_pending_${sessionId}`, () => saveCloudSprintSession(session));
       if (result.ok && shouldApplyCloudHydration(userId, generation)) {
-        clearSessionCloudPending(sessionId);
+        const clearResult = clearSessionCloudPending(sessionId);
+        if (clearResult.logicalOk && !clearResult.persisted) {
+          console.warn('Sprint pending flag cleared only in volatile storage', sessionId);
+        }
       }
       return result;
     });

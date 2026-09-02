@@ -45,10 +45,12 @@ vi.mock('../src/hr-service.js', () => ({
   clearHRBufferForInterval: vi.fn(),
 }));
 
-import { saveActiveSessionCheckpoint } from '../src/session-checkpoint.js';
+import { saveActiveSessionCheckpoint, loadActiveSessionCheckpoint } from '../src/session-checkpoint.js';
 import { resetVolatileStorageForTest, resetStorageAvailabilityCache } from '../src/safe-storage.js';
 import { getCloudPendingSprintSessions, getSessionHistory } from '../src/storage.js';
-import { cfg, finishSession, state } from '../src/app.js';
+import { cfg, finishSession, sprintLifecycleTestHooks, state } from '../src/app.js';
+
+const STABLE_SESSION_ID = 'stable-sprint-session-id';
 
 describe('Charlie sprint durability', () => {
   beforeEach(() => {
@@ -71,8 +73,17 @@ describe('Charlie sprint durability', () => {
     state.capturedSprintHR = null;
     state.capturedRestHR = null;
 
-    saveActiveSessionCheckpoint(cfg, state);
+    saveActiveSessionCheckpoint(cfg, state, null, STABLE_SESSION_ID);
+    sprintLifecycleTestHooks.applyCheckpoint(loadActiveSessionCheckpoint());
+    expect(loadActiveSessionCheckpoint()?.sessionId).toBe(STABLE_SESSION_ID);
     expect(localStorage.getItem(`${ACTIVE_SESSION_KEY_PREFIX}user-a`)).toBeTruthy();
+  });
+
+  it('persists the same sessionId through checkpoint updates', () => {
+    saveActiveSessionCheckpoint(cfg, state, null, STABLE_SESSION_ID);
+    state.currentRep = 2;
+    saveActiveSessionCheckpoint(cfg, state, null, STABLE_SESSION_ID);
+    expect(loadActiveSessionCheckpoint()?.sessionId).toBe(STABLE_SESSION_ID);
   });
 
   it('retains the active checkpoint when cloud and local history persistence both fail', async () => {
@@ -123,17 +134,6 @@ describe('Charlie sprint durability', () => {
     vi.useRealTimers();
   });
 
-  it('marks explicit cloud pending when cloud fails and local history succeeds', async () => {
-    saveCloudSprintSession.mockRejectedValue(new Error('cloud save failed'));
-
-    await finishSession();
-
-    expect(localStorage.getItem(`${ACTIVE_SESSION_KEY_PREFIX}user-a`)).toBeNull();
-    expect(getCloudPendingSprintSessions()).toHaveLength(1);
-    expect(getCloudPendingSprintSessions()[0].cloudPending).toBe(true);
-    expect(getSessionHistory()[0]?.id).toBe(getCloudPendingSprintSessions()[0].id);
-  });
-
   it('does not clear the checkpoint when cloud fails and session history is volatile-only', async () => {
     const original = Storage.prototype.setItem;
     Storage.prototype.setItem = function quotaThrowingSetItem(key, value) {
@@ -149,6 +149,55 @@ describe('Charlie sprint durability', () => {
       expect(localStorage.getItem('sprintTrainerHistory')).toBeNull();
     } finally {
       Storage.prototype.setItem = original;
+    }
+  });
+
+  it('marks explicit cloud pending when cloud fails and local history succeeds', async () => {
+    saveCloudSprintSession.mockRejectedValue(new Error('cloud save failed'));
+
+    await finishSession();
+
+    expect(localStorage.getItem(`${ACTIVE_SESSION_KEY_PREFIX}user-a`)).toBeNull();
+    expect(getCloudPendingSprintSessions()).toHaveLength(1);
+    expect(getCloudPendingSprintSessions()[0].cloudPending).toBe(true);
+    expect(getCloudPendingSprintSessions()[0].id).toBe(STABLE_SESSION_ID);
+    expect(getSessionHistory()[0]?.id).toBe(STABLE_SESSION_ID);
+    expect(saveCloudSprintSession.mock.calls[0][0].id).toBe(STABLE_SESSION_ID);
+  });
+
+  it('reuses the checkpoint sessionId after cloud timeout and resume', async () => {
+    vi.useFakeTimers();
+    saveCloudSprintSession.mockImplementation(() => new Promise(() => {}));
+    const original = Storage.prototype.setItem;
+    Storage.prototype.setItem = function blockingSetItem(key, value) {
+      if (String(key).includes('sprintTrainerHistory')) {
+        throw new DOMException('quota', 'QuotaExceededError');
+      }
+      return original.call(this, key, value);
+    };
+
+    try {
+      const finishPromise = finishSession();
+      await vi.advanceTimersByTimeAsync(12_001);
+      await finishPromise;
+
+      const retained = loadActiveSessionCheckpoint();
+      expect(retained?.sessionId).toBe(STABLE_SESSION_ID);
+
+      saveCloudSprintSession.mockReset();
+      saveCloudSprintSession.mockResolvedValue(undefined);
+      Storage.prototype.setItem = original;
+
+      sprintLifecycleTestHooks.applyCheckpoint(retained);
+      expect(sprintLifecycleTestHooks.getActiveSessionId()).toBe(STABLE_SESSION_ID);
+      state.phase = 'resting';
+
+      await finishSession();
+      expect(saveCloudSprintSession).toHaveBeenCalledTimes(1);
+      expect(saveCloudSprintSession.mock.calls[0][0].id).toBe(STABLE_SESSION_ID);
+    } finally {
+      Storage.prototype.setItem = original;
+      vi.useRealTimers();
     }
   });
 });

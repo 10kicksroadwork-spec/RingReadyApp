@@ -86,11 +86,12 @@ function cloneTimer(timer) {
   };
 }
 
-export function buildActiveSessionCheckpoint(cfg, state, timer = null, userId = resolveCheckpointUserId()) {
+export function buildActiveSessionCheckpoint(cfg, state, timer = null, userId = resolveCheckpointUserId(), sessionId = '') {
   const now = new Date().toISOString();
   return {
     version: CHECKPOINT_VERSION,
     userId,
+    sessionId: String(sessionId || '').trim(),
     createdAt: now,
     updatedAt: now,
     savedAt: now,
@@ -136,7 +137,7 @@ export function loadActiveSessionCheckpoint(userId = resolveCheckpointUserId()) 
   return checkpoint;
 }
 
-export function saveActiveSessionCheckpoint(cfg, state, timer = null) {
+export function saveActiveSessionCheckpoint(cfg, state, timer = null, sessionId = '') {
   const userId = resolveCheckpointUserId();
   if (!userId || !cfg || !state) return null;
   if (state.phase === 'done') {
@@ -145,7 +146,8 @@ export function saveActiveSessionCheckpoint(cfg, state, timer = null) {
   }
 
   const existing = readJSON(activeSessionStorageKey(userId), null);
-  const checkpoint = buildActiveSessionCheckpoint(cfg, state, timer, userId);
+  const resolvedSessionId = String(sessionId || existing?.sessionId || '').trim();
+  const checkpoint = buildActiveSessionCheckpoint(cfg, state, timer, userId, resolvedSessionId);
   if (existing?.createdAt) checkpoint.createdAt = existing.createdAt;
 
   const writeResult = writeJSON(activeSessionStorageKey(userId), checkpoint, { persistentOnly: true });

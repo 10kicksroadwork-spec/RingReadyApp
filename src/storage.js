@@ -12,6 +12,10 @@ function makeLocalId() {
   return `local-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+export function createSessionId() {
+  return makeLocalId();
+}
+
 function readJSON(key, fallback) {
   return readJSONValue(key, fallback);
 }
@@ -44,10 +48,11 @@ function cloneConfig(cfg) {
   };
 }
 
-export function buildSessionRecord(cfg, data) {
+export function buildSessionRecord(cfg, data, sessionId = '') {
   const sessionData = cloneSessionData(data);
+  const resolvedId = String(sessionId || '').trim() || makeLocalId();
   return {
-    id: makeLocalId(),
+    id: resolvedId,
     date: new Date().toISOString(),
     cfg: cloneConfig(cfg),
     data: sessionData,
