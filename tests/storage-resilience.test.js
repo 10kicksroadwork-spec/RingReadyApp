@@ -9,13 +9,22 @@ import {
   classifyStorageError,
   getStorageItem,
   isQuotaExceededError,
+  isStorageAccessError,
+  isStorageAvailable,
   listStorageKeys,
   probeStorageWrite,
   readJSONValue,
   readStorageJSON,
   removeStorageKey,
+  resetStorageAvailabilityCache,
   writeJSON,
 } from '../src/safe-storage.js';
+import { STORAGE_KEY } from '../src/constants.js';
+import {
+  buildSessionRecord,
+  persistSessionRecord,
+  persistWorkoutCompletion,
+} from '../src/storage.js';
 import {
   clearActiveSessionCheckpoint,
   isCheckpointStorageAvailable,
@@ -25,6 +34,7 @@ import {
 describe('safe-storage adapter', () => {
   beforeEach(() => {
     localStorage.clear();
+    resetStorageAvailabilityCache();
   });
 
   it('reads and writes JSON with structured success', () => {
@@ -51,6 +61,13 @@ describe('safe-storage adapter', () => {
     expect(classifyStorageError(error)).toBe(STORAGE_ERROR.QUOTA_EXCEEDED);
   });
 
+  it('classifies SecurityError as unavailable, not quota', () => {
+    const error = new DOMException('Access to storage is not allowed', 'SecurityError');
+    expect(isStorageAccessError(error)).toBe(true);
+    expect(isQuotaExceededError(error)).toBe(false);
+    expect(classifyStorageError(error)).toBe(STORAGE_ERROR.UNAVAILABLE);
+  });
+
   it('survives setItem throwing QuotaExceededError without crashing callers', () => {
     const original = Storage.prototype.setItem;
     Storage.prototype.setItem = function quotaThrowingSetItem(key, value) {
@@ -67,6 +84,31 @@ describe('safe-storage adapter', () => {
       expect(readJSONValue('ringReadyQuotaTest', 'fallback')).toBe('fallback');
     } finally {
       Storage.prototype.setItem = original;
+    }
+  });
+
+  it('survives blocked localStorage getter with structured unavailable result', () => {
+    const originalDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      get() {
+        throw new DOMException('Access to storage is not allowed', 'SecurityError');
+      },
+    });
+
+    try {
+      const result = getStorageItem('ringReadyBlocked', 'fallback');
+      expect(result.ok).toBe(false);
+      expect(result.code).toBe(STORAGE_ERROR.UNAVAILABLE);
+      expect(result.value).toBe('fallback');
+      expect(probeStorageWrite().ok).toBe(false);
+      expect(isStorageAvailable()).toBe(false);
+    } finally {
+      if (originalDescriptor) {
+        Object.defineProperty(globalThis, 'localStorage', originalDescriptor);
+      } else {
+        delete globalThis.localStorage;
+      }
     }
   });
 
@@ -135,5 +177,63 @@ describe('session checkpoint storage integration', () => {
     expect(localStorage.getItem('ringReadyActiveSession:user-a')).toBeTruthy();
     clearActiveSessionCheckpoint('user-a');
     expect(localStorage.getItem('ringReadyActiveSession:user-a')).toBeNull();
+  });
+});
+
+describe('stable session record identity', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it('returns the same session record when local cache write fails', () => {
+    const original = Storage.prototype.setItem;
+    Storage.prototype.setItem = function blockingSetItem(key, value) {
+      if (String(key).includes(STORAGE_KEY)) {
+        throw new DOMException('quota', 'QuotaExceededError');
+      }
+      return original.call(this, key, value);
+    };
+
+    try {
+      const cfg = { reps: 4, rest: 60, maxHR: 180, targetPct: 90, workoutContext: null };
+      const data = [{ sprintHR: 170, restHR: 120, drop: 50, suspicious: false }];
+      const record = buildSessionRecord(cfg, data);
+      const persisted = persistSessionRecord(record);
+      expect(persisted.record.id).toBe(record.id);
+      expect(persisted.localCacheOk).toBe(false);
+    } finally {
+      Storage.prototype.setItem = original;
+    }
+  });
+});
+
+describe('cloud-authoritative completion record', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it('returns finalized record even when local cache write fails', () => {
+    const original = Storage.prototype.setItem;
+    Storage.prototype.setItem = function blockingSetItem(key, value) {
+      if (String(key).includes('ringReadyWorkoutCompletions')) {
+        throw new DOMException('quota', 'QuotaExceededError');
+      }
+      return original.call(this, key, value);
+    };
+
+    try {
+      const record = {
+        id: 'workout-1',
+        workoutContext: { weekIndex: 1, workoutIndex: 2 },
+        cfg: { workoutContext: { weekIndex: 1, workoutIndex: 2 } },
+        workoutLog: { totalMinutes: 30 },
+      };
+      const result = persistWorkoutCompletion(record);
+      expect(result.record?.id).toBe('workout-1');
+      expect(result.record?.completionKey).toBe('1:2');
+      expect(result.localCacheOk).toBe(false);
+    } finally {
+      Storage.prototype.setItem = original;
+    }
   });
 });

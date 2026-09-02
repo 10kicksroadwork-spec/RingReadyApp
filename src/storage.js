@@ -55,20 +55,54 @@ export function buildSessionRecord(cfg, data) {
   };
 }
 
-export function saveSessionToHistory(cfg, data) {
+export function persistSessionRecord(record) {
   try {
     const sessions = readJSON(STORAGE_KEY, []);
-    const record = buildSessionRecord(cfg, data);
     sessions.unshift(record);
     if (sessions.length > MAX_STORED_SESSIONS) sessions.length = MAX_STORED_SESSIONS;
-    if (!persistJSON(STORAGE_KEY, sessions)) {
-      return buildSessionRecord(cfg, data);
+    const localCacheOk = persistJSON(STORAGE_KEY, sessions);
+    if (!localCacheOk) {
+      console.warn('Could not save session history locally');
     }
-    return record;
+    return { record, localCacheOk };
   } catch (err) {
     console.warn('Could not save session history', err);
-    return buildSessionRecord(cfg, data);
+    return { record, localCacheOk: false };
   }
+}
+
+export function persistSessionToHistory(cfg, data) {
+  return persistSessionRecord(buildSessionRecord(cfg, data));
+}
+
+export function saveSessionToHistory(cfg, data) {
+  return persistSessionToHistory(cfg, data).record;
+}
+
+export function finalizeWorkoutCompletionRecord(record) {
+  const key = getCompletionKeyFromRecord(record);
+  if (!key) return null;
+  return {
+    ...record,
+    completionKey: key,
+    completedAt: record?.completedAt || new Date().toISOString(),
+  };
+}
+
+export function persistWorkoutCompletion(record) {
+  const finalized = finalizeWorkoutCompletionRecord(record);
+  if (!finalized) {
+    return { record: null, localCacheOk: false };
+  }
+
+  const completions = getWorkoutCompletions();
+  completions[finalized.completionKey] = finalized;
+  const localCacheOk = persistJSON(WORKOUT_COMPLETIONS_STORAGE_KEY, completions);
+  const context = record?.workoutContext || record?.cfg?.workoutContext || {};
+  if (localCacheOk) {
+    clearWorkoutCompletionClearedMarker(context.weekIndex, context.workoutIndex);
+  }
+  return { record: finalized, localCacheOk };
 }
 
 export function getWorkoutCompletionKey(weekIndex, workoutIndex) {
@@ -133,20 +167,7 @@ export function clearWorkoutCompletionClearedMarker(weekIndex, workoutIndex) {
 }
 
 export function saveWorkoutCompletion(record) {
-  const key = getCompletionKeyFromRecord(record);
-  if (!key) return null;
-
-  const completions = getWorkoutCompletions();
-  const completed = {
-    ...record,
-    completionKey: key,
-    completedAt: new Date().toISOString(),
-  };
-  completions[key] = completed;
-  const saved = persistJSON(WORKOUT_COMPLETIONS_STORAGE_KEY, completions);
-  const context = record?.workoutContext || record?.cfg?.workoutContext || {};
-  clearWorkoutCompletionClearedMarker(context.weekIndex, context.workoutIndex);
-  return saved ? completed : null;
+  return persistWorkoutCompletion(record).record;
 }
 
 export function removeWorkoutCompletion(weekIndex, workoutIndex) {
