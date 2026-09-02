@@ -11,6 +11,7 @@ import {
   checkRuntimeContract,
   evaluateContractHealth,
   fetchHealthPayload,
+  getContractHealthDiagnosticDetail,
 } from '../src/contract-health.js';
 
 const validHealth = {
@@ -111,6 +112,40 @@ describe('contract health evaluation', () => {
       ...validHealth,
       proofContractVersion: -1,
     }).reason).toBe('invalid_health_schema');
+  });
+
+  it('returns unavailable when production health reports dev build identity', () => {
+    const result = evaluateContractHealth({
+      ok: true,
+      service: 'ringready',
+      buildSha: 'dev',
+      proofContractVersion: 2,
+      environment: 'production',
+    });
+
+    expect(result.status).toBe('unavailable');
+    expect(result.reason).toBe('missing_production_build_identity');
+  });
+
+  it('allows development health with dev build when client is dev', () => {
+    const result = evaluateContractHealth({
+      ok: true,
+      service: 'ringready',
+      buildSha: 'dev',
+      proofContractVersion: 2,
+      environment: 'development',
+    }, { clientBuild: 'dev' });
+
+    expect(result.status).toBe('ok');
+  });
+});
+
+describe('getContractHealthDiagnosticDetail', () => {
+  it('prefers error then reason for unavailable diagnostics', () => {
+    expect(getContractHealthDiagnosticDetail({ error: 'timeout' })).toBe('timeout');
+    expect(getContractHealthDiagnosticDetail({ reason: 'invalid_health_schema' }))
+      .toBe('invalid_health_schema');
+    expect(getContractHealthDiagnosticDetail({})).toBe('unavailable');
   });
 });
 

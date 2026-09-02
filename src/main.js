@@ -14,7 +14,7 @@ import {
   connectHR,
   onHRDisconnectUI,
 } from './hr-service.js';
-import { checkRuntimeContract, CONTRACT_UPDATE_MESSAGE } from './contract-health.js';
+import { checkRuntimeContract, CONTRACT_UPDATE_MESSAGE, getContractHealthDiagnosticDetail } from './contract-health.js';
 import { captureRuntimeDiagnostic, installGlobalRuntimeDiagnostics } from './runtime-diagnostics.js';
 import { registerMainHandlers, showToast, selectExportText, closeExportModal, showScreen, bindHoldToCancel } from './ui.js';
 import {
@@ -284,7 +284,7 @@ function scheduleStartupContractHealthCheck() {
       captureRuntimeDiagnostic({
         kind: 'contract_health_unavailable',
         stage: 'startup',
-        detail: result.error || 'unavailable',
+        detail: getContractHealthDiagnosticDetail(result),
       });
     }
   });

@@ -6,6 +6,10 @@ export const CONTRACT_UPDATE_MESSAGE =
 export const HEALTH_PATH = '/api/health';
 export const HEALTH_TIMEOUT_MS = 4000;
 
+export function getContractHealthDiagnosticDetail(result = {}) {
+  return result.error || result.reason || 'unavailable';
+}
+
 function isValidHealthSchema(healthBody) {
   const serverBuild = typeof healthBody?.buildSha === 'string'
     ? healthBody.buildSha.trim()
@@ -74,12 +78,14 @@ export function evaluateContractHealth(healthBody, client = {}) {
     ? healthBody.buildSha.trim()
     : '';
   const serverProofContract = Number(healthBody?.proofContractVersion);
+  const serverEnvironment = String(healthBody?.environment || '').trim();
 
   const base = {
     clientBuild,
     clientProofContract,
     serverBuild,
     serverProofContract,
+    serverEnvironment,
   };
 
   if (!healthBody || healthBody.ok !== true) {
@@ -95,6 +101,14 @@ export function evaluateContractHealth(healthBody, client = {}) {
       ...base,
       status: 'unavailable',
       reason: 'invalid_health_schema',
+    };
+  }
+
+  if (serverEnvironment === 'production' && serverBuild === 'dev') {
+    return {
+      ...base,
+      status: 'unavailable',
+      reason: 'missing_production_build_identity',
     };
   }
 

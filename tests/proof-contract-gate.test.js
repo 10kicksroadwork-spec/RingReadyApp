@@ -2,6 +2,10 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { CONTRACT_UPDATE_MESSAGE } from '../src/contract-health.js';
 import {
+  clearCapturedDiagnostics,
+  getCapturedDiagnostics,
+} from '../src/runtime-diagnostics.js';
+import {
   ensureWorkoutProofUploaded,
   initWorkoutProof,
 } from '../src/proof.js';
@@ -131,6 +135,7 @@ describe('proof contract gate', () => {
   });
 
   it('attempts proof upload when health schema is invalid', async () => {
+    clearCapturedDiagnostics();
     globalThis.fetch = vi.fn(async () => ({
       ok: true,
       json: async () => ({
@@ -146,6 +151,60 @@ describe('proof contract gate', () => {
     });
     expect(storageUpload).toHaveBeenCalledTimes(1);
     expect(rpc).toHaveBeenCalledTimes(1);
+
+    const diagnostic = getCapturedDiagnostics().find((entry) => entry.stage === 'proof_precheck');
+    expect(diagnostic?.detail).toBe('invalid_health_schema');
+  });
+
+  it('attempts proof upload when production reports dev build identity', async () => {
+    clearCapturedDiagnostics();
+    globalThis.fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        service: 'ringready',
+        buildSha: 'dev',
+        proofContractVersion: 2,
+        environment: 'production',
+      }),
+    }));
+
+    await seedProcessedProof('detail');
+
+    await expect(ensureWorkoutProofUploaded('detail', 'record-1')).resolves.toMatchObject({
+      id: 'attachment-1',
+    });
+    expect(storageUpload).toHaveBeenCalledTimes(1);
+    expect(rpc).toHaveBeenCalledTimes(1);
+
+    const diagnostic = getCapturedDiagnostics().find((entry) => entry.stage === 'proof_precheck');
+    expect(diagnostic?.detail).toBe('missing_production_build_identity');
+  });
+
+  it('sanitizes raw proof failure details in console warnings', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    globalThis.fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        service: 'ringready',
+        buildSha: 'abc1234',
+        proofContractVersion: 2,
+        environment: 'development',
+      }),
+    }));
+    storageUpload.mockResolvedValue({
+      error: { message: 'Bearer abc123.secret.token failed' },
+    });
+
+    await seedProcessedProof('detail');
+
+    await expect(ensureWorkoutProofUploaded('detail', 'record-1')).rejects.toBeTruthy();
+
+    const payload = warnSpy.mock.calls.find(([message]) => message === 'Workout proof upload failed')?.[1];
+    expect(payload.raw).not.toContain('Bearer abc123');
+    expect(payload.raw).toContain('[redacted]');
+    warnSpy.mockRestore();
   });
 });
 

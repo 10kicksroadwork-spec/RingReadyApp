@@ -1,9 +1,9 @@
 import './proof.css';
 import { getCurrentUser } from './auth.js';
 import { isSupabaseConfigured, supabase } from './supabase-client.js';
-import { assertProofContractCurrent } from './contract-health.js';
+import { assertProofContractCurrent, getContractHealthDiagnosticDetail } from './contract-health.js';
 import { createProofUploadError, PROOF_UPLOAD_PHASE } from './proof-diagnostics.js';
-import { captureRuntimeDiagnostic } from './runtime-diagnostics.js';
+import { captureRuntimeDiagnostic, sanitizeDiagnosticValue } from './runtime-diagnostics.js';
 
 export const PROOF_POLICY_VERSION = 1;
 export const PROOF_BUCKET = 'workout-proof-staging';
@@ -261,7 +261,7 @@ export async function ensureWorkoutProofUploaded(surface, linkedRecordId = '') {
       captureRuntimeDiagnostic({
         kind: 'contract_health_unavailable',
         stage: 'proof_precheck',
-        detail: contractResult.error || 'unavailable',
+        detail: getContractHealthDiagnosticDetail(contractResult),
       });
     }
   } catch (error) {
@@ -332,7 +332,7 @@ export async function ensureWorkoutProofUploaded(surface, linkedRecordId = '') {
     console.warn('Workout proof upload failed', {
       kind: classified.proofFailureKind,
       detail: classified.proofDiagnosticDetail,
-      raw: classified.proofRawMessage,
+      raw: sanitizeDiagnosticValue(classified.proofRawMessage),
     });
     throw classified;
   } finally {
