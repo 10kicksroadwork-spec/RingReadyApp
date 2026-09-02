@@ -1,10 +1,11 @@
 /** Build metadata injected at compile time for deploy diagnostics. */
 
+import { PROOF_CONTRACT_VERSION } from './proof-contract-version.js';
+
+export { PROOF_CONTRACT_VERSION };
+
 export const APP_BUILD_SHA = String(import.meta.env.VITE_APP_BUILD_SHA || 'dev');
 export const APP_BUILD_TIME = String(import.meta.env.VITE_APP_BUILD_TIME || '');
-
-/** Bump when the athlete proof write contract changes (RPC-only attachments). */
-export const PROOF_CONTRACT_VERSION = 2;
 
 export function formatBuildLabel() {
   if (!APP_BUILD_SHA || APP_BUILD_SHA === 'dev') return 'dev';

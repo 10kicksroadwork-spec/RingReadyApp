@@ -14,6 +14,8 @@ import {
   connectHR,
   onHRDisconnectUI,
 } from './hr-service.js';
+import { checkRuntimeContract, CONTRACT_UPDATE_MESSAGE, getContractHealthDiagnosticDetail } from './contract-health.js';
+import { captureRuntimeDiagnostic, installGlobalRuntimeDiagnostics } from './runtime-diagnostics.js';
 import { registerMainHandlers, showToast, selectExportText, closeExportModal, showScreen, bindHoldToCancel } from './ui.js';
 import {
   setWorkoutContext,
@@ -265,10 +267,35 @@ function initReadabilityEnhancements() {
   });
 }
 
+function scheduleStartupContractHealthCheck() {
+  void checkRuntimeContract().then((result) => {
+    if (result.status === 'mismatch') {
+      showToast(CONTRACT_UPDATE_MESSAGE, { readable: true });
+      captureRuntimeDiagnostic({
+        kind: 'contract_mismatch',
+        stage: 'startup',
+        detail: result.reason || 'mismatch',
+        message: CONTRACT_UPDATE_MESSAGE,
+      });
+      return;
+    }
+
+    if (result.status === 'unavailable') {
+      captureRuntimeDiagnostic({
+        kind: 'contract_health_unavailable',
+        stage: 'startup',
+        detail: getContractHealthDiagnosticDetail(result),
+      });
+    }
+  });
+}
+
 async function init() {
+  installGlobalRuntimeDiagnostics();
   registerServiceWorker({ showToast });
   initPWAInstall();
   initBuildMetadata();
+  scheduleStartupContractHealthCheck();
   initSyncControls({ showToast });
   installSignupNameCapture();
   await initAthleteShell({ showToast, showScreen, setWorkoutContext, showSavedWorkoutResult });

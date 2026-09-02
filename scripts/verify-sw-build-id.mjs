@@ -38,4 +38,10 @@ if (!swContents.includes('ring-ready-shell-${BUILD_ID}')) {
   process.exit(1);
 }
 
+const sourceSw = readFileSync('public/sw.js', 'utf8');
+if (!sourceSw.includes("pathname.startsWith('/api/')")) {
+  console.error('FAIL: public/sw.js must bypass /api/* from service worker caching');
+  process.exit(1);
+}
+
 console.log(`PASS: service worker build id ${buildSha}`);

@@ -1,7 +1,9 @@
 import './proof.css';
 import { getCurrentUser } from './auth.js';
 import { isSupabaseConfigured, supabase } from './supabase-client.js';
+import { assertProofContractCurrent, getContractHealthDiagnosticDetail } from './contract-health.js';
 import { createProofUploadError, PROOF_UPLOAD_PHASE } from './proof-diagnostics.js';
+import { captureRuntimeDiagnostic, sanitizeDiagnosticValue } from './runtime-diagnostics.js';
 
 export const PROOF_POLICY_VERSION = 1;
 export const PROOF_BUCKET = 'workout-proof-staging';
@@ -252,6 +254,34 @@ export async function ensureWorkoutProofUploaded(surface, linkedRecordId = '') {
   if (!navigator.onLine) throw new Error('Internet connection required to submit workout proof.');
   if (!isSupabaseConfigured || !supabase || !getCurrentUser()) throw new Error('Sign in before submitting workout proof.');
   if (!state.processed) throw new Error('Choose a workout screenshot first.');
+
+  try {
+    const contractResult = await assertProofContractCurrent();
+    if (contractResult.status === 'unavailable') {
+      captureRuntimeDiagnostic({
+        kind: 'contract_health_unavailable',
+        stage: 'proof_precheck',
+        detail: getContractHealthDiagnosticDetail(contractResult),
+      });
+    }
+  } catch (error) {
+    if (error?.contractHealthStatus === 'mismatch') {
+      state.error = error.message;
+      captureRuntimeDiagnostic({
+        kind: 'contract_mismatch',
+        stage: 'proof_precheck',
+        detail: error.contractHealth?.reason || 'mismatch',
+        message: error.message,
+      });
+      throw error;
+    }
+    captureRuntimeDiagnostic({
+      kind: 'contract_health_unavailable',
+      stage: 'proof_precheck',
+      detail: error?.message || 'health_check_failed',
+    });
+  }
+
   state.uploading = true;
   state.error = '';
   render(surface);
@@ -287,12 +317,22 @@ export async function ensureWorkoutProofUploaded(surface, linkedRecordId = '') {
     state.processed = null;
     return attachment;
   } catch (error) {
+    if (error?.contractHealthStatus === 'mismatch') {
+      throw error;
+    }
+
     const classified = error?.proofFailureKind ? error : createProofUploadError(error);
     state.error = classified.message;
+    captureRuntimeDiagnostic({
+      kind: classified.proofFailureKind || 'proof_upload_failed',
+      stage: 'proof_upload',
+      detail: classified.proofDiagnosticDetail,
+      message: classified.message,
+    });
     console.warn('Workout proof upload failed', {
       kind: classified.proofFailureKind,
       detail: classified.proofDiagnosticDetail,
-      raw: classified.proofRawMessage,
+      raw: sanitizeDiagnosticValue(classified.proofRawMessage),
     });
     throw classified;
   } finally {

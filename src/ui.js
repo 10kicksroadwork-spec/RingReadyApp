@@ -346,11 +346,24 @@ export function setRing(progress, isSprint) {
   ring.setAttribute('class', 'ring-progress ' + (isSprint ? 'sprint-ring' : 'rest-ring'));
 }
 
-export function showToast(msg) {
+let toastTimer = null;
+
+export function showToast(msg, options = {}) {
   const t = document.getElementById('toast');
+  const readable = Boolean(options.readable) || String(msg).length > 48;
   t.textContent = msg;
+  t.classList.toggle('toast-readable', readable);
   t.classList.add('show');
-  setTimeout(() => t.classList.remove('show'), 2500);
+  const duration = readable ? 4500 : 2500;
+  if (toastTimer) {
+    clearTimeout(toastTimer);
+    toastTimer = null;
+  }
+  toastTimer = setTimeout(() => {
+    t.classList.remove('show');
+    t.classList.remove('toast-readable');
+    toastTimer = null;
+  }, duration);
 }
 
 export function showExportModal(text) {
