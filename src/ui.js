@@ -348,6 +348,22 @@ export function setRing(progress, isSprint) {
 
 let toastTimer = null;
 
+export async function withSavingButton(button, task, { savingLabel = 'SAVING...' } = {}) {
+  if (!button) return task();
+  const previousText = button.textContent;
+  const wasDisabled = button.disabled;
+  button.disabled = true;
+  button.textContent = savingLabel;
+  button.setAttribute('aria-busy', 'true');
+  try {
+    return await task();
+  } finally {
+    button.removeAttribute('aria-busy');
+    button.textContent = previousText;
+    button.disabled = wasDisabled;
+  }
+}
+
 export function showToast(msg, options = {}) {
   const t = document.getElementById('toast');
   const readable = Boolean(options.readable) || String(msg).length > 48;
