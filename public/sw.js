@@ -1,5 +1,7 @@
 const BUILD_ID = '__BUILD_ID__';
 const CACHE_NAME = `ring-ready-shell-${BUILD_ID}`;
+const SW_ACTIVATION_PROTOCOL = 2;
+const SW_SKIP_WAITING_MESSAGE_TYPE = 'RINGREADY_SKIP_WAITING';
 const APP_SHELL = [
   './',
   './index.html',
@@ -12,6 +14,7 @@ const APP_SHELL = [
   './icon-192.png',
   './icon-512.png',
   './icon-maskable-512.png',
+  './10-kicks-logo.jpg',
 ];
 
 function isScriptOrStyleRequest(request) {
@@ -41,7 +44,10 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('message', (event) => {
-  if (event.data?.type === 'SKIP_WAITING') {
+  if (
+    event.data?.type === SW_SKIP_WAITING_MESSAGE_TYPE
+    && event.data?.protocol === SW_ACTIVATION_PROTOCOL
+  ) {
     self.skipWaiting();
   }
 });

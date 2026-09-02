@@ -1,11 +1,11 @@
-export const PROTECTED_SCREENS = new Set(['session', 'results', 'setup']);
+export const SAFE_ACTIVATION_SCREENS = new Set(['home', 'welcome-page']);
 
-export function isProtectedScreen(screenId) {
-  return PROTECTED_SCREENS.has(String(screenId || ''));
+export function isSafeActivationScreen(screenId) {
+  return SAFE_ACTIVATION_SCREENS.has(String(screenId || ''));
 }
 
 export function canActivateOnScreen(screenId) {
-  return !isProtectedScreen(screenId);
+  return isSafeActivationScreen(screenId);
 }
 
 export function createServiceWorkerUpdateLifecycle(options = {}) {
@@ -20,6 +20,7 @@ export function createServiceWorkerUpdateLifecycle(options = {}) {
   let reloadStarted = false;
   let reloadPending = false;
   let waitingWorkerSeen = false;
+  let activationDeferredRecorded = false;
 
   function record(kind, detail = '') {
     onDiagnostic({
@@ -32,7 +33,10 @@ export function createServiceWorkerUpdateLifecycle(options = {}) {
   function requestActivation(screenId = getScreen()) {
     if (activationRequested) return false;
     if (!canActivateOnScreen(screenId)) {
-      record('sw_activation_deferred', screenId);
+      if (!activationDeferredRecorded) {
+        activationDeferredRecorded = true;
+        record('sw_activation_deferred', screenId);
+      }
       return false;
     }
 

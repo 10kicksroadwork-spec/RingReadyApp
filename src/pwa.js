@@ -1,11 +1,12 @@
 ﻿import { renderBuildInfo } from './build-info.js';
 import { captureRuntimeDiagnostic } from './runtime-diagnostics.js';
+import { buildSkipWaitingMessage } from './pwa-activation-protocol.js';
 import { createServiceWorkerUpdateLifecycle } from './pwa-update-lifecycle.js';
 
 let deferredInstallPrompt = null;
 let iosInstallInstructionsVisible = false;
 let updateLifecycle = null;
-let screenObserver = null;
+let screenChangeListenerInstalled = false;
 
 function isStandalone() {
   return window.matchMedia('(display-mode: standalone)').matches
@@ -90,7 +91,7 @@ function ensureUpdateLifecycle(showToast) {
     onSkipWaiting: () => {
       navigator.serviceWorker?.ready
         ?.then((registration) => {
-          registration.waiting?.postMessage({ type: 'SKIP_WAITING' });
+          registration.waiting?.postMessage(buildSkipWaitingMessage());
         })
         .catch((error) => {
           console.warn('Service worker activation request failed', error);
@@ -108,21 +109,16 @@ function ensureUpdateLifecycle(showToast) {
 }
 
 function watchScreenChanges(showToast) {
-  if (screenObserver) return;
-  if (!document.body) return;
-  if (typeof MutationObserver === 'undefined') return;
+  if (screenChangeListenerInstalled) return;
 
   const lifecycle = ensureUpdateLifecycle(showToast);
 
-  screenObserver = new MutationObserver(() => {
-    lifecycle.handleScreenChange(getActiveScreenId());
+  document.addEventListener('ringready:screen-changed', (event) => {
+    const screenId = event.detail?.screenId || getActiveScreenId();
+    lifecycle.handleScreenChange(screenId);
   });
 
-  screenObserver.observe(document.body, {
-    subtree: true,
-    attributes: true,
-    attributeFilter: ['class'],
-  });
+  screenChangeListenerInstalled = true;
 }
 
 function watchServiceWorkerUpdates(registration, showToast) {

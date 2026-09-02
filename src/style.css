@@ -58,7 +58,7 @@
         transparent 43%
       ),
       var(--black);
-    padding: max(24px, var(--safe-top)) 24px max(24px, var(--safe-bottom));
+    padding: max(24px, var(--safe-top)) max(24px, calc(var(--safe-right) + 12px)) max(24px, var(--safe-bottom)) max(24px, calc(var(--safe-left) + 12px));
     text-align: center;
   }
 
@@ -125,7 +125,7 @@
     justify-content: center;
     align-items: center;
     background: var(--black);
-    padding: max(24px, var(--safe-top)) 24px max(24px, var(--safe-bottom));
+    padding: max(24px, var(--safe-top)) max(24px, calc(var(--safe-right) + 12px)) max(24px, var(--safe-bottom)) max(24px, calc(var(--safe-left) + 12px));
     overflow-y: auto;
   }
 
@@ -227,7 +227,7 @@
   /* SETUP */
   #setup { background: var(--black); overflow-y: auto; }
 
-  .setup-header { background: var(--gold); padding: max(48px, calc(var(--safe-top) + 24px)) 24px 24px; }
+  .setup-header { background: var(--gold); padding: max(48px, calc(var(--safe-top) + 24px)) max(24px, calc(var(--safe-right) + 12px)) 24px max(24px, calc(var(--safe-left) + 12px)); }
 
   .logo-text {
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -246,7 +246,7 @@
     line-height: 0.9;
   }
 
-  .setup-body { padding: 32px 24px max(48px, calc(var(--safe-bottom) + 24px)); display: flex; flex-direction: column; gap: 28px; }
+  .setup-body { padding: 32px max(24px, calc(var(--safe-right) + 12px)) max(48px, calc(var(--safe-bottom) + 24px)) max(24px, calc(var(--safe-left) + 12px)); display: flex; flex-direction: column; gap: 28px; }
 
   .field-group { display: flex; flex-direction: column; gap: 10px; }
 
@@ -457,7 +457,8 @@
 
   .session-top {
     display: flex; justify-content: space-between;
-    align-items: flex-start; padding: max(48px, calc(var(--safe-top) + 16px)) 24px 0;
+    align-items: flex-start;
+    padding: max(48px, calc(var(--safe-top) + 16px)) max(24px, calc(var(--safe-right) + 12px)) 0 max(24px, calc(var(--safe-left) + 12px));
   }
 
   .interval-counter { display: flex; flex-direction: column; }
@@ -531,7 +532,7 @@
   .hr-chip-val.has-val { color: var(--white); }
   .hr-chip-val.suspicious { color: var(--red) !important; }
 
-  .main-btn-wrap { padding: 0 24px max(40px, calc(var(--safe-bottom) + 16px)); display: flex; flex-direction: column; gap: 12px; align-items: center; }
+  .main-btn-wrap { padding: 0 max(24px, calc(var(--safe-right) + 12px)) max(40px, calc(var(--safe-bottom) + 16px)) max(24px, calc(var(--safe-left) + 12px)); display: flex; flex-direction: column; gap: 12px; align-items: center; }
 
   .hold-cancel-btn {
     position: relative;
@@ -642,7 +643,7 @@
   /* RESULTS */
   #results { background: var(--black); overflow-y: auto; }
 
-  .results-header { background: var(--gold); padding: max(48px, calc(var(--safe-top) + 24px)) 24px 24px; }
+  .results-header { background: var(--gold); padding: max(48px, calc(var(--safe-top) + 24px)) max(24px, calc(var(--safe-right) + 12px)) 24px max(24px, calc(var(--safe-left) + 12px)); }
   .results-title  { font-family: Impact, Haettenschweiler, 'Arial Narrow Bold', sans-serif; font-size: 48px; color: var(--black); line-height: 0.95; }
   .results-sub    { font-size: 13px; color: rgba(0,0,0,0.55); margin-top: 6px; }
 
@@ -678,7 +679,7 @@
   .result-drop-val { font-family: Impact, Haettenschweiler, 'Arial Narrow Bold', sans-serif; font-size: 32px; color: var(--green); line-height: 1; }
   .result-drop-lbl { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 8px; letter-spacing: 1px; color: var(--light-grey); text-transform: uppercase; }
 
-  .results-actions { display: flex; flex-direction: column; gap: 10px; padding: 0 24px max(48px, calc(var(--safe-bottom) + 24px)); }
+  .results-actions { display: flex; flex-direction: column; gap: 10px; padding: 0 max(24px, calc(var(--safe-right) + 12px)) max(48px, calc(var(--safe-bottom) + 24px)) max(24px, calc(var(--safe-left) + 12px)); }
 
   .complete-workout-btn {
     background: var(--green); border: none; color: var(--black);
@@ -937,7 +938,7 @@
 
   .home-header, .detail-header {
     background: var(--gold);
-    padding: max(44px, calc(var(--safe-top) + 20px)) 24px 22px;
+    padding: max(44px, calc(var(--safe-top) + 20px)) max(24px, calc(var(--safe-right) + 12px)) 22px max(24px, calc(var(--safe-left) + 12px));
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
@@ -1028,7 +1029,7 @@
   .setup-header.with-action { position: relative; }
 
   .home-body, .detail-body {
-    padding: 22px 18px max(48px, calc(var(--safe-bottom) + 24px));
+    padding: 22px max(18px, calc(var(--safe-right) + 12px)) max(48px, calc(var(--safe-bottom) + 24px)) max(18px, calc(var(--safe-left) + 12px));
     display: flex;
     flex-direction: column;
     gap: 16px;
@@ -1792,7 +1793,7 @@
 
   .page-header {
     background: var(--gold);
-    padding: max(44px, calc(var(--safe-top) + 20px)) 24px 22px;
+    padding: max(44px, calc(var(--safe-top) + 20px)) max(24px, calc(var(--safe-right) + 12px)) 22px max(24px, calc(var(--safe-left) + 12px));
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
@@ -1819,7 +1820,7 @@
   }
 
   .page-body {
-    padding: 22px 18px max(52px, calc(var(--safe-bottom) + 28px));
+    padding: 22px max(18px, calc(var(--safe-right) + 12px)) max(52px, calc(var(--safe-bottom) + 28px)) max(18px, calc(var(--safe-left) + 12px));
     display: flex;
     flex-direction: column;
     gap: 14px;
