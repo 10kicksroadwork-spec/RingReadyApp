@@ -20,6 +20,7 @@ Run these **in order** on a fresh or partially migrated project. Do not run file
 | 14 | [013_attachment_write_revoke.sql](./migrations/013_attachment_write_revoke.sql) | Revoke direct authenticated INSERT/UPDATE on workout_attachments |
 | 15 | [014_workout_modality_output.sql](./migrations/014_workout_modality_output.sql) | First-class modality/output/watts columns on workout_completions |
 | 16 | [015_clear_workout_completion_with_proof.sql](./migrations/015_clear_workout_completion_with_proof.sql) | Transactional completion clear + proof attachment reconcile RPC |
+| 17 | [016_sprint_ble_verification.sql](./migrations/016_sprint_ble_verification.sql) | `ble_verified` column, canonical `program_sprint_prescriptions`, DB-derived validation trigger |
 
 ## Fresh database
 

@@ -42,7 +42,6 @@ import {
 } from './storage.js';
 import {
   applyCompletionActionState,
-  buildProofChecklistItem,
   renderCompletionHints,
 } from './completion-hints.js';
 import {
@@ -55,11 +54,29 @@ import {
 import { getCurrentUser, saveCloudSprintSession, clearCloudWorkoutCompletionWithProof } from './auth.js';
 import { isSupabaseConfigured } from './supabase-client.js';
 import {
-  getAutoCapturedHR,
   isHRConnected,
   hasFreshHRSample,
   clearHRBufferForInterval,
+  beginCaptureWindow,
+  captureFreshHR,
 } from './hr-service.js';
+import {
+  evaluateSprintBleVerification,
+  deriveSessionHrSource,
+} from './sprint-ble-verification.js';
+import {
+  applyServerBleConfirmation,
+  buildPostLocalVerificationRecord,
+  buildBleCompletionChecklistItems,
+  markBleVerificationPending,
+  requiresServerBleConfirmation,
+  resolveBleWaiverNeeds,
+} from './sprint-ble-authority.js';
+import {
+  buildAutoCaptureProvenance,
+  buildManualCaptureProvenance,
+} from './sprint-capture.js';
+import { applyAutoRestCapture } from './sprint-rest-capture.js';
 import {
   PROOF_POLICY_VERSION,
   buildProgramProofKey,
@@ -572,6 +589,7 @@ export function beginSprint() {
   }
 
   clearHRBufferForInterval();
+  beginCaptureWindow();
   setStatus('sprint');
   setMainBtn('sprint', 'SPRINT DONE');
   setTimerDisplay('SPRINTING', '--', 'hold 2 seconds when finished');
@@ -589,7 +607,8 @@ export function handleSprintDone() {
   unlockAudio();
   vibrate([200]);
 
-  const sprintHR = getAutoCapturedHR();
+  const freshSprint = captureFreshHR();
+  const sprintHR = freshSprint?.hr ?? null;
 
   state.pendingRep = {
     sprintHR,
@@ -598,6 +617,8 @@ export function handleSprintDone() {
     suspicious: false,
     needsManualSprint: !sprintHR,
     needsManualRest: false,
+    sprintCapture: freshSprint ? buildAutoCaptureProvenance(freshSprint) : null,
+    restCapture: null,
   };
 
   state.capturedSprintHR = sprintHR;
@@ -671,7 +692,7 @@ function resumeAutoRest() {
   if (elapsed >= totalRest) {
     state.seconds = 0;
     if (state.pendingRep && state.pendingRep.restHR === null) {
-      autoCaptureRestHR(restCaptureAt);
+      autoCaptureRestHR(totalRest, restCaptureAt);
     }
     completeRestAndAdvance();
     return;
@@ -684,6 +705,7 @@ function runAutoRestCountdown(totalRest, restCaptureAt, initialElapsed) {
   clearSessionTimer();
   const restoredCaptureAttempted = timerCheckpoint.captureAttempted;
   clearTimerCheckpoint();
+  beginCaptureWindow();
 
   let elapsed = Math.max(0, Math.min(totalRest, initialElapsed));
   let captureAttempted = resolveRestCaptureAttempted({ captureAttempted: restoredCaptureAttempted }, state.pendingRep);
@@ -734,7 +756,7 @@ function runAutoRestCountdown(totalRest, restCaptureAt, initialElapsed) {
     if (!captureAttempted && elapsed >= restCaptureAt) {
       captureAttempted = true;
       timerCheckpoint.captureAttempted = true;
-      if (!autoCaptureRestHR(restCaptureAt)) {
+      if (!autoCaptureRestHR(elapsed, restCaptureAt)) {
         persistSessionCheckpoint();
         return;
       }
@@ -744,7 +766,7 @@ function runAutoRestCountdown(totalRest, restCaptureAt, initialElapsed) {
       clearSessionTimer();
       clearTimerCheckpoint();
 
-      if (state.pendingRep && state.pendingRep.restHR === null && !autoCaptureRestHR(restCaptureAt)) {
+      if (state.pendingRep && state.pendingRep.restHR === null && !autoCaptureRestHR(elapsed, restCaptureAt)) {
         persistSessionCheckpoint();
         return;
       }
@@ -758,26 +780,26 @@ function runAutoRestCountdown(totalRest, restCaptureAt, initialElapsed) {
   persistSessionCheckpoint();
 }
 
-export function autoCaptureRestHR(captureAt) {
+export function autoCaptureRestHR(actualElapsedSec, targetRestCaptureSec = REST_CAPTURE_SEC) {
   if (!state.pendingRep) return false;
   if (state.pendingRep.restHR !== null) return true;
 
-  const restHR = getAutoCapturedHR();
+  const freshRest = captureFreshHR();
+  const restHR = freshRest?.hr ?? null;
 
   if (!restHR) {
     // Manual backup only when no BLE HR monitor is connected.
     if (!isHRConnected()) {
       state.pendingRep.needsManualRest = true;
-      openManualRestHRModal(captureAt);
+      openManualRestHRModal(targetRestCaptureSec);
       return false;
     }
 
-    showToast(`REST HR NOT CAPTURED @ ${captureAt}s`);
+    showToast(`REST HR NOT CAPTURED @ ${targetRestCaptureSec}s`);
     return true;
   }
 
-  state.pendingRep.restHR = restHR;
-  state.pendingRep.needsManualRest = false;
+  applyAutoRestCapture(state.pendingRep, freshRest, actualElapsedSec, targetRestCaptureSec);
   state.capturedRestHR = restHR;
 
   document.getElementById('chip-rest').textContent = restHR;
@@ -844,7 +866,14 @@ export function completeRestAndAdvance() {
     showToast('REST HR HIGHER THAN SPRINT HR');
   }
 
-  state.data.push({ sprintHR, restHR, drop, suspicious });
+  state.data.push({
+    sprintHR,
+    restHR,
+    drop,
+    suspicious,
+    sprintCapture: state.pendingRep.sprintCapture || buildManualCaptureProvenance(),
+    restCapture: state.pendingRep.restCapture || (restHR != null ? buildManualCaptureProvenance() : null),
+  });
 
   if (drop !== null) {
     const chipDrop = document.getElementById('chip-drop');
@@ -948,6 +977,7 @@ export function confirmHR() {
 
     state.pendingRep.restHR = restCheck.value;
     state.pendingRep.needsManualRest = false;
+    state.pendingRep.restCapture = buildManualCaptureProvenance();
     state.capturedRestHR = restCheck.value;
 
     document.getElementById('chip-rest').textContent = restCheck.value;
@@ -977,6 +1007,7 @@ export function confirmHR() {
 
   state.pendingRep.sprintHR = sprintCheck.value;
   state.pendingRep.needsManualSprint = false;
+  state.pendingRep.sprintCapture = buildManualCaptureProvenance();
   state.capturedSprintHR = sprintCheck.value;
 
   document.getElementById('chip-sprint').textContent = sprintCheck.value;
@@ -1032,11 +1063,19 @@ export async function finishSession() {
   syncHoldToCancelLabels();
   vibrate([100, 50, 100, 50, 200]);
   activeResultRecord = saveSessionToHistory(cfg, state.data);
-  if (isSupabaseConfigured && getCurrentUser()) {
+  const verification = evaluateSprintBleVerification(activeResultRecord, cfg.workoutContext);
+  const requiresServer = requiresServerBleConfirmation(isSupabaseConfigured, !!getCurrentUser());
+  activeResultRecord = {
+    ...buildPostLocalVerificationRecord(activeResultRecord, verification, requiresServer),
+    hrSource: deriveSessionHrSource(activeResultRecord.data),
+  };
+  if (requiresServer) {
     try {
-      await saveCloudSprintSession(activeResultRecord);
+      const saved = await saveCloudSprintSession(activeResultRecord);
+      if (saved) activeResultRecord = applyServerBleConfirmation(activeResultRecord, saved);
     } catch (error) {
       console.warn('Cloud sprint session save failed', error);
+      activeResultRecord = markBleVerificationPending(activeResultRecord);
     }
   }
   window.dispatchEvent(new CustomEvent('ringready:sprint-session-saved', { detail: activeResultRecord }));
@@ -1100,7 +1139,9 @@ function updateCompleteWorkoutButton(record) {
     return;
   }
 
-  const items = [buildProofChecklistItem(hasWorkoutProof('sprint'))];
+  const items = buildBleCompletionChecklistItems(record, {
+    hasWorkoutProof: hasWorkoutProof('sprint'),
+  });
   applyCompletionActionState(btn, items, {
     hintsRoot: hints,
     hintsId: 'sprint-completion-hints',
@@ -1115,6 +1156,7 @@ export function buildResults(record = activeResultRecord) {
   body.innerHTML = '';
 
   document.getElementById('results-date').textContent = formatResultDate(resultRecord);
+  const waiver = resolveBleWaiverNeeds(resultRecord);
   if (isProgramWorkoutRecord(resultRecord)) {
     const context = getRecordContext(resultRecord);
     const campLength = Number(getAthleteProfile().campLength) || 7;
@@ -1123,6 +1165,7 @@ export function buildResults(record = activeResultRecord) {
       context: { ...context, campLength },
       existingAttachment: resultRecord.attachment || null,
       legacy: !!(resultRecord.completedAt && !resultRecord.proofPolicyVersion),
+      exempt: waiver.bleVerified,
     });
   } else {
     const proofHost = document.querySelector('[data-proof-host="sprint"]');
@@ -1203,19 +1246,42 @@ export async function completeWorkout() {
     showToast('NO SESSION RESULTS TO SAVE');
     return;
   }
-  if (!hasWorkoutProof('sprint')) {
+
+  if (activeResultRecord.bleVerificationPending && requiresServerBleConfirmation(isSupabaseConfigured, !!getCurrentUser())) {
+    try {
+      const saved = await saveCloudSprintSession(activeResultRecord);
+      if (saved) activeResultRecord = applyServerBleConfirmation(activeResultRecord, saved);
+    } catch (error) {
+      console.warn('BLE verification retry failed', error);
+      showToast('BLE VERIFICATION PENDING — RECONNECT AND TRY AGAIN');
+      return;
+    }
+  }
+
+  const waiver = resolveBleWaiverNeeds(activeResultRecord);
+  if (waiver.pending) {
+    showToast('BLE VERIFICATION PENDING — RECONNECT AND TRY AGAIN');
+    return;
+  }
+
+  const needsScreenshotProof = waiver.needsScreenshotProof;
+
+  if (needsScreenshotProof && !hasWorkoutProof('sprint')) {
     showToast(navigator.onLine ? 'ADD WORKOUT PROOF' : 'INTERNET REQUIRED FOR WORKOUT PROOF');
     return;
   }
+
   const isNewProof = hasPendingWorkoutProof('sprint');
   try {
     if (isSupabaseConfigured && getCurrentUser()) {
       await saveCloudSprintSession(activeResultRecord);
     }
-    const attachment = await ensureWorkoutProofUploaded('sprint', activeResultRecord.id);
-    if (attachment) {
-      activeResultRecord = { ...activeResultRecord, proofPolicyVersion: PROOF_POLICY_VERSION, attachment };
-      if (isNewProof) enqueueWorkoutProofForSync(attachment);
+    if (needsScreenshotProof) {
+      const attachment = await ensureWorkoutProofUploaded('sprint', activeResultRecord.id);
+      if (attachment) {
+        activeResultRecord = { ...activeResultRecord, proofPolicyVersion: PROOF_POLICY_VERSION, attachment };
+        if (isNewProof) enqueueWorkoutProofForSync(attachment);
+      }
     }
   } catch (error) {
     console.warn('Sprint proof upload failed', error);

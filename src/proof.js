@@ -101,6 +101,22 @@ function render(surface) {
   const selected = state.processed;
   const hasPreview = !!state.previewUrl;
   const legacy = state.legacy && !existing && !selected;
+  const exempt = !!state.exempt && !existing && !selected;
+
+  if (exempt) {
+    host.innerHTML = `
+    <section class="workout-proof-card ready ble-verified">
+      <div class="proof-head">
+        <div>
+          <div class="field-label">Workout Verification</div>
+          <p>HR captured via chest strap. No screenshot needed.</p>
+        </div>
+        <span class="proof-required">VERIFIED</span>
+      </div>
+    </section>`;
+    return;
+  }
+
   const statusClass = state.error ? 'error' : state.uploading ? 'uploading' : (existing || selected) ? 'ready' : '';
   const statusText = state.error
     || (state.uploading ? 'Uploading proof securely...'
@@ -226,6 +242,7 @@ export function initWorkoutProof(surface, options = {}) {
     context: options.context || {},
     existingAttachment: options.existingAttachment || null,
     legacy: !!options.legacy,
+    exempt: !!options.exempt,
     processed: previous?.proofKey === options.proofKey ? previous.processed : null,
     filename: previous?.proofKey === options.proofKey ? previous.filename : '',
     previewUrl: previous?.proofKey === options.proofKey ? previous.previewUrl : '',
@@ -238,6 +255,7 @@ export function initWorkoutProof(surface, options = {}) {
 
 export function hasWorkoutProof(surface) {
   const state = states.get(surface);
+  if (state?.exempt) return true;
   return !!(state?.processed || state?.existingAttachment || state?.legacy);
 }
 export function hasPendingWorkoutProof(surface) {

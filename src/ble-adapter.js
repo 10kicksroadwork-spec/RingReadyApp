@@ -15,11 +15,21 @@ export function parseHeartRateMeasurement(dataView) {
 
 export function createHRBuffer(maxItems = 5, staleMs = 10000) {
   let readings = [];
+  let sequence = 0;
 
   return {
     push(hr) {
-      readings.push({ hr, at: Date.now() });
+      sequence += 1;
+      readings.push({ hr, at: Date.now(), sequence });
       if (readings.length > maxItems) readings.shift();
+    },
+
+    latestSample() {
+      return readings.length ? { ...readings[readings.length - 1] } : null;
+    },
+
+    currentSequence() {
+      return sequence;
     },
 
     avgFresh() {

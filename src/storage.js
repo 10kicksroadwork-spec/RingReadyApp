@@ -24,12 +24,27 @@ function writeJSON(key, value) {
   localStorage.setItem(key, JSON.stringify(value));
 }
 
+function cloneCaptureProvenance(capture) {
+  if (!capture || typeof capture !== 'object') return null;
+  return {
+    mode: capture.mode,
+    source: capture.source,
+    capturedAt: capture.capturedAt ?? null,
+    sampleSequence: capture.sampleSequence ?? null,
+    windowStartSequence: capture.windowStartSequence ?? null,
+    captureAtRestSec: capture.captureAtRestSec ?? null,
+    targetRestCaptureSec: capture.targetRestCaptureSec ?? null,
+  };
+}
+
 function cloneSessionData(data) {
-  return data.map((d) => ({
+  return (Array.isArray(data) ? data : []).map((d) => ({
     sprintHR: d.sprintHR,
     restHR: d.restHR,
     drop: d.drop,
     suspicious: !!d.suspicious,
+    sprintCapture: cloneCaptureProvenance(d.sprintCapture),
+    restCapture: cloneCaptureProvenance(d.restCapture),
   }));
 }
 
@@ -39,7 +54,9 @@ function cloneConfig(cfg) {
     rest: cfg.rest,
     maxHR: cfg.maxHR,
     targetPct: cfg.targetPct,
-    workoutContext: cfg.workoutContext ? { ...cfg.workoutContext } : null,
+    workoutContext: cfg.workoutContext
+      ? JSON.parse(JSON.stringify(cfg.workoutContext))
+      : null,
   };
 }
 
@@ -60,7 +77,9 @@ export function saveSessionToHistory(cfg, data) {
     const sessions = readJSON(STORAGE_KEY, []);
     const record = buildSessionRecord(cfg, data);
     sessions.unshift(record);
-    if (sessions.length > MAX_STORED_SESSIONS) sessions.length = MAX_STORED_SESSIONS;
+    if (sessions.length > MAX_STORED_SESSIONS) {
+      sessions.length = MAX_STORED_SESSIONS;
+    }
     writeJSON(STORAGE_KEY, sessions);
     return record;
   } catch (err) {
@@ -77,9 +96,15 @@ export function getWorkoutCompletionKey(weekIndex, workoutIndex) {
 }
 
 function getCompletionKeyFromRecord(record) {
-  const context = record?.cfg?.workoutContext || record?.workoutContext || null;
+  const context =
+    record?.cfg?.workoutContext ||
+    record?.workoutContext ||
+    null;
   if (!context) return '';
-  return getWorkoutCompletionKey(context.weekIndex, context.workoutIndex);
+  return getWorkoutCompletionKey(
+    context.weekIndex,
+    context.workoutIndex
+  );
 }
 
 export function getWorkoutCompletions() {
@@ -96,10 +121,16 @@ export function getClearedWorkoutCompletions() {
   return readJSON(CLEARED_COMPLETIONS_KEY, {});
 }
 
-export function isWorkoutCompletionCleared(weekIndexOrKey, workoutIndex, cloudUpdatedAt = '') {
-  const key = typeof weekIndexOrKey === 'string' && String(weekIndexOrKey).includes(':')
-    ? String(weekIndexOrKey)
-    : getWorkoutCompletionKey(weekIndexOrKey, workoutIndex);
+export function isWorkoutCompletionCleared(
+  weekIndexOrKey,
+  workoutIndex,
+  cloudUpdatedAt = ''
+) {
+  const key =
+    typeof weekIndexOrKey === 'string' &&
+    String(weekIndexOrKey).includes(':')
+      ? String(weekIndexOrKey)
+      : getWorkoutCompletionKey(weekIndexOrKey, workoutIndex);
   if (!key) return false;
   const cleared = getClearedWorkoutCompletions()[key];
   if (!cleared) return false;
@@ -111,8 +142,14 @@ export function isWorkoutCompletionCleared(weekIndexOrKey, workoutIndex, cloudUp
   return clearedTime >= compareTime;
 }
 
-export function markWorkoutCompletionCleared(weekIndex, workoutIndex) {
-  const key = getWorkoutCompletionKey(weekIndex, workoutIndex);
+export function markWorkoutCompletionCleared(
+  weekIndex,
+  workoutIndex
+) {
+  const key = getWorkoutCompletionKey(
+    weekIndex,
+    workoutIndex
+  );
   if (!key) return '';
   const cleared = getClearedWorkoutCompletions();
   const stamp = new Date().toISOString();
@@ -121,8 +158,14 @@ export function markWorkoutCompletionCleared(weekIndex, workoutIndex) {
   return stamp;
 }
 
-export function clearWorkoutCompletionClearedMarker(weekIndex, workoutIndex) {
-  const key = getWorkoutCompletionKey(weekIndex, workoutIndex);
+export function clearWorkoutCompletionClearedMarker(
+  weekIndex,
+  workoutIndex
+) {
+  const key = getWorkoutCompletionKey(
+    weekIndex,
+    workoutIndex
+  );
   if (!key) return;
   const cleared = getClearedWorkoutCompletions();
   if (!(key in cleared)) return;
@@ -133,7 +176,6 @@ export function clearWorkoutCompletionClearedMarker(weekIndex, workoutIndex) {
 export function saveWorkoutCompletion(record) {
   const key = getCompletionKeyFromRecord(record);
   if (!key) return null;
-
   const completions = getWorkoutCompletions();
   const completed = {
     ...record,
@@ -141,20 +183,36 @@ export function saveWorkoutCompletion(record) {
     completedAt: new Date().toISOString(),
   };
   completions[key] = completed;
-  writeJSON(WORKOUT_COMPLETIONS_STORAGE_KEY, completions);
-  const context = record?.workoutContext || record?.cfg?.workoutContext || {};
-  clearWorkoutCompletionClearedMarker(context.weekIndex, context.workoutIndex);
+  writeJSON(
+    WORKOUT_COMPLETIONS_STORAGE_KEY,
+    completions
+  );
+  const context =
+    record?.workoutContext ||
+    record?.cfg?.workoutContext ||
+    {};
+  clearWorkoutCompletionClearedMarker(
+    context.weekIndex,
+    context.workoutIndex
+  );
   return completed;
 }
 
-export function removeWorkoutCompletion(weekIndex, workoutIndex) {
-  const key = getWorkoutCompletionKey(weekIndex, workoutIndex);
-  if (!key) return false;
-
+export function removeWorkoutCompletion(
+  weekIndex,
+  workoutIndex
+) {
+  const key = getWorkoutCompletionKey(
+    weekIndex,
+    workoutIndex
+  );
+  if (!key) return;
   const completions = getWorkoutCompletions();
   if (!completions[key]) return false;
-
   delete completions[key];
-  writeJSON(WORKOUT_COMPLETIONS_STORAGE_KEY, completions);
+  writeJSON(
+    WORKOUT_COMPLETIONS_STORAGE_KEY,
+    completions
+  );
   return true;
 }

@@ -5,6 +5,7 @@ import {
   proofTransferLabel,
   sessionHasProof,
 } from '../src/coach-proof.js';
+import { resolveVerificationMethod } from '../src/sprint-ble-verification.js';
 
 const USER = 'user-a';
 const SESSION = 'sprint-session-1';
@@ -115,5 +116,38 @@ describe('coach sprint proof resolution', () => {
       attachments: [attachment()],
       isSprint: false,
     })).toBe(false);
+  });
+
+  it('G: ble_verified sprint without attachment resolves to ble verification', () => {
+    expect(resolveVerificationMethod({
+      row: { attachment_id: null },
+      sprintRow: sprintRow({ ble_verified: true, session_json: { bleVerified: true } }),
+      attachments: [],
+      isSprint: true,
+      weekIndex: 1,
+      workoutIndex: 0,
+    })).toBe('ble');
+  });
+
+  it('H: manual sprint without attachment remains a verification gap', () => {
+    expect(resolveVerificationMethod({
+      row: { attachment_id: null },
+      sprintRow: sprintRow({ ble_verified: false }),
+      attachments: [],
+      isSprint: true,
+      weekIndex: 1,
+      workoutIndex: 0,
+    })).toBe('missing');
+  });
+
+  it('I: session_json bleVerified true does not override DB false', () => {
+    expect(resolveVerificationMethod({
+      row: { attachment_id: null },
+      sprintRow: sprintRow({ ble_verified: false, session_json: { bleVerified: true } }),
+      attachments: [],
+      isSprint: true,
+      weekIndex: 1,
+      workoutIndex: 0,
+    })).toBe('missing');
   });
 });

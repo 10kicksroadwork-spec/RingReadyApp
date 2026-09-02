@@ -22,7 +22,8 @@ import {
   readOutputFromWorkoutLog,
 } from './modality.js';
 import { scoreZoneAdherence } from './hr-analytics.js';
-import { sessionHasProof } from './coach-proof.js';
+import { findSprintProofAttachment } from './coach-proof.js';
+import { resolveVerificationMethod } from './sprint-ble-verification.js';
 
 const NOTES_KEY = 'ringReadyCoachPreviewNotes';
 const COACH_SCREENS = new Set(['coach-dashboard', 'coach-athlete']);
@@ -524,6 +525,7 @@ function buildAthleteRecord(config) {
   const missing = new Set(config.missing || []);
   const skipped = new Set(config.skipped || []);
   const missingProofs = new Set(config.missingProofs || []);
+  const bleVerifiedSessions = new Set(config.bleVerifiedSessions || []);
   const flags = config.flags || {};
   const notes = config.sessionNotes || {};
   let logged = 0;
@@ -549,9 +551,11 @@ function buildAthleteRecord(config) {
         ? (isFuture ? 'upcoming' : 'none')
         : missingProofs.has(key)
           ? 'missing'
-          : status === 'logged'
-            ? 'on-file'
-            : 'none';
+          : bleVerifiedSessions.has(key)
+            ? 'ble-verified'
+            : status === 'logged'
+              ? 'on-file'
+              : 'none';
       const flag = flags[key] || '';
       if (!isFuture) due += 1;
       if (status === 'logged' || status === 'skipped') {
@@ -1039,6 +1043,7 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, mileTests, note
   const missing = [];
   const skipped = [];
   const missingProofs = [];
+  const bleVerifiedSessions = [];
   const flags = {};
   const avgs = {};
   const maxes = {};
@@ -1077,14 +1082,17 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, mileTests, note
         sessionNotes[key] = skipNote || (reason ? `Skipped · ${reason}` : 'Coach-approved skip.');
         return;
       }
-      if (!sessionHasProof({
+      const verificationMethod = resolveVerificationMethod({
         row,
         sprintRow,
         attachments,
         isSprint: isSprintType(workout.type),
         weekIndex,
         workoutIndex,
-      })) missingProofs.push(key);
+        findAttachment: findSprintProofAttachment,
+      });
+      if (verificationMethod === 'missing') missingProofs.push(key);
+      if (verificationMethod === 'ble') bleVerifiedSessions.push(key);
       const log = record.workoutLog || {};
       const output = readOutputFromWorkoutLog({
         modality: row.modality || log.modality,
@@ -1136,6 +1144,7 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, mileTests, note
     missing,
     skipped,
     missingProofs,
+    bleVerifiedSessions,
     flags,
     avgs,
     maxes,
@@ -1515,6 +1524,7 @@ function sessionDetail(session) {
   }
   if (session.flag) return session.flag;
   if (session.note) return session.note;
+  if (session.proof === 'ble-verified') return 'HR verified via chest strap.';
   if (session.proof === 'missing') return 'Logged, but workout proof is missing.';
   if (session.status === 'missing') return 'Assigned work not logged yet.';
   const bits = [];
