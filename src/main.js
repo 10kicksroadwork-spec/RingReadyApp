@@ -4,6 +4,7 @@ import { initAthleteShell } from './shell.js';
 import { enforceAthleteOnboarding, installSignupNameCapture } from './onboarding.js';
 import { openCoachPreviewIfRequested } from './coach-preview.js';
 import { MILE_TEST_STORAGE_KEY } from './app-content.js';
+import { readJSONValue } from './safe-storage.js';
 import { parseDurationMinutes, sanitizeDurationInput } from './workout.js';
 import { getHRMonitorSetupCopy, getSprintHRMonitorDisclaimer } from './platform.js';
 import { initSyncControls } from './sync.js';
@@ -16,6 +17,7 @@ import {
 } from './hr-service.js';
 import { checkRuntimeContract, CONTRACT_UPDATE_MESSAGE, getContractHealthDiagnosticDetail } from './contract-health.js';
 import { captureRuntimeDiagnostic, installGlobalRuntimeDiagnostics } from './runtime-diagnostics.js';
+import { scheduleStorageDiagnosticCapture } from './storage-diagnostics.js';
 import { registerMainHandlers, showToast, selectExportText, closeExportModal, showScreen, bindHoldToCancel } from './ui.js';
 import {
   setWorkoutContext,
@@ -115,12 +117,7 @@ function formatDate(value) {
 }
 
 function getSavedMileResult() {
-  try {
-    return JSON.parse(localStorage.getItem(MILE_TEST_STORAGE_KEY) || 'null');
-  } catch (error) {
-    console.warn('Could not read saved Mile Test result', error);
-    return null;
-  }
+  return readJSONValue(MILE_TEST_STORAGE_KEY, null);
 }
 
 function getSavedMileDuration(result) {
@@ -292,6 +289,7 @@ function scheduleStartupContractHealthCheck() {
 
 async function init() {
   installGlobalRuntimeDiagnostics();
+  scheduleStorageDiagnosticCapture({ stage: 'startup' });
   registerServiceWorker({ showToast });
   initPWAInstall();
   initBuildMetadata();

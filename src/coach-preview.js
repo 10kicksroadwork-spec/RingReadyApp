@@ -23,6 +23,7 @@ import {
 } from './modality.js';
 import { scoreZoneAdherence } from './hr-analytics.js';
 import { sessionHasProof } from './coach-proof.js';
+import { readJSONValue, writeJSON } from './safe-storage.js';
 
 const NOTES_KEY = 'ringReadyCoachPreviewNotes';
 const COACH_SCREENS = new Set(['coach-dashboard', 'coach-athlete']);
@@ -1218,15 +1219,14 @@ function getAthlete(id) {
 }
 
 function readNotes() {
-  try {
-    return JSON.parse(localStorage.getItem(NOTES_KEY) || '{}');
-  } catch {
-    return {};
-  }
+  return readJSONValue(NOTES_KEY, {});
 }
 
 function writeNotes(notes) {
-  localStorage.setItem(NOTES_KEY, JSON.stringify(notes));
+  const result = writeJSON(NOTES_KEY, notes);
+  if (!result.ok) {
+    console.warn('Could not persist coach preview notes', result.error);
+  }
 }
 
 function athleteNote(athlete) {

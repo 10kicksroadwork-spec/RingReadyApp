@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildMileTestCloudPayload,
+  buildSprintCloudPayload,
   buildWorkoutCloudPayload,
   getCompletionKeyFromRecord,
+  mapCloudSprintSessionRow,
 } from '../src/cloud-record-mapper.js';
 
 describe('cloud record mapper', () => {
@@ -51,5 +53,32 @@ describe('cloud record mapper', () => {
     const payload = buildMileTestCloudPayload(result, {}, { testKey: 'mile-test:baseline' }, 'user-a');
     expect(payload.client_record_id).toBe('client-mile-456');
     expect(payload.test_key).toBe('mile-test:baseline');
+  });
+
+  it('strips cloudPending from sprint cloud upload payloads', () => {
+    const record = {
+      id: 'session-a',
+      date: '2026-01-01T00:00:00.000Z',
+      cloudPending: true,
+      cfg: { reps: 4, rest: 60, workoutContext: { weekIndex: 1, workoutIndex: 0 } },
+      data: [{ sprintHR: 170, restHR: 120, drop: 50, suspicious: false }],
+    };
+    const payload = buildSprintCloudPayload(record, 'user-a');
+    expect(payload.session_id).toBe('session-a');
+    expect(payload.session_json.cloudPending).toBeUndefined();
+  });
+
+  it('strips legacy cloudPending when mapping cloud sprint rows', () => {
+    const mapped = mapCloudSprintSessionRow({
+      session_id: 'session-a',
+      session_at: '2026-01-01T00:00:00.000Z',
+      session_json: {
+        id: 'session-a',
+        cloudPending: true,
+        date: '2026-01-01T00:00:00.000Z',
+      },
+    });
+    expect(mapped.id).toBe('session-a');
+    expect(mapped.cloudPending).toBeUndefined();
   });
 });

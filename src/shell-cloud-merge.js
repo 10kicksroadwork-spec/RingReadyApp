@@ -47,6 +47,37 @@ export function mergeWorkoutCompletions(localCompletions = {}, cloudCompletions 
   return merged;
 }
 
+/** Cloud read succeeded — cloud keys win; orphan local cache entries are dropped. */
+export function reconcileWorkoutCompletionsFromCloud(
+  cloudCompletions = {},
+  isClearedFn,
+  onSupersededClearMarker,
+) {
+  const merged = { ...(cloudCompletions || {}) };
+  Object.keys(merged).forEach((key) => {
+    const cloudRecord = merged[key];
+    const cloudStamp = cloudRecord?.updatedAt || cloudRecord?.completedAt || cloudRecord?.updated_at || cloudRecord?.date || '';
+    const compareTime = new Date(cloudStamp).getTime();
+    const hasValidCloudStamp = Number.isFinite(compareTime);
+
+    if (hasValidCloudStamp) {
+      if (isClearedFn?.(key, null, cloudStamp)) {
+        delete merged[key];
+        return;
+      }
+      if (isClearedFn?.(key)) {
+        onSupersededClearMarker?.(key);
+      }
+      return;
+    }
+
+    if (isClearedFn?.(key)) {
+      delete merged[key];
+    }
+  });
+  return merged;
+}
+
 export function mergeSprintSessions(localSessions = [], cloudSessions = []) {
   const byId = new Map();
   [...cloudSessions, ...localSessions].forEach((record) => {
@@ -54,6 +85,22 @@ export function mergeSprintSessions(localSessions = [], cloudSessions = []) {
     const id = String(record.id || record.sessionId || record.date || Math.random());
     const existing = byId.get(id);
     if (!existing || getCloudTimestamp(record) >= getCloudTimestamp(existing)) byId.set(id, record);
+  });
+  return Array.from(byId.values()).sort((a, b) => getCloudTimestamp(b) - getCloudTimestamp(a)).slice(0, 50);
+}
+
+/** Cloud read succeeded — cloud sessions plus explicit durable cloudPending local sessions only. */
+export function reconcileSprintSessionsFromCloud(cloudSessions = [], pendingSessions = []) {
+  const byId = new Map();
+  [...(cloudSessions || [])].forEach((record) => {
+    if (!record) return;
+    const id = String(record.id || record.sessionId || record.date || Math.random());
+    byId.set(id, record);
+  });
+  (pendingSessions || []).forEach((record) => {
+    if (!record?.cloudPending) return;
+    const id = String(record.id || record.sessionId || record.date || Math.random());
+    if (!byId.has(id)) byId.set(id, record);
   });
   return Array.from(byId.values()).sort((a, b) => getCloudTimestamp(b) - getCloudTimestamp(a)).slice(0, 50);
 }

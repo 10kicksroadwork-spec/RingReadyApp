@@ -1,20 +1,16 @@
 import { HR_INFO_DEFAULTS, HR_INFO_STORAGE_KEY } from './app-content.js';
+import { readJSONValue, writeJSON } from './safe-storage.js';
 
-function readJSON(key, fallback) {
-  try {
-    return JSON.parse(localStorage.getItem(key) || JSON.stringify(fallback));
-  } catch (err) {
-    console.warn(`Could not read ${key}`, err);
-    return fallback;
+function persistJSON(key, value) {
+  const result = writeJSON(key, value);
+  if (!result.ok) {
+    console.warn(`Could not write ${key}`, result.error);
   }
-}
-
-function writeJSON(key, value) {
-  localStorage.setItem(key, JSON.stringify(value));
+  return result.ok;
 }
 
 export function getHRInfo() {
-  const saved = readJSON(HR_INFO_STORAGE_KEY, {});
+  const saved = readJSONValue(HR_INFO_STORAGE_KEY, {});
   const next = {
     goalWeight: Number(saved.goalWeight ?? HR_INFO_DEFAULTS.goalWeight),
     targetDate: String(saved.targetDate || HR_INFO_DEFAULTS.targetDate),
@@ -40,6 +36,6 @@ export function saveHRInfo(info, options = {}) {
   } else {
     next.updatedAt = new Date().toISOString();
   }
-  writeJSON(HR_INFO_STORAGE_KEY, next);
+  persistJSON(HR_INFO_STORAGE_KEY, next);
   return next;
 }
