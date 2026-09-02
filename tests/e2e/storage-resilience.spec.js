@@ -1,0 +1,111 @@
+import { test, expect } from './fixtures.js';
+import { goHome, navigateFromDrawer, waitForHome } from './helpers/app.js';
+import { attachConsoleGate } from './helpers/console-gate.js';
+
+test.describe('storage and contract failure injection', () => {
+  test('boots when localStorage getter throws SecurityError', async ({ page }) => {
+    const gate = attachConsoleGate(page, {
+      allowlist: [/Could not read storage/i, /Could not write storage/i],
+    });
+    await page.addInitScript(() => {
+      localStorage.setItem('ringReadyOnboardingDismissed', '1');
+      Object.defineProperty(window, 'localStorage', {
+        configurable: true,
+        get() {
+          throw new DOMException('Blocked', 'SecurityError');
+        },
+      });
+    });
+
+    await page.goto('/');
+    await waitForHome(page);
+    await expect(page.locator('#week-workouts')).toBeVisible();
+    await expect(page.locator('#open-week-menu-btn')).toBeVisible();
+
+    gate.assertClean();
+  });
+
+  test('remains usable when persistent storage writes throw QuotaExceededError', async ({ page }) => {
+    const gate = attachConsoleGate(page, {
+      allowlist: [/Could not write storage/i, /Could not persist active sprint session/i],
+    });
+    await page.addInitScript(() => {
+      localStorage.setItem('ringReadyOnboardingDismissed', '1');
+      const original = window.localStorage;
+      const quotaError = new DOMException('Quota exceeded', 'QuotaExceededError');
+
+      Object.defineProperty(window, 'localStorage', {
+        configurable: true,
+        get() {
+          return new Proxy(original, {
+            get(target, prop) {
+              if (prop === 'setItem') {
+                return () => {
+                  throw quotaError;
+                };
+              }
+              const value = Reflect.get(target, prop, target);
+              return typeof value === 'function' ? value.bind(target) : value;
+            },
+          });
+        },
+      });
+    });
+
+    await page.goto('/');
+    await waitForHome(page);
+    await navigateFromDrawer(page, 'athlete-profile');
+    await page.locator('#profile-athlete-name').fill('Volatile Athlete');
+    await page.locator('#save-athlete-profile-btn').click();
+    await expect(page.locator('#header-athlete-name')).toContainText('Volatile Athlete');
+    await goHome(page);
+    await expect(page.locator('#week-workouts')).toBeVisible();
+
+    gate.assertClean();
+  });
+
+  test('keeps athlete UI usable when contract health is aborted', async ({ page }) => {
+    const gate = attachConsoleGate(page, {
+      allowlist: [/Failed to load resource: net::ERR_FAILED/i],
+    });
+    await page.addInitScript(() => {
+      localStorage.setItem('ringReadyOnboardingDismissed', '1');
+    });
+
+    await page.route('**/api/health', (route) => route.abort('failed'));
+    await page.goto('/');
+    await waitForHome(page);
+    await expect(page.locator('#home .home-title')).toContainText('Ring Ready');
+
+    gate.assertClean();
+  });
+
+  test('keeps athlete UI usable when contract health is delayed', async ({ page, consoleGate }) => {
+    await page.addInitScript(() => {
+      localStorage.setItem('ringReadyOnboardingDismissed', '1');
+    });
+
+    await page.route('**/api/health', async (route) => {
+      await new Promise((resolve) => {
+        setTimeout(resolve, 3000);
+      });
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          ok: true,
+          service: 'ringready',
+          buildSha: 'echo000',
+          proofContractVersion: 2,
+          environment: 'production',
+        }),
+      });
+    });
+
+    await page.goto('/');
+    await waitForHome(page);
+    await expect(page.locator('#week-workouts')).toBeVisible();
+
+    consoleGate.assertClean();
+  });
+});
