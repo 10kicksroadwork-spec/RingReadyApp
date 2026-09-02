@@ -1,4 +1,5 @@
-const CACHE_NAME = 'ring-ready-shell-v1';
+const BUILD_ID = '__BUILD_ID__';
+const CACHE_NAME = `ring-ready-shell-${BUILD_ID}`;
 const APP_SHELL = [
   './',
   './index.html',
@@ -8,6 +9,13 @@ const APP_SHELL = [
   './app-icon.svg',
   './maskable-icon.svg',
 ];
+
+function isScriptOrStyleRequest(request) {
+  const { pathname } = new URL(request.url);
+  return pathname.endsWith('.js')
+    || pathname.endsWith('.css')
+    || pathname.includes('/assets/');
+}
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -21,10 +29,18 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys()
       .then((keys) => Promise.all(
-        keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))
+        keys
+          .filter((key) => key.startsWith('ring-ready-shell-') && key !== CACHE_NAME)
+          .map((key) => caches.delete(key))
       ))
       .then(() => self.clients.claim())
   );
+});
+
+self.addEventListener('message', (event) => {
+  if (event.data?.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
 });
 
 self.addEventListener('fetch', (event) => {
@@ -44,9 +60,9 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  event.respondWith(
-    caches.match(request).then((cached) => {
-      const network = fetch(request)
+  if (isScriptOrStyleRequest(request)) {
+    event.respondWith(
+      fetch(request)
         .then((response) => {
           if (response && response.status === 200) {
             const copy = response.clone();
@@ -54,9 +70,21 @@ self.addEventListener('fetch', (event) => {
           }
           return response;
         })
-        .catch(() => cached);
+        .catch(() => caches.match(request))
+    );
+    return;
+  }
 
-      return cached || network;
+  event.respondWith(
+    caches.match(request).then((cached) => {
+      if (cached) return cached;
+      return fetch(request).then((response) => {
+        if (response && response.status === 200) {
+          const copy = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+        }
+        return response;
+      });
     })
   );
 });

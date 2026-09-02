@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "node node_modules/vite/bin/vite.js",
     "build": "node node_modules/vite/bin/vite.js build",
+    "verify:sw-build-id": "node scripts/verify-sw-build-id.mjs",
     "preview": "node node_modules/vite/bin/vite.js preview",
     "extract-css": "node scripts/extract-css.mjs",
     "test": "vitest run",

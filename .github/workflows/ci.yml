@@ -39,6 +39,9 @@ jobs:
       - name: Production build
         run: npm run build
 
+      - name: Verify service worker build id injection
+        run: node scripts/verify-sw-build-id.mjs
+
   production-contract:
     name: production-contract
     needs: quality

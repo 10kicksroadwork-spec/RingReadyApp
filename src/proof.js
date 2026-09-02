@@ -1,6 +1,7 @@
 import './proof.css';
 import { getCurrentUser } from './auth.js';
 import { isSupabaseConfigured, supabase } from './supabase-client.js';
+import { createProofUploadError, PROOF_UPLOAD_PHASE } from './proof-diagnostics.js';
 
 export const PROOF_POLICY_VERSION = 1;
 export const PROOF_BUCKET = 'workout-proof-staging';
@@ -261,7 +262,7 @@ export async function ensureWorkoutProofUploaded(surface, linkedRecordId = '') {
   const storagePath = `${user.id}/${safePathPart(state.proofKey)}/${Date.now()}-${makeId()}.${uploadExtension}`;
   try {
     const { error: uploadError } = await supabase.storage.from(PROOF_BUCKET).upload(storagePath, state.processed.blob, { contentType: uploadMimeType, upsert: false, cacheControl: '3600' });
-    if (uploadError) throw uploadError;
+    if (uploadError) throw createProofUploadError(uploadError, PROOF_UPLOAD_PHASE.STORAGE);
     const { data, error: rowError } = await supabase.rpc('create_workout_proof_attachment', {
       p_proof_key: state.proofKey,
       p_linked_record_id: String(linkedRecordId || ''),
@@ -279,15 +280,21 @@ export async function ensureWorkoutProofUploaded(surface, linkedRecordId = '') {
     });
     if (rowError) {
       await supabase.storage.from(PROOF_BUCKET).remove([storagePath]);
-      throw rowError;
+      throw createProofUploadError(rowError, PROOF_UPLOAD_PHASE.RPC);
     }
     const attachment = attachmentFromRow(data);
     state.existingAttachment = attachment;
     state.processed = null;
     return attachment;
   } catch (error) {
-    state.error = String(error?.message || error);
-    throw error;
+    const classified = error?.proofFailureKind ? error : createProofUploadError(error);
+    state.error = classified.message;
+    console.warn('Workout proof upload failed', {
+      kind: classified.proofFailureKind,
+      detail: classified.proofDiagnosticDetail,
+      raw: classified.proofRawMessage,
+    });
+    throw classified;
   } finally {
     state.uploading = false;
     render(surface);
