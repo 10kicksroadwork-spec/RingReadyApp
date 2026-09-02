@@ -52,6 +52,12 @@ export function normalizeModality(value) {
   return MODALITIES.some((row) => row.id === id) ? id : MODALITY_RUNNING;
 }
 
+/** Return modality id only when value is a recognized id; otherwise null. */
+export function validModalityOrNull(value) {
+  const candidate = String(value || '').trim().toLowerCase();
+  return MODALITIES.some((row) => row.id === candidate) ? candidate : null;
+}
+
 export function getModalityMeta(value) {
   const id = normalizeModality(value);
   return MODALITIES.find((row) => row.id === id) || MODALITIES[0];

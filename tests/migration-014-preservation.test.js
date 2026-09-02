@@ -9,19 +9,28 @@ const migration014 = readFileSync(
 );
 
 describe('migration 014 sql safety', () => {
-  it('preserves existing SQL distance as a running fallback', () => {
-    expect(migration014).toMatch(/when output_type = 'distance'\s+and distance is not null\s+then distance/s);
+  it('wraps changes in a transaction', () => {
+    expect(migration014).toMatch(/\bbegin;/i);
+    expect(migration014).toMatch(/commit;/i);
   });
 
-  it('only nulls distance for machine output rows', () => {
-    expect(migration014).toMatch(/where output_type = 'watts'\s+and distance is not null/s);
-    expect(migration014).not.toMatch(/set distance = case\s+when output_type = 'distance' then output_value\s+else null/s);
+  it('repairs legacy machine distance=0 artifacts before constraints', () => {
+    expect(migration014).toMatch(/where modality in \('assault_bike', 'rower', 'stationary_bike'\)\s+and distance = 0/s);
   });
 
-  it('uses null-only guards so reruns stay idempotent', () => {
-    expect(migration014).toMatch(/where modality is null/);
-    expect(migration014).toMatch(/where output_type is null/);
-    expect(migration014).toMatch(/where avg_watts is null/);
-    expect(migration014).toMatch(/where output_value is null/);
+  it('raises when machine rows have positive distance', () => {
+    expect(migration014).toMatch(/raise exception/i);
+    expect(migration014).toMatch(/machine workout rows contain positive distance values/i);
+  });
+
+  it('adds cross-field modality/output consistency check', () => {
+    expect(migration014).toMatch(/workout_completions_modality_output_check/);
+  });
+
+  it('backfills modality before setting not null', () => {
+    const notNullIndex = migration014.indexOf('alter column modality set not null');
+    const backfillIndex = migration014.indexOf('Backfill modality');
+    expect(backfillIndex).toBeGreaterThan(-1);
+    expect(notNullIndex).toBeGreaterThan(backfillIndex);
   });
 });

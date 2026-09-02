@@ -461,6 +461,11 @@ export function enqueueMileTestForSync(result, hrInfo, testContext) {
   return enqueuePayloadForSync(buildMileTestPayload(result, hrInfo, testContext));
 }
 
+function positiveOrBlank(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : '';
+}
+
 export function buildDailyWorkoutPayload(workoutLog, workoutContext = {}, linkedRecordId = '') {
   const completedAt = workoutLog.completedAt || new Date().toISOString();
   const isSkip = workoutLog?.status === 'skipped';
@@ -493,9 +498,9 @@ export function buildDailyWorkoutPayload(workoutLog, workoutContext = {}, linked
       : {
         modality: output.modality,
         outputType: output.outputType,
-        outputValue: output.outputValue ?? '',
-        distance: output.outputType === 'distance' ? (Number(output.outputValue) || 0) : '',
-        avgWatts: output.outputType === 'watts' ? (Number(output.outputValue) || 0) : '',
+        outputValue: positiveOrBlank(output.outputValue),
+        distance: output.outputType === 'distance' ? positiveOrBlank(output.outputValue) : '',
+        avgWatts: output.outputType === 'watts' ? positiveOrBlank(output.outputValue) : '',
         totalMinutes: Number(workoutLog.totalMinutes) || 0,
         avgBpm: Number(workoutLog.avgBpm) || 0,
         maxBpm: Number(workoutLog.maxBpm) || 0,

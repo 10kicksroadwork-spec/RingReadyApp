@@ -1,6 +1,11 @@
 /** Cloud payload builders shared by auth saves and proof-identity tests. */
 
-import { readOutputFromWorkoutLog } from './modality.js';
+import {
+  MODALITY_RUNNING,
+  normalizeModality,
+  readOutputFromWorkoutLog,
+  validModalityOrNull,
+} from './modality.js';
 
 function textOrEmpty(value) {
   return String(value || '').trim();
@@ -16,9 +21,87 @@ function integerOrNull(value) {
   return parsed === null ? null : Math.round(parsed);
 }
 
+function nullablePositiveNumber(value) {
+  if (value == null || value === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function positiveOrNull(value) {
+  return nullablePositiveNumber(value);
+}
+
 function normalizeISODate(value) {
   const date = new Date(value || Date.now());
   return Number.isNaN(date.getTime()) ? new Date().toISOString() : date.toISOString();
+}
+
+function buildCanonicalOutputFields(workoutLog) {
+  const output = readOutputFromWorkoutLog(workoutLog || {});
+  const modality = normalizeModality(output.modality);
+  const outputValue = nullablePositiveNumber(output.outputValue);
+  return {
+    modality,
+    output_type: output.outputType || null,
+    output_value: outputValue,
+    avg_watts: output.outputType === 'watts' ? outputValue : null,
+    distance: output.outputType === 'distance' ? outputValue : null,
+  };
+}
+
+export function buildWorkoutLogFromCloudRow(row = {}, record = {}) {
+  const jsonLog = record.workoutLog || {};
+  const relationalLog = {
+    totalMinutes: row.total_minutes ?? null,
+    totalSeconds: row.total_seconds ?? null,
+    totalTimeDisplay: jsonLog.totalTimeDisplay || '',
+    avgBpm: row.avg_bpm ?? null,
+    maxBpm: row.max_bpm ?? null,
+    completedAt: row.completed_at ?? null,
+    modality: row.modality ?? null,
+    outputType: row.output_type ?? null,
+    outputValue: row.output_value ?? null,
+    distance: row.distance ?? null,
+    avgWatts: row.avg_watts ?? null,
+  };
+
+  const hasJsonLog = Object.keys(jsonLog).length > 0;
+  const merged = {
+    ...relationalLog,
+    ...(hasJsonLog ? jsonLog : {}),
+    modality:
+      validModalityOrNull(jsonLog.modality)
+      ?? validModalityOrNull(row.modality)
+      ?? MODALITY_RUNNING,
+    outputType:
+      textOrEmpty(jsonLog.outputType) || textOrEmpty(row.output_type) || null,
+    outputValue:
+      positiveOrNull(jsonLog.outputValue) ?? positiveOrNull(row.output_value),
+    avgWatts:
+      positiveOrNull(jsonLog.avgWatts) ?? positiveOrNull(row.avg_watts),
+    distance:
+      positiveOrNull(jsonLog.distance) ?? positiveOrNull(row.distance),
+  };
+
+  const output = readOutputFromWorkoutLog(merged);
+  const hasMetrics = [
+    merged.totalMinutes,
+    merged.avgBpm,
+    merged.maxBpm,
+    output.outputValue,
+    merged.completedAt,
+  ].some((value) => value != null && value !== '');
+
+  if (!hasMetrics && !hasJsonLog) return null;
+
+  return {
+    ...merged,
+    modality: output.modality,
+    outputType: output.outputType,
+    outputValue: output.outputValue,
+    avgWatts: output.outputType === 'watts' ? output.outputValue : null,
+    distance: output.outputType === 'distance' ? output.outputValue : merged.distance ?? null,
+  };
 }
 
 export function getRecordContext(record = {}) {
@@ -37,7 +120,17 @@ export function getCompletionKeyFromRecord(record = {}) {
 export function buildWorkoutCloudPayload(record, userId) {
   const context = getRecordContext(record);
   const workoutLog = record.workoutLog || null;
-  const output = readOutputFromWorkoutLog(workoutLog || {});
+  const modality = normalizeModality(workoutLog?.modality);
+  const outputFields = workoutLog
+    ? buildCanonicalOutputFields(workoutLog)
+    : {
+      modality,
+      output_type: null,
+      output_value: null,
+      avg_watts: null,
+      distance: null,
+    };
+
   return {
     user_id: userId,
     client_record_id: textOrEmpty(record.id),
@@ -56,11 +149,7 @@ export function buildWorkoutCloudPayload(record, userId) {
     total_seconds: workoutLog ? integerOrNull(workoutLog.totalSeconds) : null,
     avg_bpm: workoutLog ? integerOrNull(workoutLog.avgBpm) : null,
     max_bpm: workoutLog ? integerOrNull(workoutLog.maxBpm) : null,
-    modality: output.modality,
-    output_type: output.outputType,
-    output_value: output.outputValue,
-    avg_watts: output.outputType === 'watts' ? output.outputValue : numberOrNull(workoutLog?.avgWatts),
-    distance: output.outputType === 'distance' ? output.outputValue : null,
+    ...outputFields,
     completed_at: workoutLog?.completedAt
       ? normalizeISODate(workoutLog.completedAt)
       : (record.completedAt || record.date ? normalizeISODate(record.completedAt || record.date) : null),
@@ -116,6 +205,10 @@ export function buildProvisionalWorkoutCloudPayload(record, userId) {
     total_seconds: null,
     avg_bpm: null,
     max_bpm: null,
+    modality: normalizeModality(record.workoutLog?.modality),
+    output_type: null,
+    output_value: null,
+    avg_watts: null,
     distance: null,
     completed_at: null,
     proof_policy_version: null,

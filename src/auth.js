@@ -4,6 +4,7 @@ import {
   buildProvisionalMileTestCloudPayload,
   buildProvisionalWorkoutCloudPayload,
   buildWorkoutCloudPayload,
+  buildWorkoutLogFromCloudRow,
   getCompletionKeyFromRecord,
   getRecordContext,
 } from './cloud-record-mapper.js';
@@ -131,15 +132,7 @@ function mapCloudWorkoutCompletion(row) {
     targetBPM: row.target_bpm || null,
   };
   const nextContext = Object.keys(context).length ? context : fallbackContext;
-  const workoutLog = record.workoutLog || (row.total_minutes ? {
-    totalMinutes: row.total_minutes,
-    totalSeconds: row.total_seconds,
-    totalTimeDisplay: record.workoutLog?.totalTimeDisplay || '',
-    avgBpm: row.avg_bpm,
-    maxBpm: row.max_bpm,
-    distance: row.distance,
-    completedAt: row.completed_at,
-  } : null);
+  const workoutLog = buildWorkoutLogFromCloudRow(row, record);
 
   return {
     ...record,
