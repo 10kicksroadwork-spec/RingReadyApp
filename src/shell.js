@@ -1932,11 +1932,10 @@ async function saveMileTestResult() {
     let cloudSaved = false;
     if (isSupabaseConfigured && getCurrentUser()) {
       try {
-        await withOperationTimeout(
-          saveCloudMileTest(result, getHRInfo(), testContext),
-          { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_COMPLETION, operation: 'cloud_completion' },
-        );
-        if (maxBpm > 0) await saveCloudHRInfo(getHRInfo());
+        await withOperationTimeout((async () => {
+          await saveCloudMileTest(result, getHRInfo(), testContext);
+          if (maxBpm > 0) await saveCloudHRInfo(getHRInfo());
+        })(), { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_COMPLETION, operation: 'cloud_completion' });
         cloudSaved = true;
       } catch (error) {
         console.warn('Cloud mile test save failed', error);
@@ -2274,3 +2273,5 @@ export async function initAthleteShell(hooks) {
     openCoachPreviewIfRequested();
   }
 }
+
+export { completeWorkoutFromDetail, saveMileTestResult };

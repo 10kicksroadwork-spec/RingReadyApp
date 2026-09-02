@@ -29,9 +29,21 @@ const DETERMINISTIC_RPC_PATTERNS = [
   /unsupported mime_type/i,
   /authentication required/i,
   /idempotency key conflict/i,
+  /proof attempt superseded/i,
   /permission denied/i,
   /invalid linked/i,
 ];
+
+const OPERATION_PHASE_MAP = {
+  proof_storage_upload: PROOF_UPLOAD_PHASE.STORAGE,
+  proof_storage_cleanup: PROOF_UPLOAD_PHASE.STORAGE,
+  proof_rpc: PROOF_UPLOAD_PHASE.RPC,
+};
+
+export function inferProofUploadPhase(error, phase = '') {
+  if (phase) return phase;
+  return OPERATION_PHASE_MAP[String(error?.operation || '')] || '';
+}
 
 export function isProofErrorAmbiguous(error) {
   if (!error) return false;
@@ -43,23 +55,26 @@ export function isProofErrorAmbiguous(error) {
 
 export function isProofErrorDeterministic(error) {
   if (!error || isProofErrorAmbiguous(error)) return false;
+  if (error.proofDeterministic === true) return true;
   if (error.contractHealthStatus === 'mismatch') return true;
-  if (error.proofFailureKind === PROOF_FAILURE_KIND.AUTH) return true;
-  if (error.proofFailureKind === PROOF_FAILURE_KIND.CONTRACT) return true;
-  if (error.proofFailureKind === PROOF_FAILURE_KIND.IMAGE) return true;
-  const raw = String(error?.proofRawMessage || error?.message || '');
-  return DETERMINISTIC_RPC_PATTERNS.some((pattern) => pattern.test(raw));
+  return false;
 }
 
 export function classifyProofUploadError(error, phase = '') {
+  const resolvedPhase = inferProofUploadPhase(error, phase);
   const raw = String(error?.message || error || '');
   const message = raw.toLowerCase();
 
   if (error?.ambiguous || error?.name === 'OperationTimeoutError' || message.includes('timed out')) {
+    const kind = resolvedPhase === PROOF_UPLOAD_PHASE.STORAGE
+      ? PROOF_FAILURE_KIND.STORAGE
+      : resolvedPhase === PROOF_UPLOAD_PHASE.RPC
+        ? PROOF_FAILURE_KIND.RPC
+        : PROOF_FAILURE_KIND.NETWORK;
     return {
-      kind: PROOF_FAILURE_KIND.NETWORK,
+      kind,
       userMessage: AMBIGUOUS_PROOF_MESSAGE,
-      diagnosticDetail: 'operation_timeout',
+      diagnosticDetail: resolvedPhase ? `${resolvedPhase}_operation_timeout` : 'operation_timeout',
       retryable: true,
       ambiguous: true,
       raw,
@@ -96,7 +111,7 @@ export function classifyProofUploadError(error, phase = '') {
   }
 
   if (
-    phase === PROOF_UPLOAD_PHASE.STORAGE
+    resolvedPhase === PROOF_UPLOAD_PHASE.STORAGE
     || message.includes('storage')
     || message.includes('bucket')
   ) {
@@ -129,10 +144,11 @@ export function classifyProofUploadError(error, phase = '') {
   }
 
   if (
-    phase === PROOF_UPLOAD_PHASE.RPC
+    resolvedPhase === PROOF_UPLOAD_PHASE.RPC
     || message.includes('create_workout_proof_attachment')
     || message.includes('rpc')
     || message.includes('idempotency key conflict')
+    || message.includes('proof attempt superseded')
   ) {
     const ambiguous = !DETERMINISTIC_RPC_PATTERNS.some((pattern) => pattern.test(raw));
     return {
@@ -173,18 +189,20 @@ export function formatProofUploadError(error, phase = '') {
 }
 
 export function createProofUploadError(error, phase = '') {
-  const classified = classifyProofUploadError(error, phase);
+  const resolvedPhase = inferProofUploadPhase(error, phase);
+  const classified = classifyProofUploadError(error, resolvedPhase);
 
   const err = new Error(classified.userMessage);
   err.proofFailureKind = classified.kind;
-  err.proofFailurePhase = phase;
+  err.proofFailurePhase = resolvedPhase;
   err.proofRetryable = classified.retryable;
   err.proofAmbiguous = classified.ambiguous;
+  err.proofDeterministic = classified.ambiguous === false;
   err.proofDiagnosticDetail = classified.diagnosticDetail;
   err.proofRawMessage = classified.raw;
   err.ambiguous = classified.ambiguous;
   err.retryable = classified.retryable;
-  err.operation = error?.operation || phase || '';
+  err.operation = error?.operation || resolvedPhase || '';
 
   return err;
 }

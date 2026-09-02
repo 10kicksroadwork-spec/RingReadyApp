@@ -31,9 +31,11 @@ import {
   loadImage,
   __resetProofStateForTest,
   __getProofStateForTest,
+  __handleProofFileForTest,
   ensureWorkoutProofUploaded,
   initWorkoutProof,
   buildProofFlightKey,
+  canReplaceWorkoutProof,
 } from '../src/proof.js';
 import { runSingleFlight, clearSingleFlightsForTest } from '../src/single-flight.js';
 import { OperationTimeoutError, withOperationTimeout } from '../src/operation-timeout.js';
@@ -73,6 +75,34 @@ describe('Bravo image decoding', () => {
     expect(image.width).toBe(10);
     expect(createImageBitmap).toHaveBeenCalledTimes(1);
     expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:test');
+  });
+
+  it('returns a friendly error when both decoders fail', async () => {
+    globalThis.createImageBitmap = vi.fn(async () => {
+      throw new Error('decode failed');
+    });
+    globalThis.Image = class {
+      set onload(_handler) {}
+      set onerror(handler) {
+        this._onerror = handler;
+      }
+      set src(_value) {
+        this._onerror?.();
+      }
+    };
+    globalThis.URL.createObjectURL = vi.fn(() => 'blob:test');
+    globalThis.URL.revokeObjectURL = vi.fn();
+    document.body.innerHTML = '<div data-proof-host="detail"></div>';
+    initWorkoutProof('detail', { proofKey: 'program:7:0:1', context: {} });
+    const blob = new Blob(['fake'], { type: 'image/png' });
+    const file = new File([blob], 'proof.png', { type: 'image/png' });
+
+    await __handleProofFileForTest('detail', file);
+
+    const state = __getProofStateForTest('detail');
+    expect(state.error).toContain('Could not read');
+    expect(state.processed).toBeNull();
+    expect(canReplaceWorkoutProof('detail')).toBe(true);
   });
 });
 
@@ -133,9 +163,17 @@ describe('Bravo saving button state', () => {
 });
 
 describe('Bravo proof diagnostics', () => {
-  it('classifies timeout failures as retryable and ambiguous', () => {
-    const err = createProofUploadError(new OperationTimeoutError('proof_rpc', 12000), PROOF_UPLOAD_PHASE.RPC);
+  it('classifies storage timeout failures with storage phase', () => {
+    const err = createProofUploadError(new OperationTimeoutError('proof_storage_upload', 20000));
+    expect(err.proofFailurePhase).toBe(PROOF_UPLOAD_PHASE.STORAGE);
+    expect(err.proofAmbiguous).toBe(true);
+    expect(err.proofFailureKind).toBe('storage_upload');
+  });
+
+  it('classifies rpc timeout failures with rpc phase', () => {
+    const err = createProofUploadError(new OperationTimeoutError('proof_rpc', 12000));
     expect(err.message).toBe(AMBIGUOUS_PROOF_MESSAGE);
+    expect(err.proofFailurePhase).toBe(PROOF_UPLOAD_PHASE.RPC);
     expect(err.proofAmbiguous).toBe(true);
     expect(err.proofRetryable).toBe(true);
     expect(isProofErrorAmbiguous(err)).toBe(true);
@@ -149,6 +187,13 @@ describe('Bravo proof diagnostics', () => {
     );
     expect(isProofErrorDeterministic(err)).toBe(true);
     expect(isProofErrorAmbiguous(err)).toBe(false);
+  });
+
+  it('classifies bucket-not-found storage failures as deterministic', () => {
+    const err = createProofUploadError(new Error('Bucket not found'), PROOF_UPLOAD_PHASE.STORAGE);
+    expect(err.proofAmbiguous).toBe(false);
+    expect(err.proofDeterministic).toBe(true);
+    expect(isProofErrorDeterministic(err)).toBe(true);
   });
 });
 
@@ -177,7 +222,7 @@ describe('Bravo proof upload pipeline', () => {
     Object.defineProperty(navigator, 'onLine', { configurable: true, value: false });
   });
 
-  async function seedProcessedProof(surface) {
+  async function seedProcessedProof(surface, overrides = {}) {
     document.body.innerHTML = `<div data-proof-host="${surface}"></div>`;
     initWorkoutProof(surface, {
       proofKey: 'program:7:0:1',
@@ -187,7 +232,9 @@ describe('Bravo proof upload pipeline', () => {
     state.processed = { blob: new Blob(['x'], { type: 'image/webp' }), width: 100, height: 100, mimeType: 'image/webp' };
     state.uploadId = 'upload-identity-1';
     state.storagePath = 'user-1/program-7-0-1/upload-identity-1.webp';
+    state.filename = 'proof-a.png';
     state.previewUrl = 'blob:preview';
+    Object.assign(state, overrides);
   }
 
   function mockHealthyContract() {
@@ -240,6 +287,21 @@ describe('Bravo proof upload pipeline', () => {
     expect(paths[0]).toBe('user-1/program-7-0-1/upload-identity-1.webp');
   });
 
+  it('assigns a new upload identity after a successful save and new screenshot', async () => {
+    mockHealthyContract();
+    await seedProcessedProof('detail');
+    await expect(ensureWorkoutProofUploaded('detail', 'record-1')).resolves.toMatchObject({ id: 'attachment-1' });
+
+    const state = __getProofStateForTest('detail');
+    state.processed = { blob: new Blob(['y'], { type: 'image/webp' }), width: 120, height: 120, mimeType: 'image/webp' };
+    state.filename = 'proof-b.png';
+    state.uploadId = 'upload-identity-2';
+    state.storagePath = 'user-1/program-7-0-1/upload-identity-2.webp';
+
+    await expect(ensureWorkoutProofUploaded('detail', 'record-1')).resolves.toBeTruthy();
+    expect(storageUpload.mock.calls.at(-1)[0]).toBe('user-1/program-7-0-1/upload-identity-2.webp');
+  });
+
   it('does not delete storage after ambiguous rpc failure', async () => {
     mockHealthyContract();
     await seedProcessedProof('detail');
@@ -249,6 +311,30 @@ describe('Bravo proof upload pipeline', () => {
       proofAmbiguous: true,
     });
     expect(storageRemove).not.toHaveBeenCalled();
+  });
+
+  it('sets ambiguousRpcPending and blocks replacement after ambiguous rpc failure', async () => {
+    mockHealthyContract();
+    await seedProcessedProof('detail');
+    rpc.mockResolvedValueOnce({ data: null, error: new Error('Failed to fetch') });
+
+    await expect(ensureWorkoutProofUploaded('detail', 'record-1')).rejects.toBeTruthy();
+    const state = __getProofStateForTest('detail');
+    expect(state.ambiguousRpcPending).toBe('upload-identity-1');
+    expect(canReplaceWorkoutProof('detail')).toBe(false);
+    expect(document.querySelector('[data-proof-input="detail"]')?.disabled).toBe(true);
+  });
+
+  it('clears ambiguousRpcPending after successful reconciliation retry', async () => {
+    mockHealthyContract();
+    await seedProcessedProof('detail');
+    rpc.mockResolvedValueOnce({ data: null, error: new Error('Failed to fetch') });
+    await expect(ensureWorkoutProofUploaded('detail', 'record-1')).rejects.toBeTruthy();
+
+    await expect(ensureWorkoutProofUploaded('detail', 'record-1')).resolves.toMatchObject({ id: 'attachment-1' });
+    const state = __getProofStateForTest('detail');
+    expect(state.ambiguousRpcPending).toBeNull();
+    expect(canReplaceWorkoutProof('detail')).toBe(true);
   });
 
   it('deletes storage after deterministic rpc failure', async () => {
@@ -263,10 +349,54 @@ describe('Bravo proof upload pipeline', () => {
     expect(storageRemove).toHaveBeenCalledWith(['user-1/program-7-0-1/upload-identity-1.webp']);
   });
 
-  it('deduplicates concurrent ensureWorkoutProofUploaded calls', async () => {
+  it('uses attempt metadata even if state mutates during upload', async () => {
     mockHealthyContract();
     await seedProcessedProof('detail');
-    const key = buildProofFlightKey('detail', 'program:7:0:1');
+    storageUpload.mockImplementationOnce(async () => {
+      const state = __getProofStateForTest('detail');
+      state.filename = 'mutated.png';
+      state.processed = { blob: new Blob(['z'], { type: 'image/webp' }), width: 999, height: 999, mimeType: 'image/webp' };
+      return { error: null };
+    });
+
+    await ensureWorkoutProofUploaded('detail', 'record-1');
+
+    expect(rpc.mock.calls[0][1]).toMatchObject({
+      p_original_filename: 'proof-a.png',
+      p_file_size: 1,
+      p_width: 100,
+      p_height: 100,
+    });
+  });
+
+  it('blocks replacement while storage upload is in flight', async () => {
+    mockHealthyContract();
+    await seedProcessedProof('detail');
+    let releaseUpload;
+    storageUpload.mockImplementationOnce(() => new Promise((resolve) => {
+      releaseUpload = () => resolve({ error: null });
+    }));
+
+    const uploadPromise = ensureWorkoutProofUploaded('detail', 'record-1');
+    await vi.waitFor(() => {
+      expect(canReplaceWorkoutProof('detail')).toBe(false);
+    });
+
+    const replacementBlob = new Blob(['replacement'], { type: 'image/png' });
+    await __handleProofFileForTest('detail', new File([replacementBlob], 'proof-b.png', { type: 'image/png' }));
+
+    const state = __getProofStateForTest('detail');
+    expect(state.uploadId).toBe('upload-identity-1');
+    expect(state.filename).toBe('proof-a.png');
+
+    releaseUpload();
+    await uploadPromise;
+  });
+
+  it('deduplicates concurrent ensureWorkoutProofUploaded calls for the same upload identity', async () => {
+    mockHealthyContract();
+    await seedProcessedProof('detail');
+    const key = buildProofFlightKey('detail', 'program:7:0:1', 'upload-identity-1');
 
     await Promise.all([
       ensureWorkoutProofUploaded('detail', 'record-1'),
@@ -275,6 +405,6 @@ describe('Bravo proof upload pipeline', () => {
 
     expect(storageUpload).toHaveBeenCalledTimes(1);
     expect(rpc).toHaveBeenCalledTimes(1);
-    expect(key).toBe('proof:detail:program:7:0:1');
+    expect(key).toBe('proof:detail:program:7:0:1:upload-identity-1');
   });
 });

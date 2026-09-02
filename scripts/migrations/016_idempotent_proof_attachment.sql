@@ -25,6 +25,7 @@ declare
   caller_id uuid := auth.uid();
   inserted public.workout_attachments%rowtype;
   existing public.workout_attachments%rowtype;
+  current_replacement public.workout_attachments%rowtype;
   linked_id text := coalesce(trim(p_linked_record_id), '');
 begin
   if caller_id is null then
@@ -95,8 +96,26 @@ begin
   if existing.id is not null then
     if existing.proof_key = p_proof_key
        and existing.linked_record_id = linked_id then
-      return existing;
+      if existing.is_current = true then
+        return existing;
+      end if;
+
+      select *
+      into current_replacement
+      from public.workout_attachments
+      where user_id = caller_id
+        and proof_key = p_proof_key
+        and linked_record_id = linked_id
+        and is_current = true
+      limit 1;
+
+      if current_replacement.id is not null then
+        return current_replacement;
+      end if;
+
+      raise exception 'proof attempt superseded';
     end if;
+
     raise exception 'idempotency key conflict for storage_path';
   end if;
 
@@ -173,7 +192,24 @@ begin
       if existing.id is not null
          and existing.proof_key = p_proof_key
          and existing.linked_record_id = linked_id then
-        return existing;
+        if existing.is_current = true then
+          return existing;
+        end if;
+
+        select *
+        into current_replacement
+        from public.workout_attachments
+        where user_id = caller_id
+          and proof_key = p_proof_key
+          and linked_record_id = linked_id
+          and is_current = true
+        limit 1;
+
+        if current_replacement.id is not null then
+          return current_replacement;
+        end if;
+
+        raise exception 'proof attempt superseded';
       end if;
 
       raise exception 'idempotency key conflict for storage_path';

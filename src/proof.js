@@ -6,6 +6,7 @@ import {
   AMBIGUOUS_PROOF_MESSAGE,
   createProofUploadError,
   isProofErrorAmbiguous,
+  isProofErrorDeterministic,
   PROOF_UPLOAD_PHASE,
 } from './proof-diagnostics.js';
 import { OPERATION_TIMEOUT_MS, withOperationTimeout } from './operation-timeout.js';
@@ -119,6 +120,63 @@ function assignStagedUploadIdentity(state, mimeType) {
   state.storagePath = buildStableStoragePath(user.id, state.proofKey, state.uploadId, mimeType);
 }
 
+function isProofReplacementBlocked(state) {
+  if (!state) return false;
+  return !!(state.uploading || state.ambiguousRpcPending);
+}
+
+function snapshotProcessed(processed) {
+  if (!processed) return null;
+  return {
+    blob: processed.blob,
+    width: processed.width,
+    height: processed.height,
+    mimeType: processed.mimeType,
+  };
+}
+
+function createProofAttempt(state, linkedRecordId = '') {
+  const uploadMimeType = state.processed.blob.type || state.processed.mimeType || getCanvasOutputMimeType();
+  if (!state.uploadId || !state.storagePath) {
+    assignStagedUploadIdentity(state, uploadMimeType);
+  }
+  return Object.freeze({
+    uploadId: state.uploadId,
+    storagePath: state.storagePath,
+    processed: snapshotProcessed(state.processed),
+    filename: state.filename,
+    proofKey: state.proofKey,
+    context: { ...state.context },
+    linkedRecordId: String(linkedRecordId || ''),
+    uploadMimeType,
+    uploadExtension: extensionForMimeType(uploadMimeType),
+  });
+}
+
+async function removeStagedStorageBestEffort(storagePath) {
+  try {
+    await withOperationTimeout(
+      supabase.storage.from(PROOF_BUCKET).remove([storagePath]),
+      {
+        timeoutMs: OPERATION_TIMEOUT_MS.STORAGE_UPLOAD,
+        operation: 'proof_storage_cleanup',
+      },
+    );
+  } catch (cleanupError) {
+    console.warn('Could not remove staged proof object', cleanupError);
+  }
+}
+
+function reconcileAttemptSuccess(state, attempt) {
+  if (state.uploadId !== attempt.uploadId) return false;
+  state.ambiguousRpcPending = null;
+  state.processed = null;
+  clearStagedUploadIdentity(state);
+  revokePreview(state);
+  state.previewUrl = '';
+  return true;
+}
+
 function render(surface) {
   const state = states.get(surface);
   const host = document.querySelector(`[data-proof-host="${surface}"]`);
@@ -128,13 +186,15 @@ function render(surface) {
   const selected = state.processed;
   const hasPreview = !!state.previewUrl;
   const legacy = state.legacy && !existing && !selected;
+  const replacementBlocked = isProofReplacementBlocked(state);
   const statusClass = state.error ? 'error' : state.uploading ? 'uploading' : (existing || selected) ? 'ready' : '';
   const statusText = state.error
-    || (state.uploading ? 'Uploading proof securely...'
-      : selected ? 'Screenshot ready to upload.'
-        : existing ? (existing.transferStatus === 'complete' ? 'Proof saved and copied for your coach.' : 'Proof saved. Coach copy is processing.')
-          : legacy ? 'Legacy - no proof'
-            : 'Required before this workout can be completed.');
+    || (state.ambiguousRpcPending ? 'Save is still confirming. Tap Save again before replacing this screenshot.'
+      : state.uploading ? 'Uploading proof securely...'
+        : selected ? 'Screenshot ready to upload.'
+          : existing ? (existing.transferStatus === 'complete' ? 'Proof saved and copied for your coach.' : 'Proof saved. Coach copy is processing.')
+            : legacy ? 'Legacy - no proof'
+              : 'Required before this workout can be completed.');
 
   host.innerHTML = `
     <section class="workout-proof-card ${statusClass}">
@@ -151,8 +211,8 @@ function render(surface) {
           <strong>${escapeHTML(state.filename || existing?.originalFilename || (legacy ? 'Existing completion' : 'No screenshot selected'))}</strong>
           <span>${escapeHTML(statusText)}</span>
         </div>
-        <label class="proof-picker-btn">
-          <input type="file" accept="image/png,image/jpeg,image/webp,image/heic,image/heif,.heic,.heif,.jpg,.jpeg,.png,.webp" data-proof-input="${surface}">
+        <label class="proof-picker-btn ${replacementBlocked ? 'is-disabled' : ''}">
+          <input type="file" accept="image/png,image/jpeg,image/webp,image/heic,image/heif,.heic,.heif,.jpg,.jpeg,.png,.webp" data-proof-input="${surface}" ${replacementBlocked ? 'disabled' : ''}>
           ${existing || selected ? 'REPLACE' : 'CHOOSE IMAGE'}
         </label>
       </div>
@@ -239,8 +299,10 @@ async function processImage(file) {
 async function handleFile(surface, file) {
   const state = states.get(surface);
   if (!state || !file) return;
+  if (isProofReplacementBlocked(state)) return;
   revokePreview(state);
   clearStagedUploadIdentity(state);
+  state.ambiguousRpcPending = null;
   Object.assign(state, {
     processed: null,
     filename: file.name,
@@ -268,7 +330,7 @@ function bindListeners() {
   listenersBound = true;
   document.addEventListener('change', (event) => {
     const input = event.target.closest('[data-proof-input]');
-    if (!input) return;
+    if (!input || input.disabled) return;
     handleFile(input.dataset.proofInput, input.files?.[0]);
     input.value = '';
   });
@@ -278,8 +340,12 @@ export function buildProgramProofKey(campLength, weekIndex, workoutIndex) {
   return `program:${String(campLength) === '4' ? 4 : 7}:${Number(weekIndex)}:${Number(workoutIndex)}`;
 }
 
-export function buildProofFlightKey(surface, proofKey = '') {
-  return `proof:${surface}:${proofKey || 'unknown'}`;
+export function buildProofFlightKey(surface, proofKey = '', uploadId = '') {
+  return `proof:${surface}:${proofKey || 'unknown'}:${uploadId || 'pending'}`;
+}
+
+export function canReplaceWorkoutProof(surface) {
+  return !isProofReplacementBlocked(states.get(surface));
 }
 
 export function initWorkoutProof(surface, options = {}) {
@@ -297,6 +363,7 @@ export function initWorkoutProof(surface, options = {}) {
     previewUrl: previous?.proofKey === options.proofKey ? previous.previewUrl : '',
     uploadId: previous?.proofKey === options.proofKey ? previous.uploadId : null,
     storagePath: previous?.proofKey === options.proofKey ? previous.storagePath : null,
+    ambiguousRpcPending: previous?.proofKey === options.proofKey ? previous.ambiguousRpcPending : null,
     uploading: false,
     error: '',
   });
@@ -320,6 +387,53 @@ export function getProofUploadIdentity(surface) {
     uploadId: state.uploadId,
     storagePath: state.storagePath,
   };
+}
+
+async function executeProofAttempt(attempt) {
+  const { error: uploadError } = await withOperationTimeout(
+    supabase.storage.from(PROOF_BUCKET).upload(attempt.storagePath, attempt.processed.blob, {
+      contentType: attempt.uploadMimeType,
+      upsert: true,
+      cacheControl: '3600',
+    }),
+    {
+      timeoutMs: OPERATION_TIMEOUT_MS.STORAGE_UPLOAD,
+      operation: 'proof_storage_upload',
+    },
+  );
+  if (uploadError) throw createProofUploadError(uploadError, PROOF_UPLOAD_PHASE.STORAGE);
+
+  const { data, error: rowError } = await withOperationTimeout(
+    supabase.rpc('create_workout_proof_attachment', {
+      p_proof_key: attempt.proofKey,
+      p_linked_record_id: attempt.linkedRecordId,
+      p_storage_path: attempt.storagePath,
+      p_original_filename: attempt.filename || `workout-proof.${attempt.uploadExtension}`,
+      p_mime_type: attempt.uploadMimeType,
+      p_file_size: attempt.processed.blob.size,
+      p_width: attempt.processed.width,
+      p_height: attempt.processed.height,
+      p_camp_length: Number(attempt.context.campLength) || null,
+      p_week_index: Number.isFinite(Number(attempt.context.weekIndex)) ? Number(attempt.context.weekIndex) : null,
+      p_workout_index: Number.isFinite(Number(attempt.context.workoutIndex)) ? Number(attempt.context.workoutIndex) : null,
+      p_workout_type: String(attempt.context.workoutType || 'Workout'),
+      p_day_of_week: String(attempt.context.dayOfWeek || ''),
+    }),
+    {
+      timeoutMs: OPERATION_TIMEOUT_MS.PROOF_RPC,
+      operation: 'proof_rpc',
+    },
+  );
+
+  if (rowError) {
+    const rpcError = createProofUploadError(rowError, PROOF_UPLOAD_PHASE.RPC);
+    if (isProofErrorDeterministic(rpcError)) {
+      await removeStagedStorageBestEffort(attempt.storagePath);
+    }
+    throw rpcError;
+  }
+
+  return attachmentFromRow(data);
 }
 
 async function ensureWorkoutProofUploadedInner(surface, linkedRecordId = '') {
@@ -359,69 +473,16 @@ async function ensureWorkoutProofUploadedInner(surface, linkedRecordId = '') {
     });
   }
 
+  const attempt = createProofAttempt(state, linkedRecordId);
   state.uploading = true;
   state.error = '';
   render(surface);
   emitState(surface);
 
-  const user = getCurrentUser();
-  const uploadMimeType = state.processed.blob.type || state.processed.mimeType || getCanvasOutputMimeType();
-  const uploadExtension = extensionForMimeType(uploadMimeType);
-  if (!state.uploadId || !state.storagePath) {
-    assignStagedUploadIdentity(state, uploadMimeType);
-  }
-  const storagePath = state.storagePath
-    || buildStableStoragePath(user.id, state.proofKey, state.uploadId || makeId(), uploadMimeType);
-
   try {
-    const { error: uploadError } = await withOperationTimeout(
-      supabase.storage.from(PROOF_BUCKET).upload(storagePath, state.processed.blob, {
-        contentType: uploadMimeType,
-        upsert: true,
-        cacheControl: '3600',
-      }),
-      {
-        timeoutMs: OPERATION_TIMEOUT_MS.STORAGE_UPLOAD,
-        operation: 'proof_storage_upload',
-      },
-    );
-    if (uploadError) throw createProofUploadError(uploadError, PROOF_UPLOAD_PHASE.STORAGE);
-
-    const { data, error: rowError } = await withOperationTimeout(
-      supabase.rpc('create_workout_proof_attachment', {
-        p_proof_key: state.proofKey,
-        p_linked_record_id: String(linkedRecordId || ''),
-        p_storage_path: storagePath,
-        p_original_filename: state.filename || `workout-proof.${uploadExtension}`,
-        p_mime_type: uploadMimeType,
-        p_file_size: state.processed.blob.size,
-        p_width: state.processed.width,
-        p_height: state.processed.height,
-        p_camp_length: Number(state.context.campLength) || null,
-        p_week_index: Number.isFinite(Number(state.context.weekIndex)) ? Number(state.context.weekIndex) : null,
-        p_workout_index: Number.isFinite(Number(state.context.workoutIndex)) ? Number(state.context.workoutIndex) : null,
-        p_workout_type: String(state.context.workoutType || 'Workout'),
-        p_day_of_week: String(state.context.dayOfWeek || ''),
-      }),
-      {
-        timeoutMs: OPERATION_TIMEOUT_MS.PROOF_RPC,
-        operation: 'proof_rpc',
-      },
-    );
-
-    if (rowError) {
-      if (!isProofErrorAmbiguous(createProofUploadError(rowError, PROOF_UPLOAD_PHASE.RPC))) {
-        await supabase.storage.from(PROOF_BUCKET).remove([storagePath]);
-      }
-      throw createProofUploadError(rowError, PROOF_UPLOAD_PHASE.RPC);
-    }
-
-    const attachment = attachmentFromRow(data);
+    const attachment = await executeProofAttempt(attempt);
     state.existingAttachment = attachment;
-    state.processed = null;
-    clearStagedUploadIdentity(state);
-    revokePreview(state);
-    state.previewUrl = '';
+    reconcileAttemptSuccess(state, attempt);
     return attachment;
   } catch (error) {
     if (error?.contractHealthStatus === 'mismatch') {
@@ -429,6 +490,11 @@ async function ensureWorkoutProofUploadedInner(surface, linkedRecordId = '') {
     }
 
     const classified = error?.proofFailureKind ? error : createProofUploadError(error);
+    if (isProofErrorAmbiguous(classified)) {
+      state.ambiguousRpcPending = attempt.uploadId;
+    } else if (isProofErrorDeterministic(classified)) {
+      state.ambiguousRpcPending = null;
+    }
     state.error = classified.message || AMBIGUOUS_PROOF_MESSAGE;
     captureRuntimeDiagnostic({
       kind: classified.proofFailureKind || 'proof_upload_failed',
@@ -455,7 +521,8 @@ async function ensureWorkoutProofUploadedInner(surface, linkedRecordId = '') {
 export async function ensureWorkoutProofUploaded(surface, linkedRecordId = '') {
   const state = states.get(surface);
   const proofKey = state?.proofKey || surface;
-  return runSingleFlight(buildProofFlightKey(surface, proofKey), () =>
+  const uploadId = state?.uploadId || state?.ambiguousRpcPending || 'pending';
+  return runSingleFlight(buildProofFlightKey(surface, proofKey, uploadId), () =>
     ensureWorkoutProofUploadedInner(surface, linkedRecordId));
 }
 
@@ -476,4 +543,8 @@ export function __resetProofStateForTest() {
 
 export function __getProofStateForTest(surface) {
   return states.get(surface);
+}
+
+export async function __handleProofFileForTest(surface, file) {
+  return handleFile(surface, file);
 }

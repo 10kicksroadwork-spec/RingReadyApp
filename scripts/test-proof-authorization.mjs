@@ -558,31 +558,119 @@ async function run() {
     const secondIdempotent = await createProof(client, idempotentParams);
     assert(!secondIdempotent.error && secondIdempotent.data?.id === firstIdempotent.data.id, 'Repeated same-path RPC must return the same attachment id');
 
-    const [concurrentA, concurrentB] = await Promise.all([
-      createProof(client, idempotentParams),
-      createProof(client, idempotentParams),
-    ]);
-    assert(!concurrentA.error || !concurrentB.error, 'Concurrent same-path RPC calls must not both fail');
-    const concurrentIds = [concurrentA.data?.id, concurrentB.data?.id].filter(Boolean);
-    assert(new Set(concurrentIds).size <= 1, 'Concurrent same-path RPC must converge on one attachment id');
-    if (concurrentA.data?.id) createdAttachmentIds.push(concurrentA.data.id);
-    if (concurrentB.data?.id && concurrentB.data.id !== concurrentA.data?.id) createdAttachmentIds.push(concurrentB.data.id);
+    const freshConcurrentKey = `${testPrefix}:fresh-concurrent-mile`;
+    const freshConcurrentClientId = `${testPrefix}:fresh-concurrent-client`;
+    const { data: freshConcurrentMileRow, error: freshConcurrentMileError } = await client.from('mile_tests').insert({
+      user_id: user.id,
+      test_key: freshConcurrentKey,
+      client_record_id: freshConcurrentClientId,
+    }).select('id').single();
+    assert(!freshConcurrentMileError && freshConcurrentMileRow?.id, `Could not seed fresh concurrent mile test: ${freshConcurrentMileError?.message || 'unknown'}`);
+    createdMileTestIds.push(freshConcurrentMileRow.id);
 
-    const sharedConflictPath = `${user.id}/${idempotentMileKey}/shared-conflict.webp`;
-    storagePaths.push(sharedConflictPath);
-    await uploadProofBlob(client, sharedConflictPath);
-    const { data: seededConflictProof, error: seededConflictError } = await createProof(client, {
-      ...idempotentParams,
-      p_storage_path: sharedConflictPath,
+    const freshConcurrentPath = `${user.id}/${freshConcurrentKey}/fresh-concurrent.webp`;
+    storagePaths.push(freshConcurrentPath);
+    await uploadProofBlob(client, freshConcurrentPath);
+    const freshConcurrentParams = {
+      p_proof_key: freshConcurrentKey,
+      p_linked_record_id: freshConcurrentClientId,
+      p_storage_path: freshConcurrentPath,
+    };
+    const [freshConcurrentA, freshConcurrentB] = await Promise.all([
+      createProof(client, freshConcurrentParams),
+      createProof(client, freshConcurrentParams),
+    ]);
+    assert(!freshConcurrentA.error && freshConcurrentA.data?.id, `Fresh concurrent RPC A must succeed: ${freshConcurrentA.error?.message || 'unknown'}`);
+    assert(!freshConcurrentB.error && freshConcurrentB.data?.id, `Fresh concurrent RPC B must succeed: ${freshConcurrentB.error?.message || 'unknown'}`);
+    assert(freshConcurrentA.data.id === freshConcurrentB.data.id, 'Fresh concurrent same-path RPC must converge on one attachment id');
+    createdAttachmentIds.push(freshConcurrentA.data.id);
+    const { count: freshConcurrentCount, error: freshConcurrentCountError } = await client
+      .from('workout_attachments')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', user.id)
+      .eq('storage_path', freshConcurrentPath);
+    assert(!freshConcurrentCountError, `Could not count fresh concurrent attachments: ${freshConcurrentCountError?.message || 'unknown'}`);
+    assert(freshConcurrentCount === 1, `Fresh concurrent path must create exactly one attachment row, got ${freshConcurrentCount}`);
+    const { data: freshConcurrentRow, error: freshConcurrentRowError } = await client
+      .from('workout_attachments')
+      .select('is_current')
+      .eq('id', freshConcurrentA.data.id)
+      .single();
+    assert(!freshConcurrentRowError && freshConcurrentRow?.is_current === true, 'Fresh concurrent attachment must remain current');
+
+    const replayMileKey = `${testPrefix}:replay-mile`;
+    const replayClientId = `${testPrefix}:replay-client`;
+    const { data: replayMileRow, error: replayMileError } = await client.from('mile_tests').insert({
+      user_id: user.id,
+      test_key: replayMileKey,
+      client_record_id: replayClientId,
+    }).select('id').single();
+    assert(!replayMileError && replayMileRow?.id, `Could not seed replay mile test: ${replayMileError?.message || 'unknown'}`);
+    createdMileTestIds.push(replayMileRow.id);
+    const replayPathA = `${user.id}/${replayMileKey}/a.webp`;
+    const replayPathB = `${user.id}/${replayMileKey}/b.webp`;
+    storagePaths.push(replayPathA, replayPathB);
+    await uploadProofBlob(client, replayPathA);
+    await uploadProofBlob(client, replayPathB);
+    const replayBaseParams = {
+      p_proof_key: replayMileKey,
+      p_linked_record_id: replayClientId,
+    };
+    const replayProofA = await createProof(client, { ...replayBaseParams, p_storage_path: replayPathA });
+    assert(!replayProofA.error && replayProofA.data?.id, `Replay path A must succeed: ${replayProofA.error?.message || 'unknown'}`);
+    createdAttachmentIds.push(replayProofA.data.id);
+    const replayProofB = await createProof(client, { ...replayBaseParams, p_storage_path: replayPathB });
+    assert(!replayProofB.error && replayProofB.data?.id, `Replay path B must succeed: ${replayProofB.error?.message || 'unknown'}`);
+    assert(replayProofB.data.id !== replayProofA.data.id, 'Replacement proof must create a new attachment');
+    createdAttachmentIds.push(replayProofB.data.id);
+    const replayStale = await createProof(client, { ...replayBaseParams, p_storage_path: replayPathA });
+    assert(!replayStale.error && replayStale.data?.id === replayProofB.data.id, 'Stale replay of superseded path must return the current replacement attachment');
+    assert(replayStale.data.id !== replayProofA.data.id, 'Stale replay must not return the superseded non-current attachment');
+
+    const conflictClientA = `${testPrefix}:valid-conflict-a`;
+    const conflictClientB = `${testPrefix}:valid-conflict-b`;
+    const conflictWeekA = 12;
+    const conflictWorkoutA = 0;
+    const conflictWeekB = 12;
+    const conflictWorkoutB = 1;
+    const conflictProofKeyA = `${testPrefix}:program:7:${conflictWeekA}:${conflictWorkoutA}`;
+    const conflictProofKeyB = `${testPrefix}:program:7:${conflictWeekB}:${conflictWorkoutB}`;
+    const sharedValidConflictPath = `${user.id}/${testPrefix}/shared-valid-conflict.webp`;
+    storagePaths.push(sharedValidConflictPath);
+    const { data: conflictRowA } = await client.from('workout_completions').insert({
+      user_id: user.id,
+      completion_key: `${conflictWeekA}:${conflictWorkoutA}`,
+      client_record_id: conflictClientA,
+      week_index: conflictWeekA,
+      workout_index: conflictWorkoutA,
+    }).select('id').single();
+    const { data: conflictRowB } = await client.from('workout_completions').insert({
+      user_id: user.id,
+      completion_key: `${conflictWeekB}:${conflictWorkoutB}`,
+      client_record_id: conflictClientB,
+      week_index: conflictWeekB,
+      workout_index: conflictWorkoutB,
+    }).select('id').single();
+    createdWorkoutIds.push(conflictRowA.id, conflictRowB.id);
+    await uploadProofBlob(client, sharedValidConflictPath);
+    const conflictProofA = await createProof(client, {
+      p_proof_key: conflictProofKeyA,
+      p_linked_record_id: conflictClientA,
+      p_storage_path: sharedValidConflictPath,
+      p_week_index: conflictWeekA,
+      p_workout_index: conflictWorkoutA,
     });
-    assert(!seededConflictError && seededConflictProof?.id, `Could not seed shared conflict path: ${seededConflictError?.message || 'unknown'}`);
-    createdAttachmentIds.push(seededConflictProof.id);
-    const { error: conflictError } = await createProof(client, {
-      ...idempotentParams,
-      p_storage_path: sharedConflictPath,
-      p_proof_key: `${testPrefix}:different-proof-key`,
+    assert(!conflictProofA.error && conflictProofA.data?.id, `Valid conflict seed A must succeed: ${conflictProofA.error?.message || 'unknown'}`);
+    createdAttachmentIds.push(conflictProofA.data.id);
+    const { error: validConflictError } = await createProof(client, {
+      p_proof_key: conflictProofKeyB,
+      p_linked_record_id: conflictClientB,
+      p_storage_path: sharedValidConflictPath,
+      p_week_index: conflictWeekB,
+      p_workout_index: conflictWorkoutB,
     });
-    assert(!!conflictError, 'Same storage path with conflicting proof key must be rejected');
+    assert(!!validConflictError, 'Same storage path with a second valid logical identity must be rejected');
+    assert(String(validConflictError.message || '').includes('idempotency key conflict'), `Expected idempotency conflict, got: ${validConflictError.message || 'unknown'}`);
 
     console.log('PASS: proof authorization matrix');
   } finally {
