@@ -1,4 +1,7 @@
-﻿let deferredInstallPrompt = null;
+﻿import { renderBuildInfo } from './build-info.js';
+
+let deferredInstallPrompt = null;
+let pendingUpdateRegistration = null;
 
 function isStandalone() {
   return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
@@ -37,6 +40,48 @@ export function updateInstallUI() {
   btn.style.opacity = deferredInstallPrompt && !isStandalone() ? '1' : '0.55';
 }
 
+function shouldAutoReloadForUpdate() {
+  const activeScreen = document.querySelector('.screen.active');
+  const screenId = activeScreen?.id || '';
+  return !['session', 'results', 'setup'].includes(screenId);
+}
+
+function notifyAppUpdate(showToast) {
+  window.dispatchEvent(new CustomEvent('ringready:app-update-ready'));
+  if (typeof showToast === 'function') {
+    showToast('APP UPDATED — REFRESHING');
+  }
+}
+
+function activateWaitingServiceWorker(registration, showToast) {
+  if (!registration?.waiting) return;
+  pendingUpdateRegistration = registration;
+  registration.waiting.postMessage({ type: 'SKIP_WAITING' });
+  if (shouldAutoReloadForUpdate()) {
+    notifyAppUpdate(showToast);
+    window.setTimeout(() => window.location.reload(), 300);
+  }
+}
+
+function watchServiceWorkerUpdates(registration, showToast) {
+  if (!registration) return;
+
+  if (registration.waiting && registration.active) {
+    activateWaitingServiceWorker(registration, showToast);
+  }
+
+  registration.addEventListener('updatefound', () => {
+    const installing = registration.installing;
+    if (!installing) return;
+
+    installing.addEventListener('statechange', () => {
+      if (installing.state === 'installed' && registration.waiting) {
+        activateWaitingServiceWorker(registration, showToast);
+      }
+    });
+  });
+}
+
 export function initPWAInstall() {
   window.addEventListener('beforeinstallprompt', (event) => {
     event.preventDefault();
@@ -63,7 +108,7 @@ export function initPWAInstall() {
   updateInstallUI();
 }
 
-export function registerServiceWorker() {
+export function registerServiceWorker(options = {}) {
   if (!('serviceWorker' in navigator)) return;
 
   const isLocalDev = ['localhost', '127.0.0.1', '::1'].includes(window.location.hostname);
@@ -74,8 +119,26 @@ export function registerServiceWorker() {
     return;
   }
 
+  const showToast = options.showToast;
+
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('./sw.js', { scope: './' })
+      .then((registration) => {
+        watchServiceWorkerUpdates(registration, showToast);
+        registration.update().catch((error) => {
+          console.warn('Service worker update check failed', error);
+        });
+      })
       .catch((err) => console.warn('Service worker registration failed', err));
   });
+
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!pendingUpdateRegistration || !shouldAutoReloadForUpdate()) return;
+    pendingUpdateRegistration = null;
+    window.location.reload();
+  });
+}
+
+export function initBuildMetadata() {
+  renderBuildInfo();
 }

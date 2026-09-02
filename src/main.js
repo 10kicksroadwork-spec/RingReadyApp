@@ -1,5 +1,5 @@
 import './style.css';
-import { initPWAInstall, registerServiceWorker } from './pwa.js';
+import { initPWAInstall, initBuildMetadata, registerServiceWorker } from './pwa.js';
 import { initAthleteShell } from './shell.js';
 import { enforceAthleteOnboarding, installSignupNameCapture } from './onboarding.js';
 import { openCoachPreviewIfRequested } from './coach-preview.js';
@@ -266,8 +266,9 @@ function initReadabilityEnhancements() {
 }
 
 async function init() {
-  registerServiceWorker();
+  registerServiceWorker({ showToast });
   initPWAInstall();
+  initBuildMetadata();
   initSyncControls({ showToast });
   installSignupNameCapture();
   await initAthleteShell({ showToast, showScreen, setWorkoutContext, showSavedWorkoutResult });

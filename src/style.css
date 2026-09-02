@@ -2455,6 +2455,18 @@
     transform: scale(0.98);
   }
 
+  .drawer-build-info {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    color: #6f6f6f;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 10px;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    text-align: center;
+  }
+
   .empty-state {
     border: 1px dashed var(--grey);
     border-radius: 12px;
