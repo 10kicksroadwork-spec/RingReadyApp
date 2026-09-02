@@ -20,9 +20,9 @@ function persistJSON(key, value) {
   const result = writeJSON(key, value);
   if (!result.ok) {
     console.warn(`Could not write ${key}`, result.error);
-    return false;
+    return { logicalOk: false, persisted: false };
   }
-  return result.persisted === true;
+  return { logicalOk: true, persisted: result.persisted === true };
 }
 
 function cloneSessionData(data) {
@@ -61,14 +61,14 @@ export function persistSessionRecord(record) {
     const sessions = readJSON(STORAGE_KEY, []);
     sessions.unshift(record);
     if (sessions.length > MAX_STORED_SESSIONS) sessions.length = MAX_STORED_SESSIONS;
-    const localCacheOk = persistJSON(STORAGE_KEY, sessions);
-    if (!localCacheOk) {
+    const cache = persistJSON(STORAGE_KEY, sessions);
+    if (!cache.persisted) {
       console.warn('Could not save session history locally');
     }
-    return { record, localCacheOk };
+    return { record, localCacheOk: cache.persisted, ...cache };
   } catch (err) {
     console.warn('Could not save session history', err);
-    return { record, localCacheOk: false };
+    return { record, localCacheOk: false, logicalOk: false, persisted: false };
   }
 }
 
@@ -93,17 +93,22 @@ export function finalizeWorkoutCompletionRecord(record) {
 export function persistWorkoutCompletion(record) {
   const finalized = finalizeWorkoutCompletionRecord(record);
   if (!finalized) {
-    return { record: null, localCacheOk: false };
+    return { record: null, localCacheOk: false, logicalOk: false, persisted: false };
   }
 
   const completions = getWorkoutCompletions();
   completions[finalized.completionKey] = finalized;
-  const localCacheOk = persistJSON(WORKOUT_COMPLETIONS_STORAGE_KEY, completions);
+  const cache = persistJSON(WORKOUT_COMPLETIONS_STORAGE_KEY, completions);
   const context = record?.workoutContext || record?.cfg?.workoutContext || {};
-  if (localCacheOk) {
+  if (cache.logicalOk) {
     clearWorkoutCompletionClearedMarker(context.weekIndex, context.workoutIndex);
   }
-  return { record: finalized, localCacheOk };
+  return {
+    record: finalized,
+    localCacheOk: cache.persisted,
+    logicalOk: cache.logicalOk,
+    persisted: cache.persisted,
+  };
 }
 
 export function getWorkoutCompletionKey(weekIndex, workoutIndex) {
@@ -160,11 +165,11 @@ export function markWorkoutCompletionCleared(weekIndex, workoutIndex) {
 
 export function clearWorkoutCompletionClearedMarker(weekIndex, workoutIndex) {
   const key = getWorkoutCompletionKey(weekIndex, workoutIndex);
-  if (!key) return;
+  if (!key) return { logicalOk: false, persisted: false };
   const cleared = getClearedWorkoutCompletions();
-  if (!(key in cleared)) return;
+  if (!(key in cleared)) return { logicalOk: true, persisted: true };
   delete cleared[key];
-  persistJSON(CLEARED_COMPLETIONS_KEY, cleared);
+  return persistJSON(CLEARED_COMPLETIONS_KEY, cleared);
 }
 
 export function saveWorkoutCompletion(record) {
@@ -173,10 +178,10 @@ export function saveWorkoutCompletion(record) {
 
 export function removeWorkoutCompletion(weekIndex, workoutIndex) {
   const key = getWorkoutCompletionKey(weekIndex, workoutIndex);
-  if (!key) return false;
+  if (!key) return { logicalOk: false, persisted: false };
 
   const completions = getWorkoutCompletions();
-  if (!completions[key]) return false;
+  if (!completions[key]) return { logicalOk: false, persisted: false };
 
   delete completions[key];
   return persistJSON(WORKOUT_COMPLETIONS_STORAGE_KEY, completions);

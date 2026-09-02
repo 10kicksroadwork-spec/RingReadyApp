@@ -13,6 +13,7 @@ export const STORAGE_ERROR = {
 };
 
 const PROBE_KEY = '__ring_ready_storage_probe__';
+const VOLATILE_TOMBSTONE = Symbol('deleted');
 
 let storageAvailableCache = null;
 const volatileStorage = new Map();
@@ -76,6 +77,7 @@ function unavailableResult(fallbackValue = null, error = null) {
     persisted: false,
     volatile: false,
     source: null,
+    logicalOk: false,
   };
 }
 
@@ -88,6 +90,7 @@ function failureResult(error, fallbackValue = null) {
     persisted: false,
     volatile: false,
     source: null,
+    logicalOk: false,
   };
 }
 
@@ -99,6 +102,7 @@ function successResult(value, extras = {}) {
     persisted: true,
     volatile: false,
     source: 'persistent',
+    logicalOk: true,
     ...extras,
   };
 }
@@ -112,7 +116,16 @@ function volatileSuccessResult(value, error = null) {
     persisted: false,
     volatile: true,
     source: 'memory',
+    logicalOk: true,
   };
+}
+
+function isVolatileTombstone(value) {
+  return value === VOLATILE_TOMBSTONE;
+}
+
+function setVolatileTombstone(key) {
+  volatileStorage.set(key, VOLATILE_TOMBSTONE);
 }
 
 function storeVolatileValue(key, value) {
@@ -121,6 +134,10 @@ function storeVolatileValue(key, value) {
 
 function clearVolatileValue(key) {
   volatileStorage.delete(key);
+}
+
+function isKeyTombstoned(key) {
+  return volatileStorage.has(key) && isVolatileTombstone(volatileStorage.get(key));
 }
 
 export function resetStorageAvailabilityCache() {
@@ -133,7 +150,13 @@ export function resetVolatileStorageForTest() {
 
 export function hasVolatileStorageKey(key) {
   const normalizedKey = String(key || '').trim();
-  return normalizedKey ? volatileStorage.has(normalizedKey) : false;
+  if (!normalizedKey || !volatileStorage.has(normalizedKey)) return false;
+  return !isVolatileTombstone(volatileStorage.get(normalizedKey));
+}
+
+export function isStorageKeyTombstoned(key) {
+  const normalizedKey = String(key || '').trim();
+  return normalizedKey ? isKeyTombstoned(normalizedKey) : false;
 }
 
 export function isStorageAvailable() {
@@ -171,7 +194,11 @@ export function getStorageItem(key, fallback = null) {
   }
 
   if (volatileStorage.has(normalizedKey)) {
-    return volatileSuccessResult(volatileStorage.get(normalizedKey));
+    const volatileEntry = volatileStorage.get(normalizedKey);
+    if (isVolatileTombstone(volatileEntry)) {
+      return successResult(fallback, { persisted: false, volatile: true, source: 'memory', logicalOk: true });
+    }
+    return volatileSuccessResult(volatileEntry);
   }
 
   const backend = getStorageBackend();
@@ -219,16 +246,20 @@ export function removeStorageKey(key) {
     return failureResult({ code: STORAGE_ERROR.INVALID_KEY, message: 'Storage key is required' });
   }
 
-  clearVolatileValue(normalizedKey);
+  setVolatileTombstone(normalizedKey);
 
   const backend = getStorageBackend();
-  if (!backend.ok) return unavailableResult(null, backend.error);
+  if (!backend.ok) {
+    return volatileSuccessResult(true, backend.error);
+  }
+
   try {
     backend.storage.removeItem(normalizedKey);
+    clearVolatileValue(normalizedKey);
     return successResult(true);
   } catch (error) {
     console.warn(`Could not remove storage key ${normalizedKey}`, error);
-    return failureResult(error);
+    return volatileSuccessResult(true, error);
   }
 }
 
@@ -236,7 +267,8 @@ export function listStorageKeys(prefix = '') {
   const normalizedPrefix = String(prefix || '');
   const keys = new Set();
 
-  volatileStorage.forEach((_value, key) => {
+  volatileStorage.forEach((value, key) => {
+    if (isVolatileTombstone(value)) return;
     if (!normalizedPrefix || key.startsWith(normalizedPrefix)) keys.add(key);
   });
 
@@ -250,6 +282,7 @@ export function listStorageKeys(prefix = '') {
     for (let index = 0; index < backend.storage.length; index += 1) {
       const key = backend.storage.key(index);
       if (!key) continue;
+      if (isKeyTombstoned(key)) continue;
       if (!normalizedPrefix || key.startsWith(normalizedPrefix)) keys.add(key);
     }
     return successResult([...keys]);
@@ -263,16 +296,20 @@ export function listStorageKeys(prefix = '') {
 export function readStorageJSON(key, fallback) {
   const item = getStorageItem(key, null);
   if (!item.ok) return failureResult(item.error, fallback);
-  if (item.value === null) return successResult(fallback, {
-    persisted: item.persisted,
-    volatile: item.volatile,
-    source: item.source,
-  });
+  if (item.value === null) {
+    return successResult(fallback, {
+      persisted: item.persisted,
+      volatile: item.volatile,
+      source: item.source,
+      logicalOk: item.logicalOk,
+    });
+  }
   try {
     return successResult(JSON.parse(item.value), {
       persisted: item.persisted,
       volatile: item.volatile,
       source: item.source,
+      logicalOk: item.logicalOk,
     });
   } catch (error) {
     console.warn(`Could not parse storage JSON for ${key}`, error);
