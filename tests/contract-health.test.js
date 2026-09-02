@@ -13,13 +13,16 @@ import {
   fetchHealthPayload,
 } from '../src/contract-health.js';
 
+const validHealth = {
+  ok: true,
+  service: 'ringready',
+  buildSha: 'abc1234',
+  proofContractVersion: 2,
+};
+
 describe('contract health evaluation', () => {
   it('returns ok when build and proof contract match', () => {
-    const result = evaluateContractHealth({
-      ok: true,
-      buildSha: 'abc1234',
-      proofContractVersion: 2,
-    });
+    const result = evaluateContractHealth(validHealth);
 
     expect(result.status).toBe('ok');
     expect(result.clientBuild).toBe('abc1234');
@@ -28,8 +31,7 @@ describe('contract health evaluation', () => {
 
   it('returns mismatch when proof contract differs', () => {
     const result = evaluateContractHealth({
-      ok: true,
-      buildSha: 'abc1234',
+      ...validHealth,
       proofContractVersion: 3,
     });
 
@@ -40,9 +42,8 @@ describe('contract health evaluation', () => {
 
   it('returns mismatch when deployed build differs', () => {
     const result = evaluateContractHealth({
-      ok: true,
+      ...validHealth,
       buildSha: 'def5678',
-      proofContractVersion: 2,
     });
 
     expect(result.status).toBe('mismatch');
@@ -52,6 +53,64 @@ describe('contract health evaluation', () => {
   it('returns unavailable when health payload is not ok', () => {
     const result = evaluateContractHealth({ ok: false });
     expect(result.status).toBe('unavailable');
+  });
+
+  it('returns unavailable when proof contract version is missing', () => {
+    const result = evaluateContractHealth({
+      ok: true,
+      service: 'ringready',
+      buildSha: 'abc1234',
+    });
+
+    expect(result.status).toBe('unavailable');
+    expect(result.reason).toBe('invalid_health_schema');
+  });
+
+  it('returns unavailable when buildSha is missing', () => {
+    const result = evaluateContractHealth({
+      ok: true,
+      service: 'ringready',
+      proofContractVersion: 2,
+    });
+
+    expect(result.status).toBe('unavailable');
+    expect(result.reason).toBe('invalid_health_schema');
+  });
+
+  it('returns unavailable when service is wrong', () => {
+    const result = evaluateContractHealth({
+      ok: true,
+      service: 'other',
+      buildSha: 'abc1234',
+      proofContractVersion: 2,
+    });
+
+    expect(result.status).toBe('unavailable');
+    expect(result.reason).toBe('invalid_health_schema');
+  });
+
+  it('returns unavailable for non-integer contract version', () => {
+    const result = evaluateContractHealth({
+      ok: true,
+      service: 'ringready',
+      buildSha: 'abc1234',
+      proofContractVersion: 2.5,
+    });
+
+    expect(result.status).toBe('unavailable');
+    expect(result.reason).toBe('invalid_health_schema');
+  });
+
+  it('returns unavailable for zero or negative contract version', () => {
+    expect(evaluateContractHealth({
+      ...validHealth,
+      proofContractVersion: 0,
+    }).reason).toBe('invalid_health_schema');
+
+    expect(evaluateContractHealth({
+      ...validHealth,
+      proofContractVersion: -1,
+    }).reason).toBe('invalid_health_schema');
   });
 });
 
@@ -126,12 +185,28 @@ describe('checkRuntimeContract', () => {
     expect(result.error).toBe('network');
   });
 
+  it('returns unavailable for valid JSON with invalid schema', async () => {
+    const result = await checkRuntimeContract({
+      fetchImpl: async () => ({
+        ok: true,
+        json: async () => ({
+          ok: true,
+          buildSha: 'abc1234',
+        }),
+      }),
+    });
+
+    expect(result.status).toBe('unavailable');
+    expect(result.reason).toBe('invalid_health_schema');
+  });
+
   it('returns mismatch from live health payload', async () => {
     const result = await checkRuntimeContract({
       fetchImpl: async () => ({
         ok: true,
         json: async () => ({
           ok: true,
+          service: 'ringready',
           buildSha: 'def5678',
           proofContractVersion: 3,
         }),
@@ -151,6 +226,7 @@ describe('assertProofContractCurrent', () => {
         ok: true,
         json: async () => ({
           ok: true,
+          service: 'ringready',
           buildSha: 'def5678',
           proofContractVersion: 3,
         }),
@@ -169,5 +245,20 @@ describe('assertProofContractCurrent', () => {
     });
 
     expect(result.status).toBe('unavailable');
+  });
+
+  it('does not throw when health schema is invalid', async () => {
+    const result = await assertProofContractCurrent({
+      fetchImpl: async () => ({
+        ok: true,
+        json: async () => ({
+          ok: true,
+          buildSha: 'abc1234',
+        }),
+      }),
+    });
+
+    expect(result.status).toBe('unavailable');
+    expect(result.reason).toBe('invalid_health_schema');
   });
 });

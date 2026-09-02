@@ -346,6 +346,8 @@ export function setRing(progress, isSprint) {
   ring.setAttribute('class', 'ring-progress ' + (isSprint ? 'sprint-ring' : 'rest-ring'));
 }
 
+let toastTimer = null;
+
 export function showToast(msg, options = {}) {
   const t = document.getElementById('toast');
   const readable = Boolean(options.readable) || String(msg).length > 48;
@@ -353,9 +355,14 @@ export function showToast(msg, options = {}) {
   t.classList.toggle('toast-readable', readable);
   t.classList.add('show');
   const duration = readable ? 4500 : 2500;
-  setTimeout(() => {
+  if (toastTimer) {
+    clearTimeout(toastTimer);
+    toastTimer = null;
+  }
+  toastTimer = setTimeout(() => {
     t.classList.remove('show');
     t.classList.remove('toast-readable');
+    toastTimer = null;
   }, duration);
 }
 

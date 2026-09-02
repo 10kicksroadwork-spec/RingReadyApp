@@ -6,6 +6,19 @@ export const CONTRACT_UPDATE_MESSAGE =
 export const HEALTH_PATH = '/api/health';
 export const HEALTH_TIMEOUT_MS = 4000;
 
+function isValidHealthSchema(healthBody) {
+  const serverBuild = typeof healthBody?.buildSha === 'string'
+    ? healthBody.buildSha.trim()
+    : '';
+  const serverProofContract = Number(healthBody?.proofContractVersion);
+
+  return healthBody?.ok === true
+    && healthBody?.service === 'ringready'
+    && Boolean(serverBuild)
+    && Number.isInteger(serverProofContract)
+    && serverProofContract > 0;
+}
+
 export async function fetchHealthPayload(options = {}) {
   const {
     timeoutMs = HEALTH_TIMEOUT_MS,
@@ -57,11 +70,16 @@ export function evaluateContractHealth(healthBody, client = {}) {
     client.clientProofContract ?? PROOF_CONTRACT_VERSION,
   );
 
+  const serverBuild = typeof healthBody?.buildSha === 'string'
+    ? healthBody.buildSha.trim()
+    : '';
+  const serverProofContract = Number(healthBody?.proofContractVersion);
+
   const base = {
     clientBuild,
     clientProofContract,
-    serverBuild: String(healthBody?.buildSha || ''),
-    serverProofContract: Number(healthBody?.proofContractVersion),
+    serverBuild,
+    serverProofContract,
   };
 
   if (!healthBody || healthBody.ok !== true) {
@@ -72,11 +90,16 @@ export function evaluateContractHealth(healthBody, client = {}) {
     };
   }
 
-  const serverProofContract = base.serverProofContract;
-  const proofMismatch = Number.isFinite(serverProofContract)
-    && serverProofContract !== clientProofContract;
+  if (!isValidHealthSchema(healthBody)) {
+    return {
+      ...base,
+      status: 'unavailable',
+      reason: 'invalid_health_schema',
+    };
+  }
 
-  const serverBuild = base.serverBuild;
+  const proofMismatch = serverProofContract !== clientProofContract;
+
   const buildMismatch = Boolean(
     serverBuild
     && serverBuild !== 'dev'

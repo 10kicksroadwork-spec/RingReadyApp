@@ -99,6 +99,7 @@ describe('proof contract gate', () => {
       ok: true,
       json: async () => ({
         ok: true,
+        service: 'ringready',
         buildSha: 'def5678',
         proofContractVersion: 3,
       }),
@@ -128,6 +129,24 @@ describe('proof contract gate', () => {
     expect(storageUpload).toHaveBeenCalledTimes(1);
     expect(rpc).toHaveBeenCalledTimes(1);
   });
+
+  it('attempts proof upload when health schema is invalid', async () => {
+    globalThis.fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        buildSha: 'abc1234',
+      }),
+    }));
+
+    await seedProcessedProof('detail');
+
+    await expect(ensureWorkoutProofUploaded('detail', 'record-1')).resolves.toMatchObject({
+      id: 'attachment-1',
+    });
+    expect(storageUpload).toHaveBeenCalledTimes(1);
+    expect(rpc).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('service worker runtime api bypass', () => {
@@ -139,12 +158,95 @@ describe('service worker runtime api bypass', () => {
 });
 
 describe('api health handler', () => {
-  it('returns a secret-free deployment contract payload', async () => {
+  const envKeys = [
+    'VERCEL_GIT_COMMIT_SHA',
+    'VERCEL_ENV',
+    'VITE_SUPABASE_URL',
+    'RING_READY_SUPABASE_URL',
+  ];
+
+  function saveEnv() {
+    return Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
+  }
+
+  function restoreEnv(saved) {
+    for (const key of envKeys) {
+      if (saved[key] === undefined) delete process.env[key];
+      else process.env[key] = saved[key];
+    }
+  }
+
+  async function loadHealthHandler() {
+    vi.resetModules();
+    return (await import('../api/health.js')).default;
+  }
+
+  it('returns athlete Supabase ref from VITE_SUPABASE_URL only', async () => {
+    const saved = saveEnv();
     process.env.VERCEL_GIT_COMMIT_SHA = 'e42525d952904a52e2ca88a10681105d1deba566';
     process.env.VERCEL_ENV = 'production';
+    process.env.VITE_SUPABASE_URL = 'https://athleteproject.supabase.co';
+    delete process.env.RING_READY_SUPABASE_URL;
+
+    const health = await loadHealthHandler();
+    const res = {
+      setHeader() {},
+      statusCode: 200,
+      body: null,
+      status(code) {
+        this.statusCode = code;
+        return this;
+      },
+      json(payload) {
+        this.body = payload;
+        return this;
+      },
+    };
+
+    await health({}, res);
+
+    expect(res.body.supabaseProjectRef).toBe('athleteproject');
+    expect(res.body.syncRelaySupabaseProjectRef).toBeNull();
+    expect(res.body.supabaseRefsMatch).toBeNull();
+    restoreEnv(saved);
+  });
+
+  it('reports separate athlete and relay Supabase refs when they differ', async () => {
+    const saved = saveEnv();
+    process.env.VITE_SUPABASE_URL = 'https://athleteproject.supabase.co';
+    process.env.RING_READY_SUPABASE_URL = 'https://relayproject.supabase.co';
+
+    const health = await loadHealthHandler();
+    const res = {
+      setHeader() {},
+      statusCode: 200,
+      body: null,
+      status(code) {
+        this.statusCode = code;
+        return this;
+      },
+      json(payload) {
+        this.body = payload;
+        return this;
+      },
+    };
+
+    await health({}, res);
+
+    expect(res.body.supabaseProjectRef).toBe('athleteproject');
+    expect(res.body.syncRelaySupabaseProjectRef).toBe('relayproject');
+    expect(res.body.supabaseRefsMatch).toBe(false);
+    restoreEnv(saved);
+  });
+
+  it('returns a secret-free deployment contract payload', async () => {
+    const saved = saveEnv();
+    process.env.VERCEL_GIT_COMMIT_SHA = 'e42525d952904a52e2ca88a10681105d1deba566';
+    process.env.VERCEL_ENV = 'production';
+    process.env.VITE_SUPABASE_URL = 'https://abcprojectref.supabase.co';
     process.env.RING_READY_SUPABASE_URL = 'https://abcprojectref.supabase.co';
 
-    const health = (await import('../api/health.js')).default;
+    const health = await loadHealthHandler();
     const headers = {};
     const res = {
       setHeader(name, value) {
@@ -164,7 +266,7 @@ describe('api health handler', () => {
 
     await health({}, res);
 
-    expect(headers['Cache-Control']).toBe('no-store');
+    expect(headers['Cache-Control']).toBe('no-store, max-age=0');
     expect(res.body).toEqual({
       ok: true,
       service: 'ringready',
@@ -172,7 +274,10 @@ describe('api health handler', () => {
       proofContractVersion: 2,
       environment: 'production',
       supabaseProjectRef: 'abcprojectref',
+      syncRelaySupabaseProjectRef: 'abcprojectref',
+      supabaseRefsMatch: true,
     });
     expect(JSON.stringify(res.body)).not.toMatch(/anon[_-]?key|service[_-]?role|secret|password/i);
+    restoreEnv(saved);
   });
 });
