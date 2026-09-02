@@ -45,7 +45,7 @@ import {
   getAthleteProfile,
   saveAthleteProfile,
 } from './sync.js';
-import { getWorkoutCompletion, isWorkoutCompletionCleared, markWorkoutCompletionCleared, removeWorkoutCompletion, saveWorkoutCompletion } from './storage.js';
+import { getWorkoutCompletion, getWorkoutCompletions, isWorkoutCompletionCleared, markWorkoutCompletionCleared, removeWorkoutCompletion, saveWorkoutCompletion, finalizeWorkoutCompletionRecord, persistWorkoutCompletion } from './storage.js';
 import { parseDurationMinutes, sanitizeDurationInput } from './workout.js';
 import {
   calculateZoneBPM,
@@ -139,6 +139,8 @@ const WORKOUT_NOTES_STORAGE_KEY = 'ringReadyWorkoutNotes';
 const CAMP_RESET_SEEN_KEY = 'ringReadyCampResetAtSeen';
 const WORKOUT_NOTE_MAX_LENGTH = 200;
 const DETAIL_MODALITY_NOTE_KEY = 'ringReadyModalitySwitchNoteSeen';
+
+let hydrationGeneration = 0;
 
 let activeWeekIndex = Number(getStorageItem(WEEK_INDEX_KEY).value || 0);
 let scMode = getStorageItem(SC_MODE_STORAGE_KEY).value || 'Gym Machines';
@@ -438,34 +440,47 @@ function showAuthScreen(message = '') {
   shellHooks?.showScreen('auth');
   setActiveNavigation('');
 }
-async function hydrateCloudData() {
+function invalidateCloudHydration() {
+  hydrationGeneration += 1;
+}
+
+function prepareAccountSwitchSafety() {
   if (!isSupabaseConfigured || !getCurrentUser()) return;
+  invalidateCloudHydration();
   const user = getCurrentUser();
   const lastUserId = getStorageItem(AUTH_USER_STORAGE_KEY).value;
   if (shouldClearSharedStateOnSwitch(lastUserId, user.id)) clearSharedLocalState();
   setStorageItem(AUTH_USER_STORAGE_KEY, user.id);
   quarantineLegacySyncQueue();
+}
+
+function shouldApplyCloudHydration(userId, generation) {
+  return String(getCurrentUser()?.id || '') === String(userId || '') && generation === hydrationGeneration;
+}
+
+async function boundedCloudLoad(label, loader, fallback) {
+  try {
+    return await withOperationTimeout(loader(), {
+      timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_HYDRATION,
+      operation: `cloud_hydration_${label}`,
+    });
+  } catch (error) {
+    console.warn(`Cloud ${label} load failed`, error);
+    return fallback;
+  }
+}
+
+async function applyCloudHydrationResults(userId, generation, {
+  cloudProfile,
+  cloudHRInfo,
+  cloudCompletions,
+  cloudSessions,
+  cloudMileTest,
+} = {}) {
+  if (!shouldApplyCloudHydration(userId, generation)) return;
 
   const localProfile = getAthleteProfile();
   const localHRInfo = getHRInfo();
-
-  const cloudResults = await Promise.allSettled([
-    loadCloudProfile(),
-    loadCloudHRInfo(),
-    loadCloudWorkoutCompletions(),
-    loadCloudSprintSessions(),
-    loadCloudMileTest(),
-  ]);
-  const readCloudResult = (result, fallback, label) => {
-    if (result.status === 'fulfilled') return result.value ?? fallback;
-    console.warn(`Cloud ${label} load failed`, result.reason);
-    return fallback;
-  };
-  const cloudProfile = readCloudResult(cloudResults[0], null, 'profile');
-  const cloudHRInfo = readCloudResult(cloudResults[1], null, 'HR info');
-  const cloudCompletions = readCloudResult(cloudResults[2], {}, 'workout completions');
-  const cloudSessions = readCloudResult(cloudResults[3], [], 'sprint sessions');
-  const cloudMileTest = readCloudResult(cloudResults[4], null, 'mile test');
 
   if (cloudProfile && hasProfileData(cloudProfile)) {
     applyCampResetIfNeeded(cloudProfile);
@@ -486,6 +501,8 @@ async function hydrateCloudData() {
     }
   }
 
+  if (!shouldApplyCloudHydration(userId, generation)) return;
+
   if (cloudHRInfo && hasCustomHRInfo(cloudHRInfo)) {
     const mergedHR = mergeHRByTimestamp(localHRInfo, cloudHRInfo, HR_INFO_DEFAULTS);
     saveHRInfo(mergedHR, { preserveUpdatedAt: true });
@@ -504,6 +521,8 @@ async function hydrateCloudData() {
     }
   }
 
+  if (!shouldApplyCloudHydration(userId, generation)) return;
+
   const freshLocalCompletions = readJSON(WORKOUT_COMPLETIONS_STORAGE_KEY, {});
   const freshLocalSessions = getSessionHistory();
   const freshLocalMileTest = getMileTestResult();
@@ -516,7 +535,6 @@ async function hydrateCloudData() {
   if (latestMileTest) persistJSON(MILE_TEST_STORAGE_KEY, latestMileTest);
   else removeStorageKey(MILE_TEST_STORAGE_KEY);
 
-  // Re-attempt cloud deletes for workouts cleared on this device that still exist remotely.
   const staleCloudClears = Object.keys(cloudCompletions || {}).filter((key) => {
     const cloudStamp = cloudCompletions[key]?.updatedAt || cloudCompletions[key]?.completedAt || '';
     return isWorkoutCompletionCleared(key, null, cloudStamp);
@@ -528,6 +546,8 @@ async function hydrateCloudData() {
     }));
   }
 
+  if (!shouldApplyCloudHydration(userId, generation)) return;
+
   const backfillCompletions = completionsNeedingCloudBackfill(mergedCompletions, cloudCompletions);
   await saveTrainingDataToCloud({
     completions: backfillCompletions,
@@ -537,7 +557,138 @@ async function hydrateCloudData() {
     }),
     mileTest: cloudMileTest ? null : latestMileTest,
   });
+
+  if (shouldApplyCloudHydration(userId, generation)) {
+    renderAllPages();
+  }
 }
+
+async function hydrateCloudDataInBackground() {
+  if (!isSupabaseConfigured || !getCurrentUser()) return;
+  const userId = getCurrentUser().id;
+  const generation = hydrationGeneration;
+
+  const [
+    cloudProfile,
+    cloudHRInfo,
+    cloudCompletions,
+    cloudSessions,
+    cloudMileTest,
+  ] = await Promise.all([
+    boundedCloudLoad('profile', loadCloudProfile, null),
+    boundedCloudLoad('hr_info', loadCloudHRInfo, null),
+    boundedCloudLoad('workout_completions', loadCloudWorkoutCompletions, {}),
+    boundedCloudLoad('sprint_sessions', loadCloudSprintSessions, []),
+    boundedCloudLoad('mile_test', loadCloudMileTest, null),
+  ]);
+
+  await applyCloudHydrationResults(userId, generation, {
+    cloudProfile,
+    cloudHRInfo,
+    cloudCompletions,
+    cloudSessions,
+    cloudMileTest,
+  });
+}
+
+function enterSignedInAthleteHome() {
+  prepareAccountSwitchSafety();
+  enterAppHome();
+  hydrateCloudDataInBackground().catch((error) => {
+    console.warn('Background cloud hydration failed', error);
+  });
+}
+
+function enterSignedInCoachHome() {
+  prepareCoachSession();
+  enterAppHome();
+}
+
+async function rehydrateWorkoutCompletionFromCloud(record) {
+  const context = record?.workoutContext || record?.cfg?.workoutContext || {};
+  const weekIndex = Number(context.weekIndex);
+  const workoutIndex = Number(context.workoutIndex);
+  if (!Number.isFinite(weekIndex) || !Number.isFinite(workoutIndex)) return false;
+  const cloudCompletions = await loadCloudWorkoutCompletions();
+  const key = `${weekIndex}:${workoutIndex}`;
+  const cloudRecord = cloudCompletions?.[key];
+  if (!cloudRecord) return false;
+  const completions = getWorkoutCompletions();
+  completions[key] = cloudRecord;
+  return persistJSON(WORKOUT_COMPLETIONS_STORAGE_KEY, completions);
+}
+
+async function rehydrateMileTestFromCloud() {
+  const cloudMileTest = await loadCloudMileTest();
+  if (!cloudMileTest) return false;
+  const localOk = persistJSON(MILE_TEST_STORAGE_KEY, cloudMileTest);
+  const cloudHR = await loadCloudHRInfo();
+  if (cloudHR && hasCustomHRInfo(cloudHR)) {
+    saveHRInfo(cloudHR, { preserveUpdatedAt: true });
+  }
+  return localOk;
+}
+
+async function persistSignedInWorkoutCompletion(record, {
+  existing = null,
+  isNewProof = false,
+  successToast = 'WORKOUT SAVED TO ACCOUNT',
+  updateToast = 'WORKOUT UPDATED IN ACCOUNT',
+} = {}) {
+  const finalized = finalizeWorkoutCompletionRecord(record);
+  if (!finalized) {
+    return { success: false, record: null, cloudSaved: false, localCacheFailed: false };
+  }
+
+  const signedIn = isSupabaseConfigured && getCurrentUser();
+  if (!signedIn) {
+    const local = persistWorkoutCompletion(finalized);
+    return {
+      success: !!local.record,
+      record: local.record,
+      cloudSaved: false,
+      localCacheFailed: !local.localCacheOk,
+    };
+  }
+
+  try {
+    await withOperationTimeout(
+      saveCloudWorkoutCompletion(finalized),
+      { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_COMPLETION, operation: 'cloud_completion' },
+    );
+  } catch (error) {
+    console.warn('Cloud workout completion save failed', error);
+    return { success: false, record: finalized, cloudSaved: false, localCacheFailed: false, error };
+  }
+
+  const local = persistWorkoutCompletion(finalized);
+  const localCacheFailed = !local.localCacheOk;
+  if (localCacheFailed) {
+    await rehydrateWorkoutCompletionFromCloud(finalized).catch((error) => {
+      console.warn('Could not rehydrate workout completion after local cache failure', error);
+    });
+    shellHooks?.showToast?.('SAVED TO ACCOUNT · LOCAL CACHE WILL REFRESH');
+  } else {
+    shellHooks?.showToast?.(existing ? updateToast : successToast);
+  }
+
+  const savedRecord = local.record || finalized;
+  if (!existing && savedRecord?.workoutLog) {
+    enqueueDailyWorkoutForSync(savedRecord.workoutLog, savedRecord.workoutContext, savedRecord.id);
+  }
+  if (isNewProof && savedRecord?.attachment) {
+    enqueueWorkoutProofForSync(savedRecord.attachment);
+  }
+  if (savedRecord) flushQueuedEvent('CLOUD SAVED');
+
+  return {
+    success: true,
+    record: savedRecord,
+    cloudSaved: true,
+    localCacheFailed,
+  };
+}
+
 async function handleAuthSubmit(event) {
   event.preventDefault();
   if (!isSupabaseConfigured) {
@@ -587,9 +738,8 @@ async function handleAuthSubmit(event) {
       await updatePassword(password);
       passwordRecoveryPending = false;
       clearAuthRedirectParams();
-      if (!isCoachUser()) await hydrateCloudData();
-      else prepareCoachSession();
-      enterAppHome();
+      if (!isCoachUser()) enterSignedInAthleteHome();
+      else enterSignedInCoachHome();
       shellHooks?.showToast?.('PASSWORD UPDATED');
     } catch (error) {
       setAuthStatus(cleanAuthError(error), true);
@@ -614,9 +764,8 @@ async function handleAuthSubmit(event) {
       setAuthStatus('Check your email to confirm the account, then sign in.');
       return;
     }
-    if (!isCoachUser()) await hydrateCloudData();
-    else prepareCoachSession();
-    enterAppHome();
+    if (!isCoachUser()) enterSignedInAthleteHome();
+    else enterSignedInCoachHome();
     shellHooks?.showToast?.(authMode === 'sign-up' ? 'ACCOUNT CREATED' : 'SIGNED IN');
   } catch (error) {
     setAuthStatus(cleanAuthError(error), true);
@@ -643,6 +792,7 @@ function openForgotPassword() {
 async function handleLogout() {
   try {
     closeWeekDrawer();
+    invalidateCloudHydration();
     await performSignOutCleanup({
       getCurrentUser,
       signOut,
@@ -673,6 +823,7 @@ function handleAuthStateChange(session, event) {
     return;
   }
   if (event === 'SIGNED_OUT' && isSupabaseConfigured) {
+    invalidateCloudHydration();
     passwordRecoveryPending = false;
     authMode = 'sign-in';
     showAuthScreen();
@@ -1406,29 +1557,20 @@ async function completeWorkoutFromDetail(weekIndex, workoutIndex) {
       shellHooks?.showToast?.(String(error?.message || error).toUpperCase());
       return;
     }
-    const completed = saveWorkoutCompletion(record);
-    let cloudSaved = false;
-    if (completed) {
-      try {
-        cloudSaved = await withOperationTimeout(
-          saveWorkoutCompletionToCloud(completed),
-          { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_COMPLETION, operation: 'cloud_completion' },
-        );
-      } catch (error) {
-        console.warn('Cloud workout completion save failed', error);
-      }
-    }
-    if (completed && !existing) {
-      enqueueDailyWorkoutForSync(workoutLog, record.workoutContext, record.id);
-    }
-    if (completed && isNewProof && record.attachment) enqueueWorkoutProofForSync(record.attachment);
-    if (completed) flushQueuedEvent('CLOUD SAVED');
+    const result = await persistSignedInWorkoutCompletion(record, {
+      existing,
+      isNewProof,
+      successToast: 'WORKOUT SAVED TO ACCOUNT',
+      updateToast: 'WORKOUT UPDATED IN ACCOUNT',
+    });
     renderShell();
     renderAthleteProfileDashboard();
     openWorkoutDetail(safeWeekIndex, safeWorkoutIndex);
-    if (!completed) shellHooks?.showToast?.('COULD NOT SAVE WORKOUT');
-    else if (cloudSaved) shellHooks?.showToast?.(existing ? 'WORKOUT UPDATED IN ACCOUNT' : 'WORKOUT SAVED TO ACCOUNT');
-    else shellHooks?.showToast?.(existing ? 'WORKOUT UPDATED' : 'WORKOUT COMPLETE');
+    if (!result.success) {
+      shellHooks?.showToast?.('COULD NOT SAVE WORKOUT');
+    } else if (!result.cloudSaved) {
+      shellHooks?.showToast?.(existing ? 'WORKOUT UPDATED' : 'WORKOUT COMPLETE');
+    }
   })).finally(() => updateDetailCompletionState());
 }
 async function clearCompletionFromDetail(weekIndex, workoutIndex) {
@@ -1516,20 +1658,18 @@ async function confirmSkipWorkoutFromDetail() {
   });
   if (existing?.id) record.id = existing.id;
 
-  const completed = saveWorkoutCompletion(record);
-  let cloudSaved = false;
-  if (completed) cloudSaved = await saveWorkoutCompletionToCloud(completed);
-  if (completed) {
-    enqueueDailyWorkoutForSync(record.workoutLog, record.workoutContext, record.id);
-    flushQueuedEvent('CLOUD SAVED');
-  }
+  const result = await persistSignedInWorkoutCompletion(record, {
+    existing,
+    isNewProof: false,
+    successToast: 'WORKOUT SKIPPED IN ACCOUNT',
+    updateToast: 'WORKOUT SKIPPED IN ACCOUNT',
+  });
   setDetailSkipCard(false);
   renderShell();
   renderAthleteProfileDashboard();
   openWorkoutDetail(weekIndex, workoutIndex);
-  if (!completed) shellHooks?.showToast?.('COULD NOT SAVE SKIP');
-  else if (cloudSaved) shellHooks?.showToast?.('WORKOUT SKIPPED IN ACCOUNT');
-  else shellHooks?.showToast?.('WORKOUT SKIPPED');
+  if (!result.success) shellHooks?.showToast?.('COULD NOT SAVE SKIP');
+  else if (!result.cloudSaved) shellHooks?.showToast?.('WORKOUT SKIPPED');
 }
 function renderHeaderProfile() {
   const chip = document.getElementById('header-athlete-name');
@@ -1943,20 +2083,35 @@ async function saveMileTestResult() {
       shellHooks?.showToast?.(String(error?.message || error).toUpperCase());
       return;
     }
-    persistJSON(MILE_TEST_STORAGE_KEY, result);
-    if (maxBpm > 0) saveHRInfo({ ...getHRInfo(), maxHr: maxBpm });
     let cloudSaved = false;
+    let localMileCacheFailed = false;
+    let localHrCacheFailed = false;
     if (isSupabaseConfigured && getCurrentUser()) {
       try {
         await withOperationTimeout((async () => {
           await saveCloudMileTest(result, getHRInfo(), testContext);
-          if (maxBpm > 0) await saveCloudHRInfo(getHRInfo());
+          if (maxBpm > 0) await saveCloudHRInfo({ ...getHRInfo(), maxHr: maxBpm });
         })(), { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_COMPLETION, operation: 'cloud_completion' });
         cloudSaved = true;
       } catch (error) {
         console.warn('Cloud mile test save failed', error);
+        shellHooks?.showToast?.('COULD NOT SAVE MILE TEST TO ACCOUNT');
+        return;
       }
     }
+
+    localMileCacheFailed = !persistJSON(MILE_TEST_STORAGE_KEY, result);
+    if (maxBpm > 0) {
+      const hrResult = writeJSON(HR_INFO_STORAGE_KEY, { ...getHRInfo(), maxHr: maxBpm, updatedAt: new Date().toISOString() });
+      localHrCacheFailed = !hrResult.ok;
+    }
+
+    if (cloudSaved && (localMileCacheFailed || localHrCacheFailed)) {
+      await rehydrateMileTestFromCloud().catch((error) => {
+        console.warn('Could not rehydrate mile test after local cache failure', error);
+      });
+    }
+
     if (getAthleteProfile().athleteName) {
       enqueueMileTestForSync(result, getHRInfo(), testContext);
       if (isNewProof && result.attachment) enqueueWorkoutProofForSync(result.attachment);
@@ -1966,8 +2121,13 @@ async function saveMileTestResult() {
     renderHRInfoPage();
     renderShell();
     renderAthleteProfileDashboard();
-    if (cloudSaved) shellHooks?.showToast?.(maxBpm > 0 ? 'MILE TEST SAVED TO ACCOUNT + MAX HR UPDATED' : 'MILE TEST SAVED TO ACCOUNT');
-    else shellHooks?.showToast?.(maxBpm > 0 ? 'MILE TEST SAVED + MAX HR UPDATED' : 'MILE TEST SAVED');
+    if (cloudSaved && (localMileCacheFailed || localHrCacheFailed)) {
+      shellHooks?.showToast?.('MILE TEST SAVED TO ACCOUNT · LOCAL CACHE WILL REFRESH');
+    } else if (cloudSaved) {
+      shellHooks?.showToast?.(maxBpm > 0 ? 'MILE TEST SAVED TO ACCOUNT + MAX HR UPDATED' : 'MILE TEST SAVED TO ACCOUNT');
+    } else {
+      shellHooks?.showToast?.(maxBpm > 0 ? 'MILE TEST SAVED + MAX HR UPDATED' : 'MILE TEST SAVED');
+    }
   })).finally(() => updateMileCompletionState());
 }
 function renderDrawerWeeks() {
@@ -2279,9 +2439,8 @@ export async function initAthleteShell(hooks) {
       openCoachPreviewIfRequested();
       return;
     }
-    if (!isCoachUser()) await hydrateCloudData();
-    else prepareCoachSession();
-    enterAppHome();
+    if (!isCoachUser()) enterSignedInAthleteHome();
+    else enterSignedInCoachHome();
     openCoachPreviewIfRequested();
   } catch (error) {
     console.warn('Supabase auth init failed', error);
@@ -2291,3 +2450,9 @@ export async function initAthleteShell(hooks) {
 }
 
 export { completeWorkoutFromDetail, saveMileTestResult };
+
+export const cloudHydrationTestHooks = {
+  shouldApplyCloudHydration,
+  invalidateCloudHydration,
+  getHydrationGeneration: () => hydrationGeneration,
+};
