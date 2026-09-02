@@ -118,7 +118,7 @@ import {
 } from './proof.js';
 import { performSignOutCleanup } from './logout.js';
 import { resolveCanonicalClientRecordId } from './proof-staging.js';
-import { isProofErrorDeterministic } from './proof-diagnostics.js';
+import { isProofErrorDeterministic, shouldRollbackProvisionalIdentity } from './proof-diagnostics.js';
 import { OPERATION_TIMEOUT_MS, withOperationTimeout } from './operation-timeout.js';
 import { runSingleFlight } from './single-flight.js';
 import { withSavingButton } from './ui.js';
@@ -1381,7 +1381,7 @@ async function completeWorkoutFromDetail(weekIndex, workoutIndex) {
         record.workoutLog = { ...record.workoutLog, proofPolicyVersion: PROOF_POLICY_VERSION, attachment };
       }
     } catch (error) {
-      if (identityStaging?.created && isProofErrorDeterministic(error)) {
+      if (identityStaging?.created && shouldRollbackProvisionalIdentity(error)) {
         await rollbackCloudWorkoutIdentity(record, identityStaging).catch((rollbackError) => {
           console.warn('Could not roll back provisional workout identity', rollbackError);
         });
@@ -1918,7 +1918,7 @@ async function saveMileTestResult() {
       result.attachment = await ensureWorkoutProofUploaded('mile', result.id);
       if (result.attachment) result.proofPolicyVersion = PROOF_POLICY_VERSION;
     } catch (error) {
-      if (identityStaging?.created && isProofErrorDeterministic(error)) {
+      if (identityStaging?.created && shouldRollbackProvisionalIdentity(error)) {
         await rollbackCloudMileTestIdentity(result, testContext, identityStaging).catch((rollbackError) => {
           console.warn('Could not roll back provisional mile test identity', rollbackError);
         });

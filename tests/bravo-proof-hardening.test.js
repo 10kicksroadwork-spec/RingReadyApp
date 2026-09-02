@@ -465,6 +465,7 @@ describe('Bravo proof upload pipeline', () => {
     await seedProcessedProof('detail');
     storageUpload.mockImplementationOnce(() => new Promise(() => {}));
 
+    const stateBefore = __getProofStateForTest('detail');
     ensureWorkoutProofUploaded('detail', 'record-1');
     await vi.waitFor(() => expect(canReplaceWorkoutProof('detail')).toBe(false));
 
@@ -473,8 +474,38 @@ describe('Bravo proof upload pipeline', () => {
       context: { campLength: 7, weekIndex: 0, workoutIndex: 1, workoutType: 'Threshold' },
     });
 
+    expect(__getProofStateForTest('detail')).toBe(stateBefore);
     expect(canReplaceWorkoutProof('detail')).toBe(false);
-    expect(__getProofStateForTest('detail').uploading).toBe(true);
+    expect(stateBefore.uploading).toBe(true);
+  });
+
+  it('reconciles and unlocks after reinit when upload completes', async () => {
+    mockHealthyContract();
+    await seedProcessedProof('detail');
+    let releaseUpload;
+    storageUpload.mockImplementationOnce(() => new Promise((resolve) => {
+      releaseUpload = () => resolve({ error: null });
+    }));
+
+    const stateBefore = __getProofStateForTest('detail');
+    const uploadPromise = ensureWorkoutProofUploaded('detail', 'record-1');
+    await vi.waitFor(() => expect(stateBefore.uploading).toBe(true));
+
+    initWorkoutProof('detail', {
+      proofKey: 'program:7:0:1',
+      context: { campLength: 7, weekIndex: 0, workoutIndex: 1, workoutType: 'Threshold' },
+    });
+    expect(__getProofStateForTest('detail')).toBe(stateBefore);
+
+    releaseUpload();
+    await uploadPromise;
+
+    expect(stateBefore.uploading).toBe(false);
+    expect(stateBefore.ambiguousRpcPending).toBeNull();
+    expect(stateBefore.processed).toBeNull();
+    expect(stateBefore.uploadId).toBeNull();
+    expect(stateBefore.existingAttachment).toMatchObject({ id: 'attachment-1' });
+    expect(canReplaceWorkoutProof('detail')).toBe(true);
   });
 
   it('treats rejected rpc transport failures as ambiguous without deleting storage', async () => {
@@ -500,8 +531,31 @@ describe('Bravo proof upload pipeline', () => {
 
     await expect(ensureWorkoutProofUploaded('detail', 'record-B')).rejects.toMatchObject({
       proofDiagnosticDetail: 'proof_retry_identity_mismatch',
+      proofPreserveProvisionalIdentity: true,
     });
     expect(storageUpload).not.toHaveBeenCalled();
     expect(rpc).not.toHaveBeenCalled();
+    expect(state.ambiguousRpcPending).toBe('upload-identity-1');
+  });
+
+  it('keeps ambiguity sticky after deterministic failure following ambiguous rpc', async () => {
+    mockHealthyContract();
+    await seedProcessedProof('detail');
+    rpc.mockImplementationOnce(() => Promise.reject(new TypeError('Load failed')));
+    await expect(ensureWorkoutProofUploaded('detail', 'record-1')).rejects.toMatchObject({
+      proofAmbiguous: true,
+    });
+
+    rpc.mockResolvedValueOnce({
+      data: null,
+      error: new Error('linked_record_id not found or context mismatch for caller'),
+    });
+    await expect(ensureWorkoutProofUploaded('detail', 'record-1')).rejects.toMatchObject({
+      proofPreserveProvisionalIdentity: true,
+    });
+
+    const state = __getProofStateForTest('detail');
+    expect(state.ambiguousRpcPending).toBe('upload-identity-1');
+    expect(state.ambiguousLinkedRecordId).toBe('record-1');
   });
 });

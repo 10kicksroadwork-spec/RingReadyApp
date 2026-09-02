@@ -60,6 +60,17 @@ export function isProofErrorDeterministic(error) {
   return false;
 }
 
+export function shouldPreserveProvisionalIdentity(error) {
+  if (!error) return false;
+  if (error.proofPreserveProvisionalIdentity === true) return true;
+  return isProofErrorAmbiguous(error);
+}
+
+export function shouldRollbackProvisionalIdentity(error) {
+  if (!error || shouldPreserveProvisionalIdentity(error)) return false;
+  return isProofErrorDeterministic(error);
+}
+
 export function classifyProofUploadError(error, phase = '') {
   const resolvedPhase = inferProofUploadPhase(error, phase);
   const raw = String(error?.message || error || '');

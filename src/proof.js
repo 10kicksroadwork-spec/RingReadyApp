@@ -187,7 +187,44 @@ function createProofRetryIdentityMismatchError() {
   err.proofDeterministic = true;
   err.proofRetryable = false;
   err.proofDiagnosticDetail = 'proof_retry_identity_mismatch';
+  err.proofPreserveProvisionalIdentity = true;
   return err;
+}
+
+function finalizeProofFailure(state, attempt, error, hadUnresolvedAmbiguity) {
+  if (error?.contractHealthStatus === 'mismatch') {
+    if (hadUnresolvedAmbiguity) {
+      error.proofPreserveProvisionalIdentity = true;
+    }
+    throw error;
+  }
+
+  const classified = error?.proofFailureKind ? error : createProofUploadError(error);
+  if (isProofErrorAmbiguous(classified) || hadUnresolvedAmbiguity) {
+    classified.proofPreserveProvisionalIdentity = true;
+    state.ambiguousRpcPending = attempt.uploadId;
+    state.ambiguousLinkedRecordId = state.ambiguousLinkedRecordId || attempt.linkedRecordId;
+  } else if (isProofErrorDeterministic(classified)) {
+    state.ambiguousRpcPending = null;
+    state.ambiguousLinkedRecordId = null;
+  }
+
+  state.error = classified.message || AMBIGUOUS_PROOF_MESSAGE;
+  captureRuntimeDiagnostic({
+    kind: classified.proofFailureKind || 'proof_upload_failed',
+    stage: 'proof_upload',
+    detail: classified.proofDiagnosticDetail,
+    message: classified.message,
+  });
+  console.warn('Workout proof upload failed', {
+    kind: classified.proofFailureKind,
+    phase: classified.proofFailurePhase,
+    retryable: classified.proofRetryable,
+    ambiguous: classified.proofAmbiguous,
+    detail: classified.proofDiagnosticDetail,
+    raw: sanitizeDiagnosticValue(classified.proofRawMessage),
+  });
+  throw classified;
 }
 
 function render(surface) {
@@ -316,6 +353,7 @@ async function handleFile(surface, file) {
   revokePreview(state);
   clearStagedUploadIdentity(state);
   state.ambiguousRpcPending = null;
+  state.ambiguousLinkedRecordId = null;
   Object.assign(state, {
     processed: null,
     filename: file.name,
@@ -365,21 +403,31 @@ export function initWorkoutProof(surface, options = {}) {
   bindListeners();
   const previous = states.get(surface);
   const sameProofKey = previous?.proofKey === options.proofKey;
-  if (!sameProofKey) revokePreview(previous);
+
+  if (sameProofKey && previous) {
+    if (options.context) previous.context = options.context;
+    if ('existingAttachment' in options) previous.existingAttachment = options.existingAttachment || null;
+    if ('legacy' in options) previous.legacy = !!options.legacy;
+    render(surface);
+    emitState(surface);
+    return;
+  }
+
+  if (previous?.proofKey !== options.proofKey) revokePreview(previous);
   states.set(surface, {
     proofKey: options.proofKey,
     context: options.context || {},
     existingAttachment: options.existingAttachment || null,
     legacy: !!options.legacy,
-    processed: sameProofKey ? previous.processed : null,
-    filename: sameProofKey ? previous.filename : '',
-    previewUrl: sameProofKey ? previous.previewUrl : '',
-    uploadId: sameProofKey ? previous.uploadId : null,
-    storagePath: sameProofKey ? previous.storagePath : null,
-    ambiguousRpcPending: sameProofKey ? previous.ambiguousRpcPending : null,
-    ambiguousLinkedRecordId: sameProofKey ? previous.ambiguousLinkedRecordId : null,
-    uploading: sameProofKey ? !!previous.uploading : false,
-    error: sameProofKey ? previous.error : '',
+    processed: null,
+    filename: '',
+    previewUrl: '',
+    uploadId: null,
+    storagePath: null,
+    ambiguousRpcPending: null,
+    ambiguousLinkedRecordId: null,
+    uploading: false,
+    error: '',
   });
   render(surface);
   emitState(surface);
@@ -469,6 +517,7 @@ async function ensureWorkoutProofUploadedInner(surface, linkedRecordId = '') {
   if (!state.processed) throw new Error('Choose a workout screenshot first.');
 
   const attempt = createProofAttempt(state, linkedRecordId);
+  const hadUnresolvedAmbiguity = state.ambiguousRpcPending === attempt.uploadId;
   if (
     state.ambiguousRpcPending === attempt.uploadId
     && state.ambiguousLinkedRecordId
@@ -501,7 +550,7 @@ async function ensureWorkoutProofUploadedInner(surface, linkedRecordId = '') {
           detail: error.contractHealth?.reason || 'mismatch',
           message: error.message,
         });
-        throw error;
+        finalizeProofFailure(state, attempt, error, hadUnresolvedAmbiguity);
       }
       captureRuntimeDiagnostic({
         kind: 'contract_health_unavailable',
@@ -515,34 +564,7 @@ async function ensureWorkoutProofUploadedInner(surface, linkedRecordId = '') {
     reconcileAttemptSuccess(state, attempt);
     return attachment;
   } catch (error) {
-    if (error?.contractHealthStatus === 'mismatch') {
-      throw error;
-    }
-
-    const classified = error?.proofFailureKind ? error : createProofUploadError(error);
-    if (isProofErrorAmbiguous(classified)) {
-      state.ambiguousRpcPending = attempt.uploadId;
-      state.ambiguousLinkedRecordId = attempt.linkedRecordId;
-    } else if (isProofErrorDeterministic(classified)) {
-      state.ambiguousRpcPending = null;
-      state.ambiguousLinkedRecordId = null;
-    }
-    state.error = classified.message || AMBIGUOUS_PROOF_MESSAGE;
-    captureRuntimeDiagnostic({
-      kind: classified.proofFailureKind || 'proof_upload_failed',
-      stage: 'proof_upload',
-      detail: classified.proofDiagnosticDetail,
-      message: classified.message,
-    });
-    console.warn('Workout proof upload failed', {
-      kind: classified.proofFailureKind,
-      phase: classified.proofFailurePhase,
-      retryable: classified.proofRetryable,
-      ambiguous: classified.proofAmbiguous,
-      detail: classified.proofDiagnosticDetail,
-      raw: sanitizeDiagnosticValue(classified.proofRawMessage),
-    });
-    throw classified;
+    finalizeProofFailure(state, attempt, error, hadUnresolvedAmbiguity);
   } finally {
     state.uploading = false;
     render(surface);

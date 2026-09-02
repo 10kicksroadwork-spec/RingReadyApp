@@ -208,6 +208,21 @@ describe('Bravo completion integration', () => {
     expect(rollbackCloudMileTestIdentity).not.toHaveBeenCalled();
   });
 
+  it('does not roll back provisional identity after ambiguous then deterministic proof failure', async () => {
+    setupDetailDom();
+    ensureCloudWorkoutIdentity.mockResolvedValue({ created: true, clientRecordId: 'record-A' });
+    const deterministicAfterAmbiguous = createProofUploadError(new Error('Bucket not found'), PROOF_UPLOAD_PHASE.STORAGE);
+    deterministicAfterAmbiguous.proofPreserveProvisionalIdentity = true;
+    ensureWorkoutProofUploaded
+      .mockRejectedValueOnce(createProofUploadError(new TypeError('Load failed'), PROOF_UPLOAD_PHASE.RPC))
+      .mockRejectedValueOnce(deterministicAfterAmbiguous);
+
+    await completeWorkoutFromDetail(0, 1);
+    await completeWorkoutFromDetail(0, 1);
+
+    expect(rollbackCloudWorkoutIdentity).not.toHaveBeenCalled();
+  });
+
   it('rolls back provisional detail identity after deterministic storage failure', async () => {
     setupDetailDom();
     ensureWorkoutProofUploaded.mockRejectedValue(
