@@ -2,14 +2,15 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="Ring Ready">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="theme-color" content="#f5c842">
   <meta name="description" content="Roadwork planning and sprint recovery tracking for 10 Kicks athletes.">
   <link rel="manifest" href="./manifest.webmanifest">
   <link rel="icon" href="./favicon.svg" type="image/svg+xml">
-  <link rel="apple-touch-icon" href="./app-icon.svg">
+  <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png">
   <title>10 Kicks: Ring Ready</title>
 </head>
 <body>
@@ -256,6 +257,16 @@
         <div class="field-label">Read First</div>
         <h2>Everything athletes need, without opening the sheet.</h2>
         <p>The old welcome tab is now an app page: system instructions, gear, cardio swaps, science notes, and nutrition reminders are all organized here.</p>
+      </section>
+      <section class="page-panel install-panel" id="install-panel">
+        <div class="field-label" id="install-title">ADD TO HOME SCREEN</div>
+        <p id="install-copy">Install Ring Ready for app-style access and the most reliable workout experience.</p>
+        <button type="button" class="start-btn page-save-btn" id="install-btn">HOW TO INSTALL</button>
+        <ol class="install-instructions" id="install-instructions" hidden>
+          <li>Tap Safari's Share button.</li>
+          <li>Choose Add to Home Screen.</li>
+          <li>Tap Add.</li>
+        </ol>
       </section>
       <div class="welcome-grid" id="welcome-content"></div>
     </div>
