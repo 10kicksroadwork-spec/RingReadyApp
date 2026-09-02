@@ -7,6 +7,7 @@ let deferredInstallPrompt = null;
 let iosInstallInstructionsVisible = false;
 let updateLifecycle = null;
 let screenChangeListenerInstalled = false;
+let waitingServiceWorker = null;
 
 function isStandalone() {
   return window.matchMedia('(display-mode: standalone)').matches
@@ -81,6 +82,28 @@ function notifyAppUpdate(showToast) {
   }
 }
 
+function syncWaitingServiceWorker(worker) {
+  if (worker) {
+    waitingServiceWorker = worker;
+  }
+}
+
+function clearWaitingServiceWorker() {
+  waitingServiceWorker = null;
+}
+
+function postSkipWaitingToWorker() {
+  if (!waitingServiceWorker) return false;
+
+  try {
+    waitingServiceWorker.postMessage(buildSkipWaitingMessage());
+    return true;
+  } catch (error) {
+    console.warn('Service worker activation request failed', error);
+    return false;
+  }
+}
+
 function ensureUpdateLifecycle(showToast) {
   if (updateLifecycle) return updateLifecycle;
 
@@ -88,15 +111,7 @@ function ensureUpdateLifecycle(showToast) {
     initialController: Boolean(navigator.serviceWorker?.controller),
     getScreen: getActiveScreenId,
     onDiagnostic: recordUpdateDiagnostic,
-    onSkipWaiting: () => {
-      navigator.serviceWorker?.ready
-        ?.then((registration) => {
-          registration.waiting?.postMessage(buildSkipWaitingMessage());
-        })
-        .catch((error) => {
-          console.warn('Service worker activation request failed', error);
-        });
-    },
+    onSkipWaiting: () => postSkipWaitingToWorker(),
     onReload: () => {
       notifyAppUpdate(showToast);
       window.setTimeout(() => {
@@ -126,6 +141,8 @@ function watchServiceWorkerUpdates(registration, showToast) {
 
   const lifecycle = ensureUpdateLifecycle(showToast);
 
+  syncWaitingServiceWorker(registration.waiting);
+
   if (registration.waiting && registration.active) {
     lifecycle.handleInitialWaiting(getActiveScreenId());
   }
@@ -141,6 +158,7 @@ function watchServiceWorkerUpdates(registration, showToast) {
         installing.state === 'installed'
         && registration.waiting
       ) {
+        syncWaitingServiceWorker(registration.waiting);
         lifecycle.handleInstallingInstalled(getActiveScreenId());
       }
     });
@@ -272,6 +290,8 @@ export function registerServiceWorker(options = {}) {
   navigator.serviceWorker.addEventListener(
     'controllerchange',
     () => {
+      clearWaitingServiceWorker();
+
       const lifecycle = ensureUpdateLifecycle(showToast);
       lifecycle.handleControllerChange(getActiveScreenId());
 
@@ -286,4 +306,12 @@ export function initBuildMetadata() {
 
 export function __testCreateUpdateLifecycle(options) {
   return createServiceWorkerUpdateLifecycle(options);
+}
+
+export function __testPostSkipWaitingToWorker(worker) {
+  const previousWorker = waitingServiceWorker;
+  waitingServiceWorker = worker;
+  const sent = postSkipWaitingToWorker();
+  waitingServiceWorker = previousWorker;
+  return sent;
 }

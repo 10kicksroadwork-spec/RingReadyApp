@@ -21,7 +21,10 @@ function createHarness(screenId = 'home') {
     initialController: true,
     getScreen: () => screenId,
     onDiagnostic: (entry) => diagnostics.push(entry),
-    onSkipWaiting: () => { skipWaitingCount += 1; },
+    onSkipWaiting: () => {
+      skipWaitingCount += 1;
+      return true;
+    },
     onReload: () => { reloadCount += 1; },
   });
 
@@ -177,6 +180,49 @@ describe('pwa update lifecycle', () => {
     harness.lifecycle.handleInitialWaiting('home');
 
     expect(harness.skipWaitingCount).toBe(1);
+  });
+
+  it('does not latch activation when onSkipWaiting fails to send', () => {
+    let sendAttempts = 0;
+    const lifecycle = createServiceWorkerUpdateLifecycle({
+      initialController: true,
+      getScreen: () => 'home',
+      onDiagnostic: () => {},
+      onSkipWaiting: () => {
+        sendAttempts += 1;
+        return false;
+      },
+      onReload: () => {},
+    });
+
+    lifecycle.handleInstallingInstalled('home');
+    expect(sendAttempts).toBe(1);
+    expect(lifecycle.isActivationRequested()).toBe(false);
+
+    lifecycle.handleScreenChange('home');
+    expect(sendAttempts).toBe(2);
+    expect(lifecycle.isActivationRequested()).toBe(false);
+  });
+
+  it('latches activation only after onSkipWaiting reports a successful send', () => {
+    let sendAttempts = 0;
+    const lifecycle = createServiceWorkerUpdateLifecycle({
+      initialController: true,
+      getScreen: () => 'home',
+      onDiagnostic: () => {},
+      onSkipWaiting: () => {
+        sendAttempts += 1;
+        return sendAttempts >= 2;
+      },
+      onReload: () => {},
+    });
+
+    lifecycle.handleInstallingInstalled('home');
+    expect(lifecycle.isActivationRequested()).toBe(false);
+
+    lifecycle.handleScreenChange('home');
+    expect(sendAttempts).toBe(2);
+    expect(lifecycle.isActivationRequested()).toBe(true);
   });
 });
 

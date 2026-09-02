@@ -10,7 +10,7 @@ export function canActivateOnScreen(screenId) {
 
 export function createServiceWorkerUpdateLifecycle(options = {}) {
   const onDiagnostic = options.onDiagnostic || (() => {});
-  const onSkipWaiting = options.onSkipWaiting || (() => {});
+  const onSkipWaiting = options.onSkipWaiting || (() => false);
   const onReload = options.onReload || (() => {});
   const getScreen = options.getScreen || (() => '');
 
@@ -40,10 +40,14 @@ export function createServiceWorkerUpdateLifecycle(options = {}) {
       return false;
     }
 
+    const sent = onSkipWaiting();
+    if (!sent) {
+      return false;
+    }
+
     activationRequested = true;
     phase = 'ACTIVATION_REQUESTED';
     record('sw_activation_requested', screenId);
-    onSkipWaiting();
     return true;
   }
 

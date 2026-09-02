@@ -1,7 +1,11 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { isCurrentSkipWaitingMessage } from '../src/pwa-activation-protocol.js';
+import {
+  isCurrentSkipWaitingMessage,
+  SW_ACTIVATION_PROTOCOL,
+  SW_SKIP_WAITING_MESSAGE_TYPE,
+} from '../src/pwa-activation-protocol.js';
 
 const root = join(process.cwd());
 const indexHtml = readFileSync(join(root, 'index.html'), 'utf8');
@@ -84,6 +88,24 @@ describe('ios shell contract', () => {
     expect(pwaJs).toContain('ringready:screen-changed');
     expect(pwaJs).not.toContain('MutationObserver');
     expect(pwaJs).toContain('buildSkipWaitingMessage');
+  });
+
+  it('posts skip-waiting directly to the waiting worker without rediscovering it', () => {
+    expect(pwaJs).toContain('waitingServiceWorker');
+    expect(pwaJs).toContain('postSkipWaitingToWorker');
+    expect(pwaJs).toContain('clearWaitingServiceWorker');
+    expect(pwaJs).not.toMatch(/navigator\.serviceWorker\.ready[\s\S]*buildSkipWaitingMessage/);
+  });
+
+  it('declines live activation when more than one window client is open', () => {
+    const messageBlock = swJs.match(/self\.addEventListener\('message'[\s\S]*?\n\}\);/)?.[0] || '';
+    expect(messageBlock).toContain('clients.matchAll');
+    expect(messageBlock).toContain('clients.length !== 1');
+  });
+
+  it('keeps client and service worker activation protocol constants aligned', () => {
+    expect(swJs).toContain(`const SW_ACTIVATION_PROTOCOL = ${SW_ACTIVATION_PROTOCOL};`);
+    expect(swJs).toContain(`const SW_SKIP_WAITING_MESSAGE_TYPE = '${SW_SKIP_WAITING_MESSAGE_TYPE}';`);
   });
 
   it('exposes browser-neutral iOS install instructions in the welcome shell', () => {

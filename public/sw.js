@@ -43,13 +43,28 @@ self.addEventListener('activate', (event) => {
   );
 });
 
+function isCurrentSkipWaitingMessage(data) {
+  return data?.type === SW_SKIP_WAITING_MESSAGE_TYPE
+    && data?.protocol === SW_ACTIVATION_PROTOCOL;
+}
+
 self.addEventListener('message', (event) => {
-  if (
-    event.data?.type === SW_SKIP_WAITING_MESSAGE_TYPE
-    && event.data?.protocol === SW_ACTIVATION_PROTOCOL
-  ) {
-    self.skipWaiting();
+  if (!isCurrentSkipWaitingMessage(event.data)) {
+    return;
   }
+
+  event.waitUntil(
+    self.clients.matchAll({
+      type: 'window',
+      includeUncontrolled: true,
+    }).then((clients) => {
+      if (clients.length !== 1) {
+        return;
+      }
+
+      return self.skipWaiting();
+    })
+  );
 });
 
 self.addEventListener('fetch', (event) => {
