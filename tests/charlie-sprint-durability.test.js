@@ -46,12 +46,15 @@ vi.mock('../src/hr-service.js', () => ({
 }));
 
 import { saveActiveSessionCheckpoint } from '../src/session-checkpoint.js';
-import { getPendingSprintSessions } from '../src/cloud-outbox.js';
+import { resetVolatileStorageForTest, resetStorageAvailabilityCache } from '../src/safe-storage.js';
+import { getCloudPendingSprintSessions, getSessionHistory } from '../src/storage.js';
 import { cfg, finishSession, state } from '../src/app.js';
 
 describe('Charlie sprint durability', () => {
   beforeEach(() => {
     localStorage.clear();
+    resetVolatileStorageForTest();
+    resetStorageAvailabilityCache();
     vi.clearAllMocks();
     saveCloudSprintSession.mockRejectedValue(new Error('cloud save failed'));
     cfg.reps = 4;
@@ -115,8 +118,8 @@ describe('Charlie sprint durability', () => {
     await vi.advanceTimersByTimeAsync(12_001);
     await finishPromise;
 
-    expect(getPendingSprintSessions('user-a')).toHaveLength(1);
-    expect(getPendingSprintSessions('user-a')[0].cloudPending).toBe(true);
+    expect(getCloudPendingSprintSessions()).toHaveLength(1);
+    expect(getCloudPendingSprintSessions()[0].cloudPending).toBe(true);
     vi.useRealTimers();
   });
 
@@ -125,7 +128,27 @@ describe('Charlie sprint durability', () => {
 
     await finishSession();
 
-    expect(getPendingSprintSessions('user-a')).toHaveLength(1);
-    expect(getPendingSprintSessions('user-a')[0].cloudPending).toBe(true);
+    expect(localStorage.getItem(`${ACTIVE_SESSION_KEY_PREFIX}user-a`)).toBeNull();
+    expect(getCloudPendingSprintSessions()).toHaveLength(1);
+    expect(getCloudPendingSprintSessions()[0].cloudPending).toBe(true);
+    expect(getSessionHistory()[0]?.id).toBe(getCloudPendingSprintSessions()[0].id);
+  });
+
+  it('does not clear the checkpoint when cloud fails and session history is volatile-only', async () => {
+    const original = Storage.prototype.setItem;
+    Storage.prototype.setItem = function quotaThrowingSetItem(key, value) {
+      if (String(key).includes('sprintTrainerHistory')) {
+        throw new DOMException('quota', 'QuotaExceededError');
+      }
+      return original.call(this, key, value);
+    };
+
+    try {
+      await finishSession();
+      expect(localStorage.getItem(`${ACTIVE_SESSION_KEY_PREFIX}user-a`)).toBeTruthy();
+      expect(localStorage.getItem('sprintTrainerHistory')).toBeNull();
+    } finally {
+      Storage.prototype.setItem = original;
+    }
   });
 });

@@ -2,14 +2,14 @@ import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { WORKOUT_COMPLETIONS_STORAGE_KEY } from '../src/constants.js';
 import {
   getStorageItem,
-  writeJSON,
   resetVolatileStorageForTest,
   resetStorageAvailabilityCache,
-  isStorageKeyTombstoned,
+  writeJSON,
   removeStorageKey,
+  isStorageKeyTombstoned,
 } from '../src/safe-storage.js';
-import { getWorkoutCompletion } from '../src/storage.js';
-import { enqueuePendingSprintSession, getPendingSprintSessions, readCloudOutbox } from '../src/cloud-outbox.js';
+import { getWorkoutCompletion, getClearedWorkoutCompletions, isWorkoutCompletionCleared, getCloudPendingSprintSessions } from '../src/storage.js';
+import { reconcileWorkoutCompletionsFromCloud } from '../src/shell-cloud-merge.js';
 
 const mockUser = { id: 'user-a' };
 const saveCloudWorkoutCompletion = vi.fn();
@@ -159,14 +159,13 @@ describe('Charlie hydration authority', () => {
     expect(saveCloudSprintSession).not.toHaveBeenCalled();
   });
 
-  it('retries only explicit outbox sprint sessions after successful cloud read', async () => {
+  it('retries only explicit cloudPending sprint sessions after successful cloud read', async () => {
     const pendingSession = {
       id: 'session-pending',
       date: '2026-01-01T00:00:00.000Z',
       cloudPending: true,
     };
-    enqueuePendingSprintSession(pendingSession, 'user-a');
-    writeJSON('sprintTrainerHistory', [{ id: 'session-local-only', date: '2026-01-02T00:00:00.000Z' }]);
+    writeJSON('sprintTrainerHistory', [pendingSession, { id: 'session-local-only', date: '2026-01-02T00:00:00.000Z' }]);
 
     const generation = cloudHydrationTestHooks.getHydrationGeneration();
     await cloudHydrationTestHooks.runCloudHydrationMaintenance('user-a', generation, {
@@ -176,7 +175,7 @@ describe('Charlie hydration authority', () => {
 
     expect(saveCloudSprintSession).toHaveBeenCalledTimes(1);
     expect(saveCloudSprintSession.mock.calls[0][0].id).toBe('session-pending');
-    expect(getPendingSprintSessions('user-a')).toHaveLength(0);
+    expect(getCloudPendingSprintSessions()).toHaveLength(0);
   });
 
   it('does not backfill mile test when the cloud read failed', async () => {
@@ -337,17 +336,105 @@ describe('Charlie volatile deletion tombstones', () => {
   });
 });
 
-describe('Charlie cloud outbox', () => {
+describe('Charlie clear-marker precedence', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    resetVolatileStorageForTest();
+    resetStorageAvailabilityCache();
+  });
+
+  it('accepts newer cloud re-completion over a stale local clear marker', () => {
+    writeJSON('ringReadyClearedWorkoutCompletions', { '0:1': '2026-01-01T11:00:00.000Z' });
+
+    const cloudCompletions = {
+      '0:1': {
+        id: 'cloud-recomplete',
+        completionKey: '0:1',
+        completedAt: '2026-01-01T13:00:00.000Z',
+        cfg: { workoutContext: { weekIndex: 0, workoutIndex: 1 } },
+      },
+    };
+
+    const superseded = [];
+    const merged = reconcileWorkoutCompletionsFromCloud(
+      cloudCompletions,
+      isWorkoutCompletionCleared,
+      (key) => superseded.push(key),
+    );
+
+    expect(merged['0:1']?.id).toBe('cloud-recomplete');
+    expect(superseded).toEqual(['0:1']);
+  });
+
+  it('hides older cloud completion when the clear marker is newer', () => {
+    writeJSON('ringReadyClearedWorkoutCompletions', { '0:1': '2026-01-01T13:00:00.000Z' });
+
+    const merged = reconcileWorkoutCompletionsFromCloud(
+      {
+        '0:1': {
+          id: 'cloud-old',
+          completedAt: '2026-01-01T11:00:00.000Z',
+        },
+      },
+      isWorkoutCompletionCleared,
+    );
+
+    expect(merged['0:1']).toBeUndefined();
+  });
+
+  it('applies conservative clear behavior when cloud timestamp is missing', () => {
+    writeJSON('ringReadyClearedWorkoutCompletions', { '0:1': '2026-01-01T11:00:00.000Z' });
+
+    const merged = reconcileWorkoutCompletionsFromCloud(
+      { '0:1': { id: 'cloud-no-ts' } },
+      isWorkoutCompletionCleared,
+    );
+
+    expect(merged['0:1']).toBeUndefined();
+  });
+
+  it('removes stale clear markers during hydration reconcile', async () => {
+    writeJSON('ringReadyClearedWorkoutCompletions', { '0:1': '2026-01-01T11:00:00.000Z' });
+
+    const generation = cloudHydrationTestHooks.getHydrationGeneration();
+    await cloudHydrationTestHooks.applyCloudHydrationResults('user-a', generation, {
+      profileResult: { ok: true, value: null },
+      hrResult: { ok: true, value: null },
+      completionsResult: {
+        ok: true,
+        value: {
+          '0:1': {
+            id: 'cloud-recomplete',
+            completionKey: '0:1',
+            completedAt: '2026-01-01T13:00:00.000Z',
+            cfg: { workoutContext: { weekIndex: 0, workoutIndex: 1 } },
+          },
+        },
+      },
+      sessionsResult: { ok: true, value: [] },
+      mileResult: { ok: true, value: null },
+    });
+
+    expect(getWorkoutCompletion(0, 1)?.id).toBe('cloud-recomplete');
+    expect(getClearedWorkoutCompletions()['0:1']).toBeUndefined();
+  });
+});
+
+describe('Charlie session cloudPending', () => {
   beforeEach(() => {
     localStorage.clear();
     resetVolatileStorageForTest();
   });
 
-  it('stores pending sprint sessions explicitly', () => {
-    enqueuePendingSprintSession({ id: 'session-1', date: '2026-01-01T00:00:00.000Z' }, 'user-a');
-    const pending = getPendingSprintSessions('user-a');
+  it('stores pending sprint intent on the session record itself', () => {
+    writeJSON('sprintTrainerHistory', [{
+      id: 'session-1',
+      date: '2026-01-01T00:00:00.000Z',
+      cloudPending: true,
+    }]);
+    const pending = getCloudPendingSprintSessions();
     expect(pending).toHaveLength(1);
     expect(pending[0].cloudPending).toBe(true);
-    expect(readCloudOutbox('user-a').sprintSessions[0].id).toBe('session-1');
+    expect(pending[0].id).toBe('session-1');
   });
 });

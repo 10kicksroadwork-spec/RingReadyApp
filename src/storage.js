@@ -56,20 +56,43 @@ export function buildSessionRecord(cfg, data) {
   };
 }
 
-export function persistSessionRecord(record) {
+export function persistSessionRecord(record, { cloudPending = false } = {}) {
   try {
     const sessions = readJSON(STORAGE_KEY, []);
-    sessions.unshift(record);
+    const nextRecord = cloudPending ? { ...record, cloudPending: true } : record;
+    sessions.unshift(nextRecord);
     if (sessions.length > MAX_STORED_SESSIONS) sessions.length = MAX_STORED_SESSIONS;
     const cache = persistJSON(STORAGE_KEY, sessions);
     if (!cache.persisted) {
       console.warn('Could not save session history locally');
     }
-    return { record, localCacheOk: cache.persisted, ...cache };
+    return { record: nextRecord, localCacheOk: cache.persisted, ...cache };
   } catch (err) {
     console.warn('Could not save session history', err);
     return { record, localCacheOk: false, logicalOk: false, persisted: false };
   }
+}
+
+export function getSessionHistory() {
+  return readJSON(STORAGE_KEY, []);
+}
+
+export function getCloudPendingSprintSessions() {
+  return getSessionHistory().filter((session) => !!session?.cloudPending);
+}
+
+export function clearSessionCloudPending(sessionId) {
+  const normalizedId = String(sessionId || '').trim();
+  if (!normalizedId) return { logicalOk: false, persisted: false };
+
+  const sessions = getSessionHistory();
+  const index = sessions.findIndex((session) => String(session?.id || '') === normalizedId);
+  if (index < 0) return { logicalOk: false, persisted: false };
+
+  const next = { ...sessions[index] };
+  delete next.cloudPending;
+  sessions[index] = next;
+  return persistJSON(STORAGE_KEY, sessions);
 }
 
 export function persistSessionToHistory(cfg, data) {

@@ -6,6 +6,7 @@ import {
 import {
   clearSharedLocalState,
   shouldClearSharedStateOnSwitch,
+  shouldFailClosedClearSharedCache,
 } from './account-switch.js';
 import { clearActiveSessionCheckpoint, clearActiveSessionCheckpointsForAllUsers } from './session-checkpoint.js';
 import { getHRInfo, saveHRInfo } from './hr-local.js';
@@ -45,7 +46,7 @@ import {
   getAthleteProfile,
   saveAthleteProfile,
 } from './sync.js';
-import { getWorkoutCompletion, getWorkoutCompletions, isWorkoutCompletionCleared, markWorkoutCompletionCleared, removeWorkoutCompletion, saveWorkoutCompletion, finalizeWorkoutCompletionRecord, persistWorkoutCompletion } from './storage.js';
+import { getWorkoutCompletion, getWorkoutCompletions, isWorkoutCompletionCleared, markWorkoutCompletionCleared, removeWorkoutCompletion, saveWorkoutCompletion, finalizeWorkoutCompletionRecord, persistWorkoutCompletion, clearWorkoutCompletionClearedMarker, getCloudPendingSprintSessions, clearSessionCloudPending } from './storage.js';
 import { parseDurationMinutes, sanitizeDurationInput } from './workout.js';
 import {
   calculateZoneBPM,
@@ -263,18 +264,12 @@ import {
   reconcileSprintSessionsFromCloud,
   reconcileWorkoutCompletionsFromCloud,
 } from './shell-cloud-merge.js';
-import {
-  clearCloudOutbox,
-  getPendingSprintSessions,
-  removePendingSprintSession,
-} from './cloud-outbox.js';
 
 function clearAccountLocalData(explicitUserId = '') {
   const userId = String(explicitUserId || getCurrentUser()?.id || '').trim();
   if (userId) {
     clearSyncQueueForUser(userId);
     clearActiveSessionCheckpoint(userId);
-    clearCloudOutbox(userId);
   }
   clearSharedLocalState();
 }
@@ -430,7 +425,12 @@ function prepareAccountSwitchSafety() {
   invalidateCloudHydration();
   const user = getCurrentUser();
   const lastUserId = getStorageItem(AUTH_USER_STORAGE_KEY).value;
-  if (shouldClearSharedStateOnSwitch(lastUserId, user.id)) clearSharedLocalState();
+  if (
+    shouldClearSharedStateOnSwitch(lastUserId, user.id)
+    || shouldFailClosedClearSharedCache(lastUserId, user.id)
+  ) {
+    clearSharedLocalState();
+  }
   setStorageItem(AUTH_USER_STORAGE_KEY, user.id);
   quarantineLegacySyncQueue();
 }
@@ -511,11 +511,18 @@ async function applyCloudHydrationResults(userId, generation, {
 
   if (!shouldApplyCloudHydration(userId, generation)) return;
 
-  const pendingSessions = getPendingSprintSessions(userId);
+  const pendingSessions = getCloudPendingSprintSessions();
 
   if (completionsResult?.ok) {
     const cloudCompletions = completionsResult.value || {};
-    const mergedCompletions = reconcileWorkoutCompletionsFromCloud(cloudCompletions, isWorkoutCompletionCleared);
+    const mergedCompletions = reconcileWorkoutCompletionsFromCloud(
+      cloudCompletions,
+      isWorkoutCompletionCleared,
+      (key) => {
+        const [weekIndex, workoutIndex] = key.split(':').map(Number);
+        clearWorkoutCompletionClearedMarker(weekIndex, workoutIndex);
+      },
+    );
     writeJSON(WORKOUT_COMPLETIONS_STORAGE_KEY, mergedCompletions);
   }
 
@@ -593,14 +600,14 @@ async function runCloudHydrationMaintenance(userId, generation, {
     });
   }
 
-  getPendingSprintSessions(userId).forEach((session) => {
+  getCloudPendingSprintSessions().forEach((session) => {
     const sessionId = String(session?.id || '');
     if (!sessionId) return;
     maintenanceTasks.push(async () => {
       if (!shouldApplyCloudHydration(userId, generation)) return { ok: false };
-      const result = await boundedCloudWrite(`sprint_outbox_${sessionId}`, () => saveCloudSprintSession(session));
+      const result = await boundedCloudWrite(`sprint_pending_${sessionId}`, () => saveCloudSprintSession(session));
       if (result.ok && shouldApplyCloudHydration(userId, generation)) {
-        removePendingSprintSession(sessionId, userId);
+        clearSessionCloudPending(sessionId);
       }
       return result;
     });
@@ -862,6 +869,30 @@ async function handleLogout() {
   try {
     closeWeekDrawer();
     invalidateCloudHydration();
+
+    const pendingSessions = getCloudPendingSprintSessions();
+    if (pendingSessions.length > 0 && isSupabaseConfigured && getCurrentUser()) {
+      await Promise.allSettled(pendingSessions.map(async (session) => {
+        try {
+          await withOperationTimeout(
+            saveCloudSprintSession(session),
+            { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_COMPLETION, operation: 'logout_pending_flush' },
+          );
+          clearSessionCloudPending(String(session?.id || ''));
+        } catch (error) {
+          console.warn('Logout pending sprint flush failed', error);
+        }
+      }));
+
+      const stillPending = getCloudPendingSprintSessions();
+      if (stillPending.length > 0) {
+        const message = stillPending.length === 1
+          ? '1 WORKOUT HASN\'T SYNCED YET. SIGN OUT ANYWAY?'
+          : `${stillPending.length} WORKOUTS HAVEN'T SYNCED YET. SIGN OUT ANYWAY?`;
+        if (!window.confirm(message)) return;
+      }
+    }
+
     await performSignOutCleanup({
       getCurrentUser,
       signOut,
@@ -869,7 +900,6 @@ async function handleLogout() {
     });
     passwordRecoveryPending = false;
     authMode = 'sign-in';
-    removeStorageKey(AUTH_USER_STORAGE_KEY);
     syncSignOutControls();
     await refreshCoachPreview();
     renderAllPages();
@@ -2531,4 +2561,5 @@ export const cloudHydrationTestHooks = {
   enterSignedInAthleteHome,
   rehydrateWorkoutCompletionFromCloud,
   scheduleTargetedWorkoutRehydrate,
+  prepareAccountSwitchSafety,
 };

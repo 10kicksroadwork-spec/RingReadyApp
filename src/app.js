@@ -92,7 +92,6 @@ import {
 } from './ui.js';
 import { runSingleFlight } from './single-flight.js';
 import { OPERATION_TIMEOUT_MS, withOperationTimeout } from './operation-timeout.js';
-import { enqueuePendingSprintSession } from './cloud-outbox.js';
 
 export const cfg = { reps: null, rest: null, maxHR: 183, targetPct: 90, workoutContext: null };
 
@@ -1055,12 +1054,10 @@ export async function finishSession() {
       console.warn('Cloud sprint session save failed', error);
     }
   }
-  const sessionPersist = persistSessionRecord(activeResultRecord);
-  const localCacheOk = sessionPersist.localCacheOk;
-  if (!cloudSessionSaved && sessionPersist.logicalOk && isSupabaseConfigured && getCurrentUser()) {
-    enqueuePendingSprintSession(activeResultRecord, getCurrentUser().id);
-  }
-  if (cloudSessionSaved || localCacheOk) {
+  const needsCloudPending = !cloudSessionSaved && isSupabaseConfigured && getCurrentUser();
+  const sessionPersist = persistSessionRecord(activeResultRecord, { cloudPending: !!needsCloudPending });
+  const pendingIntentDurable = !needsCloudPending || (sessionPersist.persisted && !!sessionPersist.record?.cloudPending);
+  if (cloudSessionSaved || (sessionPersist.localCacheOk && pendingIntentDurable)) {
     clearActiveSessionCheckpoint();
   } else {
     console.warn('Sprint session could not be saved to cloud or local history');
