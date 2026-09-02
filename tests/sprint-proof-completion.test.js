@@ -131,7 +131,7 @@ describe('sprint proof completion', () => {
 
     await completeWorkout();
 
-    expect(callOrder).toEqual(['saveCloudSprintSession', 'ensureWorkoutProofUploaded']);
+    expect(callOrder).toEqual(['saveCloudSprintSession', 'ensureWorkoutProofUploaded', 'saveCloudSprintSession']);
     expect(saveCloudWorkoutCompletion).toHaveBeenCalledTimes(1);
     expect(getWorkoutCompletion(1, 0)).toBeTruthy();
   });
@@ -164,8 +164,17 @@ describe('sprint proof completion', () => {
 
     await Promise.all([completeWorkout(), completeWorkout()]);
 
-    expect(saveCloudSprintSession).toHaveBeenCalledTimes(1);
+    expect(saveCloudSprintSession).toHaveBeenCalledTimes(2);
     expect(ensureWorkoutProofUploaded).toHaveBeenCalledTimes(1);
+    expect(saveCloudWorkoutCompletion).toHaveBeenCalledTimes(1);
     expect(getWorkoutCompletion(1, 0)).toBeTruthy();
+  });
+
+  it('uses one authoritative cloud workout completion mutation for sprint completion', async () => {
+    showSavedWorkoutResult(buildSprintResultRecord({ completedAt: undefined, completionKey: undefined }));
+
+    await completeWorkout();
+
+    expect(saveCloudWorkoutCompletion).toHaveBeenCalledTimes(1);
   });
 });

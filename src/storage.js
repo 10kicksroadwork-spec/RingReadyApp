@@ -20,8 +20,9 @@ function persistJSON(key, value) {
   const result = writeJSON(key, value);
   if (!result.ok) {
     console.warn(`Could not write ${key}`, result.error);
+    return false;
   }
-  return result.ok;
+  return result.persisted === true;
 }
 
 function cloneSessionData(data) {

@@ -17,6 +17,8 @@ import {
   readStorageJSON,
   removeStorageKey,
   resetStorageAvailabilityCache,
+  resetVolatileStorageForTest,
+  hasVolatileStorageKey,
   writeJSON,
 } from '../src/safe-storage.js';
 import { STORAGE_KEY } from '../src/constants.js';
@@ -35,6 +37,7 @@ describe('safe-storage adapter', () => {
   beforeEach(() => {
     localStorage.clear();
     resetStorageAvailabilityCache();
+    resetVolatileStorageForTest();
   });
 
   it('reads and writes JSON with structured success', () => {
@@ -79,9 +82,12 @@ describe('safe-storage adapter', () => {
 
     try {
       const result = writeJSON('ringReadyQuotaTest', { blocked: true });
-      expect(result.ok).toBe(false);
+      expect(result.ok).toBe(true);
+      expect(result.persisted).toBe(false);
+      expect(result.volatile).toBe(true);
       expect(result.code).toBe(STORAGE_ERROR.QUOTA_EXCEEDED);
-      expect(readJSONValue('ringReadyQuotaTest', 'fallback')).toBe('fallback');
+      expect(readJSONValue('ringReadyQuotaTest', 'fallback')).toEqual({ blocked: true });
+      expect(hasVolatileStorageKey('ringReadyQuotaTest')).toBe(true);
     } finally {
       Storage.prototype.setItem = original;
     }
@@ -128,6 +134,51 @@ describe('safe-storage adapter', () => {
   it('probeStorageWrite succeeds on a healthy store', () => {
     expect(probeStorageWrite().ok).toBe(true);
     expect(isStorageAvailable()).toBe(true);
+  });
+
+  it('keeps volatile values readable when every persistent write fails', () => {
+    const original = Storage.prototype.setItem;
+    Storage.prototype.setItem = function blockingSetItem(key, value) {
+      if (String(key).startsWith('ringReady')) {
+        throw new DOMException('quota', 'QuotaExceededError');
+      }
+      return original.call(this, key, value);
+    };
+
+    try {
+      const writeResult = writeJSON('ringReadyVolatileOnly', { complete: true });
+      expect(writeResult.ok).toBe(true);
+      expect(writeResult.persisted).toBe(false);
+      expect(writeResult.volatile).toBe(true);
+      expect(localStorage.getItem('ringReadyVolatileOnly')).toBeNull();
+      expect(readJSONValue('ringReadyVolatileOnly', null)).toEqual({ complete: true });
+    } finally {
+      Storage.prototype.setItem = original;
+    }
+  });
+
+  it('does not treat volatile cache as checkpoint persistence availability', () => {
+    writeJSON('ringReadyActiveSession:user-a', { version: 1 }, { persistentOnly: true });
+    const originalDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      get() {
+        throw new DOMException('Access to storage is not allowed', 'SecurityError');
+      },
+    });
+
+    try {
+      writeJSON('ringReadyVolatileCheckpointProbe', { cached: true });
+      expect(isCheckpointStorageAvailable()).toBe(false);
+    } finally {
+      if (originalDescriptor) {
+        Object.defineProperty(globalThis, 'localStorage', originalDescriptor);
+      } else {
+        delete globalThis.localStorage;
+      }
+      resetStorageAvailabilityCache();
+      resetVolatileStorageForTest();
+    }
   });
 });
 

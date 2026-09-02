@@ -148,7 +148,7 @@ export function saveActiveSessionCheckpoint(cfg, state, timer = null) {
   const checkpoint = buildActiveSessionCheckpoint(cfg, state, timer, userId);
   if (existing?.createdAt) checkpoint.createdAt = existing.createdAt;
 
-  const writeResult = writeJSON(activeSessionStorageKey(userId), checkpoint);
+  const writeResult = writeJSON(activeSessionStorageKey(userId), checkpoint, { persistentOnly: true });
   if (!writeResult.ok) {
     console.warn('Could not persist active sprint session', writeResult.error);
     checkpoint.storageWriteFailed = true;

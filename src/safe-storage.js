@@ -15,6 +15,7 @@ export const STORAGE_ERROR = {
 const PROBE_KEY = '__ring_ready_storage_probe__';
 
 let storageAvailableCache = null;
+const volatileStorage = new Map();
 
 function getStorageBackend() {
   try {
@@ -72,6 +73,9 @@ function unavailableResult(fallbackValue = null, error = null) {
     value: fallbackValue,
     error: error || new DOMException('localStorage is unavailable', STORAGE_ERROR.UNAVAILABLE),
     code: STORAGE_ERROR.UNAVAILABLE,
+    persisted: false,
+    volatile: false,
+    source: null,
   };
 }
 
@@ -81,15 +85,55 @@ function failureResult(error, fallbackValue = null) {
     value: fallbackValue,
     error,
     code: classifyStorageError(error),
+    persisted: false,
+    volatile: false,
+    source: null,
   };
 }
 
-function successResult(value) {
-  return { ok: true, value, code: null };
+function successResult(value, extras = {}) {
+  return {
+    ok: true,
+    value,
+    code: null,
+    persisted: true,
+    volatile: false,
+    source: 'persistent',
+    ...extras,
+  };
+}
+
+function volatileSuccessResult(value, error = null) {
+  return {
+    ok: true,
+    value,
+    code: error ? classifyStorageError(error) : null,
+    error: error || null,
+    persisted: false,
+    volatile: true,
+    source: 'memory',
+  };
+}
+
+function storeVolatileValue(key, value) {
+  volatileStorage.set(key, String(value));
+}
+
+function clearVolatileValue(key) {
+  volatileStorage.delete(key);
 }
 
 export function resetStorageAvailabilityCache() {
   storageAvailableCache = null;
+}
+
+export function resetVolatileStorageForTest() {
+  volatileStorage.clear();
+}
+
+export function hasVolatileStorageKey(key) {
+  const normalizedKey = String(key || '').trim();
+  return normalizedKey ? volatileStorage.has(normalizedKey) : false;
 }
 
 export function isStorageAvailable() {
@@ -125,6 +169,11 @@ export function getStorageItem(key, fallback = null) {
   if (!normalizedKey) {
     return failureResult({ code: STORAGE_ERROR.INVALID_KEY, message: 'Storage key is required' }, fallback);
   }
+
+  if (volatileStorage.has(normalizedKey)) {
+    return volatileSuccessResult(volatileStorage.get(normalizedKey));
+  }
+
   const backend = getStorageBackend();
   if (!backend.ok) return unavailableResult(fallback, backend.error);
   try {
@@ -137,20 +186,30 @@ export function getStorageItem(key, fallback = null) {
   }
 }
 
-export function setStorageItem(key, value) {
+export function setStorageItem(key, value, options = {}) {
+  const persistentOnly = !!options.persistentOnly;
   const normalizedKey = String(key || '').trim();
   if (!normalizedKey) {
     return failureResult({ code: STORAGE_ERROR.INVALID_KEY, message: 'Storage key is required' });
   }
+
   const backend = getStorageBackend();
-  if (!backend.ok) return unavailableResult(null, backend.error);
+  if (!backend.ok) {
+    if (persistentOnly) return unavailableResult(null, backend.error);
+    storeVolatileValue(normalizedKey, value);
+    return volatileSuccessResult(true, backend.error);
+  }
+
   try {
     backend.storage.setItem(normalizedKey, String(value));
+    clearVolatileValue(normalizedKey);
     storageAvailableCache = true;
     return successResult(true);
   } catch (error) {
     console.warn(`Could not write storage key ${normalizedKey}`, error);
-    return failureResult(error);
+    if (persistentOnly) return failureResult(error);
+    storeVolatileValue(normalizedKey, value);
+    return volatileSuccessResult(true, error);
   }
 }
 
@@ -159,6 +218,9 @@ export function removeStorageKey(key) {
   if (!normalizedKey) {
     return failureResult({ code: STORAGE_ERROR.INVALID_KEY, message: 'Storage key is required' });
   }
+
+  clearVolatileValue(normalizedKey);
+
   const backend = getStorageBackend();
   if (!backend.ok) return unavailableResult(null, backend.error);
   try {
@@ -171,19 +233,29 @@ export function removeStorageKey(key) {
 }
 
 export function listStorageKeys(prefix = '') {
+  const normalizedPrefix = String(prefix || '');
+  const keys = new Set();
+
+  volatileStorage.forEach((_value, key) => {
+    if (!normalizedPrefix || key.startsWith(normalizedPrefix)) keys.add(key);
+  });
+
   const backend = getStorageBackend();
-  if (!backend.ok) return unavailableResult([], backend.error);
+  if (!backend.ok) {
+    if (keys.size) return successResult([...keys]);
+    return unavailableResult([], backend.error);
+  }
+
   try {
-    const normalizedPrefix = String(prefix || '');
-    const keys = [];
     for (let index = 0; index < backend.storage.length; index += 1) {
       const key = backend.storage.key(index);
       if (!key) continue;
-      if (!normalizedPrefix || key.startsWith(normalizedPrefix)) keys.push(key);
+      if (!normalizedPrefix || key.startsWith(normalizedPrefix)) keys.add(key);
     }
-    return successResult(keys);
+    return successResult([...keys]);
   } catch (error) {
     console.warn('Could not enumerate storage keys', error);
+    if (keys.size) return successResult([...keys]);
     return failureResult(error, []);
   }
 }
@@ -191,18 +263,26 @@ export function listStorageKeys(prefix = '') {
 export function readStorageJSON(key, fallback) {
   const item = getStorageItem(key, null);
   if (!item.ok) return failureResult(item.error, fallback);
-  if (item.value === null) return successResult(fallback);
+  if (item.value === null) return successResult(fallback, {
+    persisted: item.persisted,
+    volatile: item.volatile,
+    source: item.source,
+  });
   try {
-    return successResult(JSON.parse(item.value));
+    return successResult(JSON.parse(item.value), {
+      persisted: item.persisted,
+      volatile: item.volatile,
+      source: item.source,
+    });
   } catch (error) {
     console.warn(`Could not parse storage JSON for ${key}`, error);
     return failureResult(error, fallback);
   }
 }
 
-export function writeStorageJSON(key, value) {
+export function writeStorageJSON(key, value, options = {}) {
   try {
-    return setStorageItem(key, JSON.stringify(value));
+    return setStorageItem(key, JSON.stringify(value), options);
   } catch (error) {
     console.warn(`Could not serialize storage JSON for ${key}`, error);
     return failureResult({ ...error, code: STORAGE_ERROR.SERIALIZE });
@@ -215,8 +295,8 @@ export function readJSONValue(key, fallback) {
 }
 
 /** Convenience write returning structured result. */
-export function writeJSON(key, value) {
-  return writeStorageJSON(key, value);
+export function writeJSON(key, value, options = {}) {
+  return writeStorageJSON(key, value, options);
 }
 
 /** Convenience read returning structured result. */
@@ -228,6 +308,7 @@ export async function getStorageDiagnostics() {
   const diagnostics = {
     available: isStorageAvailable(),
     probe: probeStorageWrite(),
+    volatileKeys: volatileStorage.size,
     estimate: null,
     persisted: null,
   };

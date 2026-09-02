@@ -1034,7 +1034,6 @@ export async function finishSession() {
   clearSessionTimer();
   stopRestLogAlert();
   clearTimerCheckpoint();
-  clearActiveSessionCheckpoint();
   state.phase = 'done';
   setStatus('done');
   setTimerDisplay('DONE', 'OK', 'session complete');
@@ -1043,16 +1042,21 @@ export async function finishSession() {
   vibrate([100, 50, 100, 50, 200]);
 
   activeResultRecord = buildSessionRecord(cfg, state.data);
+  let cloudSessionSaved = false;
   if (isSupabaseConfigured && getCurrentUser()) {
     try {
       await saveCloudSprintSession(activeResultRecord);
+      cloudSessionSaved = true;
     } catch (error) {
       console.warn('Cloud sprint session save failed', error);
     }
   }
   const { localCacheOk } = persistSessionRecord(activeResultRecord);
-  if (!localCacheOk) {
-    console.warn('Sprint session saved to cloud but local history cache failed');
+  if (cloudSessionSaved || localCacheOk) {
+    clearActiveSessionCheckpoint();
+  } else {
+    console.warn('Sprint session could not be saved to cloud or local history');
+    showToast('SESSION NOT SAVED — RETRY FROM RESULTS');
   }
 
   window.dispatchEvent(new CustomEvent('ringready:sprint-session-saved', { detail: activeResultRecord }));
@@ -1240,6 +1244,12 @@ export async function completeWorkout() {
       if (attachment) {
         activeResultRecord = { ...activeResultRecord, proofPolicyVersion: PROOF_POLICY_VERSION, attachment };
         if (isNewProof) enqueueWorkoutProofForSync(attachment);
+      }
+      if (isSupabaseConfigured && getCurrentUser()) {
+        await withOperationTimeout(
+          saveCloudSprintSession(activeResultRecord),
+          { timeoutMs: OPERATION_TIMEOUT_MS.IDENTITY_STAGING, operation: 'identity_staging' },
+        );
       }
     } catch (error) {
       console.warn('Sprint proof upload failed', error);

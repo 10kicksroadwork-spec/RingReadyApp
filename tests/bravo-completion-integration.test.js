@@ -237,30 +237,23 @@ describe('Bravo completion integration', () => {
     expect(getWorkoutCompletion(0, 1)).toBeNull();
   });
 
-  it('keeps cloud completion authoritative when local cache write fails', async () => {
+  it('keeps cloud completion authoritative when persistent storage rejects every write', async () => {
     setupDetailDom();
     const original = Storage.prototype.setItem;
-    let blockedCompletionWrite = false;
     Storage.prototype.setItem = function blockingSetItem(key, value) {
-      if (!blockedCompletionWrite && String(key).includes('ringReadyWorkoutCompletions')) {
-        blockedCompletionWrite = true;
+      if (String(key).includes('ringReadyWorkoutCompletions')) {
         throw new DOMException('quota', 'QuotaExceededError');
       }
       return original.call(this, key, value);
     };
 
     try {
-      saveCloudWorkoutCompletion.mockImplementation(async (record) => {
-        loadCloudWorkoutCompletions.mockResolvedValue({
-          '0:1': { ...record, completionKey: '0:1' },
-        });
-      });
-
       await completeWorkoutFromDetail(0, 1);
 
       expect(saveCloudWorkoutCompletion).toHaveBeenCalledTimes(1);
       expect(getWorkoutCompletion(0, 1)).toBeTruthy();
       expect(getWorkoutCompletion(0, 1)?.completionKey).toBe('0:1');
+      expect(localStorage.getItem('ringReadyWorkoutCompletions')).toBeNull();
     } finally {
       Storage.prototype.setItem = original;
     }
