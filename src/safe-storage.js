@@ -16,8 +16,34 @@ const PROBE_KEY = '__ring_ready_storage_probe__';
 
 let storageAvailableCache = null;
 
-function hasLocalStorage() {
-  return typeof localStorage !== 'undefined' && localStorage !== null;
+function getStorageBackend() {
+  try {
+    const storage = globalThis.localStorage;
+    if (!storage) {
+      return {
+        ok: false,
+        storage: null,
+        error: new DOMException('localStorage is unavailable', STORAGE_ERROR.UNAVAILABLE),
+        code: STORAGE_ERROR.UNAVAILABLE,
+      };
+    }
+    return { ok: true, storage, error: null, code: null };
+  } catch (error) {
+    return {
+      ok: false,
+      storage: null,
+      error,
+      code: STORAGE_ERROR.UNAVAILABLE,
+    };
+  }
+}
+
+export function isStorageAccessError(error) {
+  if (!error) return false;
+  const name = String(error.name || '');
+  if (name === 'SecurityError' || name === 'InvalidStateError') return true;
+  if (error.code === STORAGE_ERROR.UNAVAILABLE) return true;
+  return false;
 }
 
 export function isQuotaExceededError(error) {
@@ -25,12 +51,14 @@ export function isQuotaExceededError(error) {
   if (error.name === 'QuotaExceededError') return true;
   if (error.code === 22 || error.code === 1014) return true;
   const message = String(error.message || '').toLowerCase();
-  return message.includes('quota') || message.includes('storage');
+  return message.includes('quota');
 }
 
 export function classifyStorageError(error) {
   if (!error) return STORAGE_ERROR.UNKNOWN;
-  if (error.code === STORAGE_ERROR.UNAVAILABLE) return STORAGE_ERROR.UNAVAILABLE;
+  if (error.code === STORAGE_ERROR.UNAVAILABLE || isStorageAccessError(error)) {
+    return STORAGE_ERROR.UNAVAILABLE;
+  }
   if (isQuotaExceededError(error)) return STORAGE_ERROR.QUOTA_EXCEEDED;
   if (error instanceof SyntaxError) return STORAGE_ERROR.PARSE;
   if (error.code === STORAGE_ERROR.SERIALIZE) return STORAGE_ERROR.SERIALIZE;
@@ -38,11 +66,11 @@ export function classifyStorageError(error) {
   return STORAGE_ERROR.UNKNOWN;
 }
 
-function unavailableResult(fallbackValue = null) {
+function unavailableResult(fallbackValue = null, error = null) {
   return {
     ok: false,
     value: fallbackValue,
-    error: new DOMException('localStorage is unavailable', STORAGE_ERROR.UNAVAILABLE),
+    error: error || new DOMException('localStorage is unavailable', STORAGE_ERROR.UNAVAILABLE),
     code: STORAGE_ERROR.UNAVAILABLE,
   };
 }
@@ -57,21 +85,33 @@ function failureResult(error, fallbackValue = null) {
 }
 
 function successResult(value) {
-  return { ok: true, value };
+  return { ok: true, value, code: null };
+}
+
+export function resetStorageAvailabilityCache() {
+  storageAvailableCache = null;
 }
 
 export function isStorageAvailable() {
+  const backend = getStorageBackend();
+  if (!backend.ok) {
+    storageAvailableCache = false;
+    return false;
+  }
   if (storageAvailableCache === true) return true;
-  if (!hasLocalStorage()) return false;
   storageAvailableCache = probeStorageWrite().ok;
   return storageAvailableCache;
 }
 
 export function probeStorageWrite(probeKey = PROBE_KEY) {
-  if (!hasLocalStorage()) return unavailableResult();
+  const backend = getStorageBackend();
+  if (!backend.ok) {
+    storageAvailableCache = false;
+    return unavailableResult(null, backend.error);
+  }
   try {
-    localStorage.setItem(probeKey, '1');
-    localStorage.removeItem(probeKey);
+    backend.storage.setItem(probeKey, '1');
+    backend.storage.removeItem(probeKey);
     storageAvailableCache = true;
     return successResult(true);
   } catch (error) {
@@ -85,9 +125,10 @@ export function getStorageItem(key, fallback = null) {
   if (!normalizedKey) {
     return failureResult({ code: STORAGE_ERROR.INVALID_KEY, message: 'Storage key is required' }, fallback);
   }
-  if (!hasLocalStorage()) return unavailableResult(fallback);
+  const backend = getStorageBackend();
+  if (!backend.ok) return unavailableResult(fallback, backend.error);
   try {
-    const raw = localStorage.getItem(normalizedKey);
+    const raw = backend.storage.getItem(normalizedKey);
     if (raw === null) return successResult(fallback);
     return successResult(raw);
   } catch (error) {
@@ -101,9 +142,11 @@ export function setStorageItem(key, value) {
   if (!normalizedKey) {
     return failureResult({ code: STORAGE_ERROR.INVALID_KEY, message: 'Storage key is required' });
   }
-  if (!hasLocalStorage()) return unavailableResult();
+  const backend = getStorageBackend();
+  if (!backend.ok) return unavailableResult(null, backend.error);
   try {
-    localStorage.setItem(normalizedKey, String(value));
+    backend.storage.setItem(normalizedKey, String(value));
+    storageAvailableCache = true;
     return successResult(true);
   } catch (error) {
     console.warn(`Could not write storage key ${normalizedKey}`, error);
@@ -116,9 +159,10 @@ export function removeStorageKey(key) {
   if (!normalizedKey) {
     return failureResult({ code: STORAGE_ERROR.INVALID_KEY, message: 'Storage key is required' });
   }
-  if (!hasLocalStorage()) return unavailableResult();
+  const backend = getStorageBackend();
+  if (!backend.ok) return unavailableResult(null, backend.error);
   try {
-    localStorage.removeItem(normalizedKey);
+    backend.storage.removeItem(normalizedKey);
     return successResult(true);
   } catch (error) {
     console.warn(`Could not remove storage key ${normalizedKey}`, error);
@@ -127,12 +171,13 @@ export function removeStorageKey(key) {
 }
 
 export function listStorageKeys(prefix = '') {
-  if (!hasLocalStorage()) return unavailableResult([]);
+  const backend = getStorageBackend();
+  if (!backend.ok) return unavailableResult([], backend.error);
   try {
     const normalizedPrefix = String(prefix || '');
     const keys = [];
-    for (let index = 0; index < localStorage.length; index += 1) {
-      const key = localStorage.key(index);
+    for (let index = 0; index < backend.storage.length; index += 1) {
+      const key = backend.storage.key(index);
       if (!key) continue;
       if (!normalizedPrefix || key.startsWith(normalizedPrefix)) keys.push(key);
     }
