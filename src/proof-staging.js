@@ -22,7 +22,13 @@ export function planWorkoutIdentityStaging(existingRow, record) {
   }
 
   if (existingRow.proof_pending) {
-    return { action: 'refresh-provisional', created: true, clientRecordId, completionKey };
+    const existingId = textOrEmpty(existingRow.client_record_id);
+    return {
+      action: 'refresh-provisional',
+      created: true,
+      clientRecordId: existingId || clientRecordId,
+      completionKey,
+    };
   }
 
   if (!textOrEmpty(existingRow.client_record_id)) {
@@ -49,7 +55,13 @@ export function planMileTestIdentityStaging(existingRow, result, testContext) {
   }
 
   if (existingRow.proof_pending) {
-    return { action: 'refresh-provisional', created: true, clientRecordId, testKey };
+    const existingId = textOrEmpty(existingRow.client_record_id);
+    return {
+      action: 'refresh-provisional',
+      created: true,
+      clientRecordId: existingId || clientRecordId,
+      testKey,
+    };
   }
 
   if (!textOrEmpty(existingRow.client_record_id)) {

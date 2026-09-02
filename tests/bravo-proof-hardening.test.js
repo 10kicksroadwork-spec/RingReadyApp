@@ -189,11 +189,19 @@ describe('Bravo proof diagnostics', () => {
     expect(isProofErrorAmbiguous(err)).toBe(false);
   });
 
-  it('classifies bucket-not-found storage failures as deterministic', () => {
-    const err = createProofUploadError(new Error('Bucket not found'), PROOF_UPLOAD_PHASE.STORAGE);
-    expect(err.proofAmbiguous).toBe(false);
-    expect(err.proofDeterministic).toBe(true);
-    expect(isProofErrorDeterministic(err)).toBe(true);
+  it('classifies TypeError Load failed transport rejections as ambiguous rpc failures', () => {
+    const err = createProofUploadError(new TypeError('Load failed'), PROOF_UPLOAD_PHASE.RPC);
+    expect(err.proofFailurePhase).toBe(PROOF_UPLOAD_PHASE.RPC);
+    expect(err.proofAmbiguous).toBe(true);
+    expect(err.proofDeterministic).toBe(false);
+    expect(isProofErrorDeterministic(err)).toBe(false);
+  });
+
+  it('classifies TypeError Load failed transport rejections as ambiguous storage failures', () => {
+    const err = createProofUploadError(new TypeError('Load failed'), PROOF_UPLOAD_PHASE.STORAGE);
+    expect(err.proofFailurePhase).toBe(PROOF_UPLOAD_PHASE.STORAGE);
+    expect(err.proofAmbiguous).toBe(true);
+    expect(isProofErrorDeterministic(err)).toBe(false);
   });
 });
 
@@ -292,14 +300,31 @@ describe('Bravo proof upload pipeline', () => {
     await seedProcessedProof('detail');
     await expect(ensureWorkoutProofUploaded('detail', 'record-1')).resolves.toMatchObject({ id: 'attachment-1' });
 
-    const state = __getProofStateForTest('detail');
-    state.processed = { blob: new Blob(['y'], { type: 'image/webp' }), width: 120, height: 120, mimeType: 'image/webp' };
-    state.filename = 'proof-b.png';
-    state.uploadId = 'upload-identity-2';
-    state.storagePath = 'user-1/program-7-0-1/upload-identity-2.webp';
+    globalThis.createImageBitmap = vi.fn(async () => ({
+      width: 120,
+      height: 120,
+      close: () => {},
+    }));
+    HTMLCanvasElement.prototype.getContext = vi.fn(() => ({
+      fillStyle: '',
+      fillRect: vi.fn(),
+      drawImage: vi.fn(),
+    }));
+    HTMLCanvasElement.prototype.toDataURL = vi.fn(() => 'data:image/webp;base64,abc');
+    HTMLCanvasElement.prototype.toBlob = vi.fn((callback) => {
+      callback(new Blob(['y'], { type: 'image/webp' }));
+    });
+    globalThis.URL.createObjectURL = vi.fn(() => 'blob:new-preview');
+    globalThis.URL.revokeObjectURL = vi.fn();
 
+    const firstPath = 'user-1/program-7-0-1/upload-identity-1.webp';
+    await __handleProofFileForTest('detail', new File([new Blob(['y'], { type: 'image/png' })], 'proof-b.png', { type: 'image/png' }));
+    const secondPath = __getProofStateForTest('detail').storagePath;
+
+    expect(secondPath).toBeTruthy();
+    expect(secondPath).not.toBe(firstPath);
     await expect(ensureWorkoutProofUploaded('detail', 'record-1')).resolves.toBeTruthy();
-    expect(storageUpload.mock.calls.at(-1)[0]).toBe('user-1/program-7-0-1/upload-identity-2.webp');
+    expect(storageUpload.mock.calls.at(-1)[0]).toBe(secondPath);
   });
 
   it('does not delete storage after ambiguous rpc failure', async () => {
@@ -406,5 +431,77 @@ describe('Bravo proof upload pipeline', () => {
     expect(storageUpload).toHaveBeenCalledTimes(1);
     expect(rpc).toHaveBeenCalledTimes(1);
     expect(key).toBe('proof:detail:program:7:0:1:upload-identity-1');
+  });
+
+  it('disables the picker while contract health is pending', async () => {
+    await seedProcessedProof('detail');
+    let releaseHealth;
+    globalThis.fetch = vi.fn(() => new Promise((resolve) => {
+      releaseHealth = () => resolve({
+        ok: true,
+        json: async () => ({
+          ok: true,
+          service: 'ringready',
+          buildSha: 'abc1234',
+          proofContractVersion: 2,
+          environment: 'development',
+        }),
+      });
+    }));
+
+    const uploadPromise = ensureWorkoutProofUploaded('detail', 'record-1');
+    await vi.waitFor(() => {
+      expect(__getProofStateForTest('detail').uploading).toBe(true);
+      expect(canReplaceWorkoutProof('detail')).toBe(false);
+    }, { timeout: 2000 });
+    expect(document.querySelector('[data-proof-input="detail"]')?.disabled).toBe(true);
+
+    releaseHealth();
+    await uploadPromise;
+  }, 10000);
+
+  it('preserves active upload lock when the same proof surface reinitializes', async () => {
+    mockHealthyContract();
+    await seedProcessedProof('detail');
+    storageUpload.mockImplementationOnce(() => new Promise(() => {}));
+
+    ensureWorkoutProofUploaded('detail', 'record-1');
+    await vi.waitFor(() => expect(canReplaceWorkoutProof('detail')).toBe(false));
+
+    initWorkoutProof('detail', {
+      proofKey: 'program:7:0:1',
+      context: { campLength: 7, weekIndex: 0, workoutIndex: 1, workoutType: 'Threshold' },
+    });
+
+    expect(canReplaceWorkoutProof('detail')).toBe(false);
+    expect(__getProofStateForTest('detail').uploading).toBe(true);
+  });
+
+  it('treats rejected rpc transport failures as ambiguous without deleting storage', async () => {
+    mockHealthyContract();
+    await seedProcessedProof('detail');
+    rpc.mockImplementationOnce(() => Promise.reject(new TypeError('Load failed')));
+
+    await expect(ensureWorkoutProofUploaded('detail', 'record-1')).rejects.toMatchObject({
+      proofFailurePhase: PROOF_UPLOAD_PHASE.RPC,
+      proofAmbiguous: true,
+      proofDeterministic: false,
+    });
+    expect(storageRemove).not.toHaveBeenCalled();
+    expect(__getProofStateForTest('detail').ambiguousLinkedRecordId).toBe('record-1');
+  });
+
+  it('rejects proof retry when linked record id diverges from ambiguous attempt', async () => {
+    mockHealthyContract();
+    await seedProcessedProof('detail');
+    const state = __getProofStateForTest('detail');
+    state.ambiguousRpcPending = 'upload-identity-1';
+    state.ambiguousLinkedRecordId = 'record-A';
+
+    await expect(ensureWorkoutProofUploaded('detail', 'record-B')).rejects.toMatchObject({
+      proofDiagnosticDetail: 'proof_retry_identity_mismatch',
+    });
+    expect(storageUpload).not.toHaveBeenCalled();
+    expect(rpc).not.toHaveBeenCalled();
   });
 });

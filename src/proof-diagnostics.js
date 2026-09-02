@@ -115,7 +115,10 @@ export function classifyProofUploadError(error, phase = '') {
     || message.includes('storage')
     || message.includes('bucket')
   ) {
-    const ambiguous = message.includes('failed to fetch') || message.includes('network');
+    const ambiguous = message.includes('failed to fetch')
+      || message.includes('network')
+      || message.includes('load failed')
+      || (error?.name === 'TypeError' && (message.includes('load') || message.includes('fetch')));
     return {
       kind: PROOF_FAILURE_KIND.STORAGE,
       userMessage: ambiguous
@@ -130,13 +133,21 @@ export function classifyProofUploadError(error, phase = '') {
 
   if (
     message.includes('failed to fetch')
-    || message.includes('network')
+    || message.includes('load failed')
+    || message.includes('network error')
+    || message.includes('networkrequestfailed')
     || message.includes('internet connection')
+    || (error?.name === 'TypeError' && (message.includes('load') || message.includes('fetch')))
   ) {
+    const kind = resolvedPhase === PROOF_UPLOAD_PHASE.STORAGE
+      ? PROOF_FAILURE_KIND.STORAGE
+      : resolvedPhase === PROOF_UPLOAD_PHASE.RPC
+        ? PROOF_FAILURE_KIND.RPC
+        : PROOF_FAILURE_KIND.NETWORK;
     return {
-      kind: PROOF_FAILURE_KIND.NETWORK,
+      kind,
       userMessage: AMBIGUOUS_PROOF_MESSAGE,
-      diagnosticDetail: 'network_error',
+      diagnosticDetail: resolvedPhase ? `${resolvedPhase}_transport_rejection` : 'network_error',
       retryable: true,
       ambiguous: true,
       raw,
@@ -174,6 +185,17 @@ export function classifyProofUploadError(error, phase = '') {
     };
   }
 
+  if (resolvedPhase === PROOF_UPLOAD_PHASE.STORAGE || resolvedPhase === PROOF_UPLOAD_PHASE.RPC) {
+    return {
+      kind: resolvedPhase === PROOF_UPLOAD_PHASE.STORAGE ? PROOF_FAILURE_KIND.STORAGE : PROOF_FAILURE_KIND.RPC,
+      userMessage: AMBIGUOUS_PROOF_MESSAGE,
+      diagnosticDetail: `${resolvedPhase}_transport_unknown`,
+      retryable: true,
+      ambiguous: true,
+      raw,
+    };
+  }
+
   return {
     kind: PROOF_FAILURE_KIND.UNKNOWN,
     userMessage: raw || 'Could not save workout proof.',
@@ -197,7 +219,8 @@ export function createProofUploadError(error, phase = '') {
   err.proofFailurePhase = resolvedPhase;
   err.proofRetryable = classified.retryable;
   err.proofAmbiguous = classified.ambiguous;
-  err.proofDeterministic = classified.ambiguous === false;
+  err.proofDeterministic = classified.ambiguous === false
+    && classified.kind !== PROOF_FAILURE_KIND.UNKNOWN;
   err.proofDiagnosticDetail = classified.diagnosticDetail;
   err.proofRawMessage = classified.raw;
   err.ambiguous = classified.ambiguous;

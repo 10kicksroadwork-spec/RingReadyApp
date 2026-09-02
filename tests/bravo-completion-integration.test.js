@@ -174,6 +174,40 @@ describe('Bravo completion integration', () => {
     vi.useRealTimers();
   });
 
+  it('detail retry keeps canonical linked record id after ambiguous proof failure', async () => {
+    setupDetailDom();
+    ensureCloudWorkoutIdentity
+      .mockResolvedValueOnce({ created: true, clientRecordId: 'record-A' })
+      .mockResolvedValueOnce({ created: true, clientRecordId: 'record-A' });
+    ensureWorkoutProofUploaded
+      .mockRejectedValueOnce(createProofUploadError(new TypeError('Load failed'), PROOF_UPLOAD_PHASE.RPC))
+      .mockResolvedValueOnce({ id: 'proof-attachment-1' });
+
+    await completeWorkoutFromDetail(0, 1);
+    await completeWorkoutFromDetail(0, 1);
+
+    expect(ensureWorkoutProofUploaded.mock.calls[0][1]).toBe('record-A');
+    expect(ensureWorkoutProofUploaded.mock.calls[1][1]).toBe('record-A');
+    expect(rollbackCloudWorkoutIdentity).not.toHaveBeenCalled();
+  });
+
+  it('mile retry keeps canonical linked record id after ambiguous proof failure', async () => {
+    setupMileDom();
+    ensureCloudMileTestIdentity
+      .mockResolvedValueOnce({ created: true, clientRecordId: 'mile-record-A' })
+      .mockResolvedValueOnce({ created: true, clientRecordId: 'mile-record-A' });
+    ensureWorkoutProofUploaded
+      .mockRejectedValueOnce(createProofUploadError(new TypeError('Load failed'), PROOF_UPLOAD_PHASE.RPC))
+      .mockResolvedValueOnce({ id: 'proof-attachment-1' });
+
+    await saveMileTestResult();
+    await saveMileTestResult();
+
+    expect(ensureWorkoutProofUploaded.mock.calls[0][1]).toBe('mile-record-A');
+    expect(ensureWorkoutProofUploaded.mock.calls[1][1]).toBe('mile-record-A');
+    expect(rollbackCloudMileTestIdentity).not.toHaveBeenCalled();
+  });
+
   it('rolls back provisional detail identity after deterministic storage failure', async () => {
     setupDetailDom();
     ensureWorkoutProofUploaded.mockRejectedValue(

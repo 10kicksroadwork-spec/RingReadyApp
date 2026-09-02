@@ -11,6 +11,7 @@ import {
 } from './proof-diagnostics.js';
 import { OPERATION_TIMEOUT_MS, withOperationTimeout } from './operation-timeout.js';
 import { captureRuntimeDiagnostic, sanitizeDiagnosticValue } from './runtime-diagnostics.js';
+import { runProofTransportOperation } from './proof-transport.js';
 import { runSingleFlight } from './single-flight.js';
 
 export const PROOF_POLICY_VERSION = 1;
@@ -170,11 +171,23 @@ async function removeStagedStorageBestEffort(storagePath) {
 function reconcileAttemptSuccess(state, attempt) {
   if (state.uploadId !== attempt.uploadId) return false;
   state.ambiguousRpcPending = null;
+  state.ambiguousLinkedRecordId = null;
   state.processed = null;
   clearStagedUploadIdentity(state);
   revokePreview(state);
   state.previewUrl = '';
   return true;
+}
+
+function createProofRetryIdentityMismatchError() {
+  const err = new Error('Proof retry identity mismatch. Refresh and try again.');
+  err.proofFailureKind = 'proof_retry_identity_mismatch';
+  err.proofFailurePhase = PROOF_UPLOAD_PHASE.RPC;
+  err.proofAmbiguous = false;
+  err.proofDeterministic = true;
+  err.proofRetryable = false;
+  err.proofDiagnosticDetail = 'proof_retry_identity_mismatch';
+  return err;
 }
 
 function render(surface) {
@@ -351,21 +364,22 @@ export function canReplaceWorkoutProof(surface) {
 export function initWorkoutProof(surface, options = {}) {
   bindListeners();
   const previous = states.get(surface);
-  if (previous?.proofKey !== options.proofKey) revokePreview(previous);
-  const keepProcessed = previous?.proofKey === options.proofKey ? previous.processed : null;
+  const sameProofKey = previous?.proofKey === options.proofKey;
+  if (!sameProofKey) revokePreview(previous);
   states.set(surface, {
     proofKey: options.proofKey,
     context: options.context || {},
     existingAttachment: options.existingAttachment || null,
     legacy: !!options.legacy,
-    processed: keepProcessed,
-    filename: previous?.proofKey === options.proofKey ? previous.filename : '',
-    previewUrl: previous?.proofKey === options.proofKey ? previous.previewUrl : '',
-    uploadId: previous?.proofKey === options.proofKey ? previous.uploadId : null,
-    storagePath: previous?.proofKey === options.proofKey ? previous.storagePath : null,
-    ambiguousRpcPending: previous?.proofKey === options.proofKey ? previous.ambiguousRpcPending : null,
-    uploading: false,
-    error: '',
+    processed: sameProofKey ? previous.processed : null,
+    filename: sameProofKey ? previous.filename : '',
+    previewUrl: sameProofKey ? previous.previewUrl : '',
+    uploadId: sameProofKey ? previous.uploadId : null,
+    storagePath: sameProofKey ? previous.storagePath : null,
+    ambiguousRpcPending: sameProofKey ? previous.ambiguousRpcPending : null,
+    ambiguousLinkedRecordId: sameProofKey ? previous.ambiguousLinkedRecordId : null,
+    uploading: sameProofKey ? !!previous.uploading : false,
+    error: sameProofKey ? previous.error : '',
   });
   render(surface);
   emitState(surface);
@@ -390,40 +404,48 @@ export function getProofUploadIdentity(surface) {
 }
 
 async function executeProofAttempt(attempt) {
-  const { error: uploadError } = await withOperationTimeout(
-    supabase.storage.from(PROOF_BUCKET).upload(attempt.storagePath, attempt.processed.blob, {
-      contentType: attempt.uploadMimeType,
-      upsert: true,
-      cacheControl: '3600',
-    }),
-    {
-      timeoutMs: OPERATION_TIMEOUT_MS.STORAGE_UPLOAD,
-      operation: 'proof_storage_upload',
-    },
+  const uploadResult = await runProofTransportOperation(
+    withOperationTimeout(
+      supabase.storage.from(PROOF_BUCKET).upload(attempt.storagePath, attempt.processed.blob, {
+        contentType: attempt.uploadMimeType,
+        upsert: true,
+        cacheControl: '3600',
+      }),
+      {
+        timeoutMs: OPERATION_TIMEOUT_MS.STORAGE_UPLOAD,
+        operation: 'proof_storage_upload',
+      },
+    ),
+    'proof_storage_upload',
   );
+  const { error: uploadError } = uploadResult;
   if (uploadError) throw createProofUploadError(uploadError, PROOF_UPLOAD_PHASE.STORAGE);
 
-  const { data, error: rowError } = await withOperationTimeout(
-    supabase.rpc('create_workout_proof_attachment', {
-      p_proof_key: attempt.proofKey,
-      p_linked_record_id: attempt.linkedRecordId,
-      p_storage_path: attempt.storagePath,
-      p_original_filename: attempt.filename || `workout-proof.${attempt.uploadExtension}`,
-      p_mime_type: attempt.uploadMimeType,
-      p_file_size: attempt.processed.blob.size,
-      p_width: attempt.processed.width,
-      p_height: attempt.processed.height,
-      p_camp_length: Number(attempt.context.campLength) || null,
-      p_week_index: Number.isFinite(Number(attempt.context.weekIndex)) ? Number(attempt.context.weekIndex) : null,
-      p_workout_index: Number.isFinite(Number(attempt.context.workoutIndex)) ? Number(attempt.context.workoutIndex) : null,
-      p_workout_type: String(attempt.context.workoutType || 'Workout'),
-      p_day_of_week: String(attempt.context.dayOfWeek || ''),
-    }),
-    {
-      timeoutMs: OPERATION_TIMEOUT_MS.PROOF_RPC,
-      operation: 'proof_rpc',
-    },
+  const rpcResult = await runProofTransportOperation(
+    withOperationTimeout(
+      supabase.rpc('create_workout_proof_attachment', {
+        p_proof_key: attempt.proofKey,
+        p_linked_record_id: attempt.linkedRecordId,
+        p_storage_path: attempt.storagePath,
+        p_original_filename: attempt.filename || `workout-proof.${attempt.uploadExtension}`,
+        p_mime_type: attempt.uploadMimeType,
+        p_file_size: attempt.processed.blob.size,
+        p_width: attempt.processed.width,
+        p_height: attempt.processed.height,
+        p_camp_length: Number(attempt.context.campLength) || null,
+        p_week_index: Number.isFinite(Number(attempt.context.weekIndex)) ? Number(attempt.context.weekIndex) : null,
+        p_workout_index: Number.isFinite(Number(attempt.context.workoutIndex)) ? Number(attempt.context.workoutIndex) : null,
+        p_workout_type: String(attempt.context.workoutType || 'Workout'),
+        p_day_of_week: String(attempt.context.dayOfWeek || ''),
+      }),
+      {
+        timeoutMs: OPERATION_TIMEOUT_MS.PROOF_RPC,
+        operation: 'proof_rpc',
+      },
+    ),
+    'proof_rpc',
   );
+  const { data, error: rowError } = rpcResult;
 
   if (rowError) {
     const rpcError = createProofUploadError(rowError, PROOF_UPLOAD_PHASE.RPC);
@@ -446,40 +468,48 @@ async function ensureWorkoutProofUploadedInner(surface, linkedRecordId = '') {
   }
   if (!state.processed) throw new Error('Choose a workout screenshot first.');
 
-  try {
-    const contractResult = await assertProofContractCurrent();
-    if (contractResult.status === 'unavailable') {
-      captureRuntimeDiagnostic({
-        kind: 'contract_health_unavailable',
-        stage: 'proof_precheck',
-        detail: getContractHealthDiagnosticDetail(contractResult),
-      });
-    }
-  } catch (error) {
-    if (error?.contractHealthStatus === 'mismatch') {
-      state.error = error.message;
-      captureRuntimeDiagnostic({
-        kind: 'contract_mismatch',
-        stage: 'proof_precheck',
-        detail: error.contractHealth?.reason || 'mismatch',
-        message: error.message,
-      });
-      throw error;
-    }
-    captureRuntimeDiagnostic({
-      kind: 'contract_health_unavailable',
-      stage: 'proof_precheck',
-      detail: error?.message || 'health_check_failed',
-    });
+  const attempt = createProofAttempt(state, linkedRecordId);
+  if (
+    state.ambiguousRpcPending === attempt.uploadId
+    && state.ambiguousLinkedRecordId
+    && state.ambiguousLinkedRecordId !== attempt.linkedRecordId
+  ) {
+    throw createProofRetryIdentityMismatchError();
   }
 
-  const attempt = createProofAttempt(state, linkedRecordId);
   state.uploading = true;
   state.error = '';
   render(surface);
   emitState(surface);
 
   try {
+    try {
+      const contractResult = await assertProofContractCurrent();
+      if (contractResult.status === 'unavailable') {
+        captureRuntimeDiagnostic({
+          kind: 'contract_health_unavailable',
+          stage: 'proof_precheck',
+          detail: getContractHealthDiagnosticDetail(contractResult),
+        });
+      }
+    } catch (error) {
+      if (error?.contractHealthStatus === 'mismatch') {
+        state.error = error.message;
+        captureRuntimeDiagnostic({
+          kind: 'contract_mismatch',
+          stage: 'proof_precheck',
+          detail: error.contractHealth?.reason || 'mismatch',
+          message: error.message,
+        });
+        throw error;
+      }
+      captureRuntimeDiagnostic({
+        kind: 'contract_health_unavailable',
+        stage: 'proof_precheck',
+        detail: error?.message || 'health_check_failed',
+      });
+    }
+
     const attachment = await executeProofAttempt(attempt);
     state.existingAttachment = attachment;
     reconcileAttemptSuccess(state, attempt);
@@ -492,8 +522,10 @@ async function ensureWorkoutProofUploadedInner(surface, linkedRecordId = '') {
     const classified = error?.proofFailureKind ? error : createProofUploadError(error);
     if (isProofErrorAmbiguous(classified)) {
       state.ambiguousRpcPending = attempt.uploadId;
+      state.ambiguousLinkedRecordId = attempt.linkedRecordId;
     } else if (isProofErrorDeterministic(classified)) {
       state.ambiguousRpcPending = null;
+      state.ambiguousLinkedRecordId = null;
     }
     state.error = classified.message || AMBIGUOUS_PROOF_MESSAGE;
     captureRuntimeDiagnostic({

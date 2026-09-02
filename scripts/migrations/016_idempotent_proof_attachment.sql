@@ -86,6 +86,8 @@ begin
     raise exception 'linked_record_id not found or context mismatch for caller';
   end if;
 
+  perform pg_advisory_xact_lock(hashtext(caller_id::text || ':' || p_proof_key));
+
   select *
   into existing
   from public.workout_attachments

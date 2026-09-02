@@ -672,6 +672,56 @@ async function run() {
     assert(!!validConflictError, 'Same storage path with a second valid logical identity must be rejected');
     assert(String(validConflictError.message || '').includes('idempotency key conflict'), `Expected idempotency conflict, got: ${validConflictError.message || 'unknown'}`);
 
+    const replaceMileKey = `${testPrefix}:replace-concurrent-mile`;
+    const replaceClientId = `${testPrefix}:replace-concurrent-client`;
+    const { data: replaceMileRow, error: replaceMileError } = await client.from('mile_tests').insert({
+      user_id: user.id,
+      test_key: replaceMileKey,
+      client_record_id: replaceClientId,
+    }).select('id').single();
+    assert(!replaceMileError && replaceMileRow?.id, `Could not seed replace concurrent mile test: ${replaceMileError?.message || 'unknown'}`);
+    createdMileTestIds.push(replaceMileRow.id);
+    const replaceOldPath = `${user.id}/${replaceMileKey}/old-current.webp`;
+    const replaceNewPath = `${user.id}/${replaceMileKey}/new-replacement.webp`;
+    storagePaths.push(replaceOldPath, replaceNewPath);
+    await uploadProofBlob(client, replaceOldPath);
+    await uploadProofBlob(client, replaceNewPath);
+    const replaceBaseParams = {
+      p_proof_key: replaceMileKey,
+      p_linked_record_id: replaceClientId,
+    };
+    const replaceOldProof = await createProof(client, { ...replaceBaseParams, p_storage_path: replaceOldPath });
+    assert(!replaceOldProof.error && replaceOldProof.data?.id, `Old current proof must succeed: ${replaceOldProof.error?.message || 'unknown'}`);
+    createdAttachmentIds.push(replaceOldProof.data.id);
+    const [replaceConcurrentA, replaceConcurrentB] = await Promise.all([
+      createProof(client, { ...replaceBaseParams, p_storage_path: replaceNewPath }),
+      createProof(client, { ...replaceBaseParams, p_storage_path: replaceNewPath }),
+    ]);
+    assert(!replaceConcurrentA.error && replaceConcurrentA.data?.id, `Replace concurrent A must succeed: ${replaceConcurrentA.error?.message || 'unknown'}`);
+    assert(!replaceConcurrentB.error && replaceConcurrentB.data?.id, `Replace concurrent B must succeed: ${replaceConcurrentB.error?.message || 'unknown'}`);
+    assert(replaceConcurrentA.data.id === replaceConcurrentB.data.id, 'Concurrent replacement path must converge on one attachment id');
+    if (replaceConcurrentB.data.id !== replaceOldProof.data.id) {
+      createdAttachmentIds.push(replaceConcurrentB.data.id);
+    }
+    const { data: oldAfterReplace } = await client
+      .from('workout_attachments')
+      .select('is_current')
+      .eq('id', replaceOldProof.data.id)
+      .single();
+    const { data: newAfterReplace } = await client
+      .from('workout_attachments')
+      .select('is_current')
+      .eq('id', replaceConcurrentA.data.id)
+      .single();
+    assert(oldAfterReplace?.is_current === false, 'Old current proof must become non-current after replacement');
+    assert(newAfterReplace?.is_current === true, 'Concurrent replacement proof must remain current');
+    const { count: replaceNewCount } = await client
+      .from('workout_attachments')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', user.id)
+      .eq('storage_path', replaceNewPath);
+    assert(replaceNewCount === 1, `Replacement path must create exactly one row, got ${replaceNewCount}`);
+
     console.log('PASS: proof authorization matrix');
   } finally {
     cleanupErrors = await runCleanup(client, {

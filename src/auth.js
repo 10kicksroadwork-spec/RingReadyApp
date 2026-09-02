@@ -541,12 +541,12 @@ export async function ensureCloudWorkoutIdentity(record) {
     return { clientRecordId: staging.clientRecordId, created: false };
   }
 
-  const payload = buildProvisionalWorkoutCloudPayload(record, user.id);
+  const payload = buildProvisionalWorkoutCloudPayload({ ...record, id: staging.clientRecordId }, user.id);
   if (staging.action === 'refresh-provisional') {
     const { error } = await supabase
       .from('workout_completions')
       .update({
-        client_record_id: payload.client_record_id,
+        client_record_id: staging.clientRecordId,
         week_index: payload.week_index,
         workout_index: payload.workout_index,
         week_label: payload.week_label,
@@ -750,12 +750,16 @@ export async function ensureCloudMileTestIdentity(result, hrInfo, testContext) {
     return { clientRecordId: staging.clientRecordId, created: false };
   }
 
-  const payload = buildProvisionalMileTestCloudPayload(result, testContext, user.id);
+  const payload = buildProvisionalMileTestCloudPayload(
+    { ...result, id: staging.clientRecordId },
+    testContext,
+    user.id,
+  );
   if (staging.action === 'refresh-provisional') {
     const { error } = await supabase
       .from('mile_tests')
       .update({
-        client_record_id: payload.client_record_id,
+        client_record_id: staging.clientRecordId,
         proof_pending: true,
         result_json: payload.result_json,
         test_context_json: payload.test_context_json,
