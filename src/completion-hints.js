@@ -4,9 +4,6 @@ function escapeHTML(value) {
 
 export function buildProofChecklistItem(hasProof, { label = 'Workout screenshot' } = {}) {
   if (hasProof) return { label, done: true };
-  if (typeof navigator !== 'undefined' && !navigator.onLine) {
-    return { label: 'Internet connection for screenshot upload', done: false };
-  }
   return { label, done: false };
 }
 
