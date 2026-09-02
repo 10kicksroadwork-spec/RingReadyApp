@@ -520,7 +520,8 @@ async function ensureWorkoutProofUploadedInner(surface, linkedRecordId = '') {
   if (state.existingAttachment && !state.processed) return state.existingAttachment;
   if (state.legacy && !state.processed) return null;
   if (!isSupabaseConfigured || !supabase || !getCurrentUser()) {
-    throw new Error('Sign in before submitting workout proof.');
+    if (!state.processed) throw new Error('Choose a workout screenshot first.');
+    return null;
   }
   if (!state.processed) throw new Error('Choose a workout screenshot first.');
 
