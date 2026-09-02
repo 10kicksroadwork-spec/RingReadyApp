@@ -1,42 +1,53 @@
 ﻿import { renderBuildInfo } from './build-info.js';
+import { captureRuntimeDiagnostic } from './runtime-diagnostics.js';
+import { buildSkipWaitingMessage } from './pwa-activation-protocol.js';
+import { createServiceWorkerUpdateLifecycle } from './pwa-update-lifecycle.js';
 
 let deferredInstallPrompt = null;
-
-let hasSeenServiceWorkerController = false;
-let serviceWorkerReloadPending = false;
-let serviceWorkerReloadStarted = false;
-let deferredReloadObserver = null;
+let iosInstallInstructionsVisible = false;
+let updateLifecycle = null;
+let screenChangeListenerInstalled = false;
+let waitingServiceWorker = null;
 
 function isStandalone() {
   return window.matchMedia('(display-mode: standalone)').matches
     || window.navigator.standalone === true;
 }
 
-function getInstallCopy() {
-  if (isStandalone()) {
+export function isIOSInstallSurface() {
+  return /iPad|iPhone|iPod/.test(navigator.userAgent || '')
+    || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+}
+
+export function getInstallCopy(options = {}) {
+  const standalone = options.standalone ?? isStandalone();
+  const hasDeferredPrompt = options.hasDeferredPrompt ?? Boolean(deferredInstallPrompt);
+  const isIOS = options.isIOS ?? isIOSInstallSurface();
+
+  if (standalone) {
     return {
       title: 'Installed',
       copy: 'Runs from your home screen and keeps the workout shell available offline.',
       button: 'OPEN',
+      actionable: false,
     };
   }
 
-  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent || '')
-    || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-
-  if (deferredInstallPrompt) {
+  if (hasDeferredPrompt) {
     return {
       title: 'Install Ready',
       copy: 'Add Ring Ready to this device for app-style access.',
       button: 'INSTALL',
+      actionable: true,
     };
   }
 
   if (isIOS) {
     return {
-      title: 'Home Screen Ready',
-      copy: 'Use the browser share menu to add Ring Ready to your home screen.',
-      button: 'READY',
+      title: 'ADD TO HOME SCREEN',
+      copy: 'Install Ring Ready for app-style access and the most reliable workout experience.',
+      button: 'HOW TO INSTALL',
+      actionable: true,
     };
   }
 
@@ -44,33 +55,21 @@ function getInstallCopy() {
     title: 'Web App Ready',
     copy: 'This device can run Ring Ready from the browser or home screen.',
     button: 'READY',
+    actionable: false,
   };
 }
 
-export function updateInstallUI() {
-  const title = document.getElementById('install-title');
-  const copy = document.getElementById('install-copy');
-  const btn = document.getElementById('install-btn');
-
-  if (!title || !copy || !btn) return;
-
-  const state = getInstallCopy();
-
-  title.textContent = state.title;
-  copy.textContent = state.copy;
-  btn.textContent = state.button;
-
-  btn.disabled = !deferredInstallPrompt || isStandalone();
-  btn.style.opacity = deferredInstallPrompt && !isStandalone()
-    ? '1'
-    : '0.55';
+function getActiveScreenId() {
+  return document.querySelector('.screen.active')?.id || '';
 }
 
-function shouldAutoReloadForUpdate() {
-  const activeScreen = document.querySelector('.screen.active');
-  const screenId = activeScreen?.id || '';
-
-  return !['session', 'results', 'setup'].includes(screenId);
+function recordUpdateDiagnostic(entry) {
+  captureRuntimeDiagnostic({
+    kind: entry.kind,
+    stage: 'pwa_update',
+    detail: entry.detail || '',
+    screen: entry.screen || getActiveScreenId(),
+  });
 }
 
 function notifyAppUpdate(showToast) {
@@ -83,53 +82,74 @@ function notifyAppUpdate(showToast) {
   }
 }
 
-function performSafeUpdateReload(showToast) {
-  if (!serviceWorkerReloadPending) return;
-  if (serviceWorkerReloadStarted) return;
-  if (!shouldAutoReloadForUpdate()) return;
-
-  serviceWorkerReloadPending = false;
-  serviceWorkerReloadStarted = true;
-
-  notifyAppUpdate(showToast);
-
-  window.setTimeout(() => {
-    window.location.reload();
-  }, 300);
+function syncWaitingServiceWorker(worker) {
+  if (worker) {
+    waitingServiceWorker = worker;
+  }
 }
 
-function watchForSafeReload(showToast) {
-  if (deferredReloadObserver) return;
-  if (!document.body) return;
-  if (typeof MutationObserver === 'undefined') return;
-
-  deferredReloadObserver = new MutationObserver(() => {
-    performSafeUpdateReload(showToast);
-  });
-
-  deferredReloadObserver.observe(document.body, {
-    subtree: true,
-    attributes: true,
-    attributeFilter: ['class'],
-  });
+function clearWaitingServiceWorker() {
+  waitingServiceWorker = null;
 }
 
-function activateWaitingServiceWorker(registration) {
-  if (!registration?.waiting) return;
+function postSkipWaitingToWorker() {
+  if (!waitingServiceWorker) return false;
 
-  registration.waiting.postMessage({
-    type: 'SKIP_WAITING',
-  });
+  try {
+    waitingServiceWorker.postMessage(buildSkipWaitingMessage());
+    return true;
+  } catch (error) {
+    console.warn('Service worker activation request failed', error);
+    return false;
+  }
 }
 
-function watchServiceWorkerUpdates(registration) {
+function ensureUpdateLifecycle(showToast) {
+  if (updateLifecycle) return updateLifecycle;
+
+  updateLifecycle = createServiceWorkerUpdateLifecycle({
+    initialController: Boolean(navigator.serviceWorker?.controller),
+    getScreen: getActiveScreenId,
+    onDiagnostic: recordUpdateDiagnostic,
+    onSkipWaiting: () => postSkipWaitingToWorker(),
+    onReload: () => {
+      notifyAppUpdate(showToast);
+      window.setTimeout(() => {
+        window.location.reload();
+      }, 300);
+    },
+  });
+
+  return updateLifecycle;
+}
+
+function watchScreenChanges(showToast) {
+  if (screenChangeListenerInstalled) return;
+
+  const lifecycle = ensureUpdateLifecycle(showToast);
+
+  document.addEventListener('ringready:screen-changed', (event) => {
+    const screenId = event.detail?.screenId || getActiveScreenId();
+    lifecycle.handleScreenChange(screenId);
+  });
+
+  screenChangeListenerInstalled = true;
+}
+
+function watchServiceWorkerUpdates(registration, showToast) {
   if (!registration) return;
 
+  const lifecycle = ensureUpdateLifecycle(showToast);
+
+  syncWaitingServiceWorker(registration.waiting);
+
   if (registration.waiting && registration.active) {
-    activateWaitingServiceWorker(registration);
+    lifecycle.handleInitialWaiting(getActiveScreenId());
   }
 
   registration.addEventListener('updatefound', () => {
+    lifecycle.handleUpdateFound();
+
     const installing = registration.installing;
     if (!installing) return;
 
@@ -138,10 +158,50 @@ function watchServiceWorkerUpdates(registration) {
         installing.state === 'installed'
         && registration.waiting
       ) {
-        activateWaitingServiceWorker(registration);
+        syncWaitingServiceWorker(registration.waiting);
+        lifecycle.handleInstallingInstalled(getActiveScreenId());
       }
     });
   });
+}
+
+function setInstallInstructionsVisible(visible) {
+  iosInstallInstructionsVisible = visible;
+  const instructions = document.getElementById('install-instructions');
+  if (instructions) {
+    instructions.hidden = !visible;
+  }
+}
+
+export function updateInstallUI() {
+  const title = document.getElementById('install-title');
+  const copy = document.getElementById('install-copy');
+  const btn = document.getElementById('install-btn');
+  const panel = document.getElementById('install-panel');
+
+  if (!title || !copy || !btn) return;
+
+  const state = getInstallCopy();
+
+  title.textContent = state.title;
+  copy.textContent = state.copy;
+  btn.textContent = state.button;
+
+  const isIOSWeb = isIOSInstallSurface() && !isStandalone() && !deferredInstallPrompt;
+
+  if (isIOSWeb) {
+    btn.disabled = false;
+    btn.style.opacity = '1';
+    setInstallInstructionsVisible(iosInstallInstructionsVisible);
+  } else {
+    setInstallInstructionsVisible(false);
+    btn.disabled = !state.actionable;
+    btn.style.opacity = state.actionable ? '1' : '0.55';
+  }
+
+  if (panel) {
+    panel.hidden = isStandalone();
+  }
 }
 
 export function initPWAInstall() {
@@ -149,11 +209,13 @@ export function initPWAInstall() {
     event.preventDefault();
 
     deferredInstallPrompt = event;
+    setInstallInstructionsVisible(false);
     updateInstallUI();
   });
 
   window.addEventListener('appinstalled', () => {
     deferredInstallPrompt = null;
+    setInstallInstructionsVisible(false);
     updateInstallUI();
   });
 
@@ -161,13 +223,19 @@ export function initPWAInstall() {
 
   if (btn) {
     btn.addEventListener('click', async () => {
-      if (!deferredInstallPrompt) return;
+      if (deferredInstallPrompt) {
+        deferredInstallPrompt.prompt();
+        await deferredInstallPrompt.userChoice;
 
-      deferredInstallPrompt.prompt();
-      await deferredInstallPrompt.userChoice;
+        deferredInstallPrompt = null;
+        updateInstallUI();
+        return;
+      }
 
-      deferredInstallPrompt = null;
-      updateInstallUI();
+      if (isIOSInstallSurface() && !isStandalone()) {
+        iosInstallInstructionsVisible = !iosInstallInstructionsVisible;
+        updateInstallUI();
+      }
     });
   }
 
@@ -197,15 +265,12 @@ export function registerServiceWorker(options = {}) {
 
   const showToast = options.showToast;
 
-  hasSeenServiceWorkerController = Boolean(
-    navigator.serviceWorker.controller,
-  );
-
   window.addEventListener('load', () => {
     navigator.serviceWorker
       .register('./sw.js', { scope: './' })
       .then((registration) => {
-        watchServiceWorkerUpdates(registration);
+        watchServiceWorkerUpdates(registration, showToast);
+        watchScreenChanges(showToast);
 
         registration.update().catch((error) => {
           console.warn(
@@ -225,23 +290,28 @@ export function registerServiceWorker(options = {}) {
   navigator.serviceWorker.addEventListener(
     'controllerchange',
     () => {
-      // First-ever SW installation does not require a reload.
-      if (!hasSeenServiceWorkerController) {
-        hasSeenServiceWorkerController = true;
-        return;
-      }
+      clearWaitingServiceWorker();
 
-      serviceWorkerReloadPending = true;
+      const lifecycle = ensureUpdateLifecycle(showToast);
+      lifecycle.handleControllerChange(getActiveScreenId());
 
-      performSafeUpdateReload(showToast);
-
-      if (serviceWorkerReloadPending) {
-        watchForSafeReload(showToast);
-      }
+      watchScreenChanges(showToast);
     },
   );
 }
 
 export function initBuildMetadata() {
   renderBuildInfo();
+}
+
+export function __testCreateUpdateLifecycle(options) {
+  return createServiceWorkerUpdateLifecycle(options);
+}
+
+export function __testPostSkipWaitingToWorker(worker) {
+  const previousWorker = waitingServiceWorker;
+  waitingServiceWorker = worker;
+  const sent = postSkipWaitingToWorker();
+  waitingServiceWorker = previousWorker;
+  return sent;
 }

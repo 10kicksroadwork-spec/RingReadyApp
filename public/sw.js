@@ -1,5 +1,7 @@
 const BUILD_ID = '__BUILD_ID__';
 const CACHE_NAME = `ring-ready-shell-${BUILD_ID}`;
+const SW_ACTIVATION_PROTOCOL = 2;
+const SW_SKIP_WAITING_MESSAGE_TYPE = 'RINGREADY_SKIP_WAITING';
 const APP_SHELL = [
   './',
   './index.html',
@@ -8,6 +10,11 @@ const APP_SHELL = [
   './icons.svg',
   './app-icon.svg',
   './maskable-icon.svg',
+  './apple-touch-icon.png',
+  './icon-192.png',
+  './icon-512.png',
+  './icon-maskable-512.png',
+  './10-kicks-logo.jpg',
 ];
 
 function isScriptOrStyleRequest(request) {
@@ -21,7 +28,6 @@ self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME)
       .then((cache) => cache.addAll(APP_SHELL))
-      .then(() => self.skipWaiting())
   );
 });
 
@@ -37,10 +43,28 @@ self.addEventListener('activate', (event) => {
   );
 });
 
+function isCurrentSkipWaitingMessage(data) {
+  return data?.type === SW_SKIP_WAITING_MESSAGE_TYPE
+    && data?.protocol === SW_ACTIVATION_PROTOCOL;
+}
+
 self.addEventListener('message', (event) => {
-  if (event.data?.type === 'SKIP_WAITING') {
-    self.skipWaiting();
+  if (!isCurrentSkipWaitingMessage(event.data)) {
+    return;
   }
+
+  event.waitUntil(
+    self.clients.matchAll({
+      type: 'window',
+      includeUncontrolled: true,
+    }).then((clients) => {
+      if (clients.length !== 1) {
+        return;
+      }
+
+      return self.skipWaiting();
+    })
+  );
 });
 
 self.addEventListener('fetch', (event) => {
