@@ -18,13 +18,23 @@ function injectServiceWorkerBuildId(buildId) {
     name: 'inject-sw-build-id',
     closeBundle() {
       const swPath = resolve('dist/sw.js');
+      let contents;
       try {
-        let contents = readFileSync(swPath, 'utf8');
-        contents = contents.replace(/__BUILD_ID__/g, buildId);
-        writeFileSync(swPath, contents);
+        contents = readFileSync(swPath, 'utf8');
       } catch (error) {
-        console.warn('Could not patch service worker build id', error);
+        throw new Error(`Service worker not found at ${swPath}: ${error.message}`);
       }
+
+      if (!contents.includes('__BUILD_ID__')) {
+        throw new Error('Service worker missing __BUILD_ID__ placeholder before injection');
+      }
+
+      const patched = contents.replace(/__BUILD_ID__/g, buildId);
+      if (patched.includes('__BUILD_ID__')) {
+        throw new Error('Service worker build id injection incomplete: __BUILD_ID__ remains');
+      }
+
+      writeFileSync(swPath, patched);
     },
   };
 }

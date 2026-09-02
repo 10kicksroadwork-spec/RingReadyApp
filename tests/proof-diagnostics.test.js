@@ -16,15 +16,15 @@ describe('proof upload diagnostics', () => {
     vi.clearAllMocks();
   });
 
-  it('classifies permission denied on workout_attachments as stale client', () => {
+  it('classifies permission denied on workout_attachments as proof contract mismatch', () => {
     const result = classifyProofUploadError(
       new Error('permission denied for table workout_attachments'),
       PROOF_UPLOAD_PHASE.RPC,
     );
 
-    expect(result.kind).toBe(PROOF_FAILURE_KIND.STALE_CLIENT);
+    expect(result.kind).toBe(PROOF_FAILURE_KIND.CONTRACT);
     expect(result.diagnosticDetail).toBe('permission_denied_workout_attachments');
-    expect(result.userMessage).toContain('App update required');
+    expect(result.userMessage).toContain('app and data service are out of sync');
     expect(result.userMessage).toContain('f409d0c');
   });
 
@@ -44,9 +44,13 @@ describe('proof upload diagnostics', () => {
     expect(rpc.userMessage).toContain('Proof save failed');
   });
 
-  it('classifies network and auth failures', () => {
+  it('classifies network and auth failures before storage phase', () => {
     expect(classifyProofUploadError(new Error('Failed to fetch')).kind).toBe(PROOF_FAILURE_KIND.NETWORK);
     expect(classifyProofUploadError(new Error('JWT expired')).kind).toBe(PROOF_FAILURE_KIND.AUTH);
+    expect(classifyProofUploadError(new Error('Failed to fetch'), PROOF_UPLOAD_PHASE.STORAGE).kind)
+      .toBe(PROOF_FAILURE_KIND.NETWORK);
+    expect(classifyProofUploadError(new Error('JWT expired'), PROOF_UPLOAD_PHASE.STORAGE).kind)
+      .toBe(PROOF_FAILURE_KIND.AUTH);
   });
 
   it('attaches diagnostic metadata to thrown proof errors', () => {
@@ -55,8 +59,8 @@ describe('proof upload diagnostics', () => {
       PROOF_UPLOAD_PHASE.RPC,
     );
 
-    expect(err.message).toContain('App update required');
-    expect(err.proofFailureKind).toBe(PROOF_FAILURE_KIND.STALE_CLIENT);
+    expect(err.message).toContain('app and data service are out of sync');
+    expect(err.proofFailureKind).toBe(PROOF_FAILURE_KIND.CONTRACT);
     expect(err.proofDiagnosticDetail).toBe('permission_denied_workout_attachments');
     expect(err.proofRawMessage).toContain('workout_attachments');
   });
