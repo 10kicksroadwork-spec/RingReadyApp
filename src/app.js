@@ -84,7 +84,10 @@ import {
   startRestLogAlert,
   stopRestLogAlert,
   syncHoldToCancelLabels,
+  withSavingButton,
 } from './ui.js';
+import { runSingleFlight } from './single-flight.js';
+import { OPERATION_TIMEOUT_MS, withOperationTimeout } from './operation-timeout.js';
 
 export const cfg = { reps: null, rest: null, maxHR: 183, targetPct: 90, workoutContext: null };
 
@@ -1204,36 +1207,45 @@ export async function completeWorkout() {
     return;
   }
   if (!hasWorkoutProof('sprint')) {
-    showToast(navigator.onLine ? 'ADD WORKOUT PROOF' : 'INTERNET REQUIRED FOR WORKOUT PROOF');
-    return;
-  }
-  const isNewProof = hasPendingWorkoutProof('sprint');
-  try {
-    if (isSupabaseConfigured && getCurrentUser()) {
-      await saveCloudSprintSession(activeResultRecord);
-    }
-    const attachment = await ensureWorkoutProofUploaded('sprint', activeResultRecord.id);
-    if (attachment) {
-      activeResultRecord = { ...activeResultRecord, proofPolicyVersion: PROOF_POLICY_VERSION, attachment };
-      if (isNewProof) enqueueWorkoutProofForSync(attachment);
-    }
-  } catch (error) {
-    console.warn('Sprint proof upload failed', error);
-    showToast(String(error?.message || error).toUpperCase());
+    showToast('ADD WORKOUT PROOF');
     return;
   }
 
-  const completed = saveWorkoutCompletion(activeResultRecord);
-  if (!completed) {
-    showToast('OPEN WORKOUT FROM WEEK PLAN FIRST');
-    return;
-  }
+  const recordId = activeResultRecord.id || 'sprint';
+  const button = document.getElementById('complete-workout-btn');
 
-  activeResultRecord = completed;
-  updateCompleteWorkoutButton(completed);
-  window.dispatchEvent(new CustomEvent('ringready:workout-completed', { detail: completed }));
-  flushSyncQueue().catch((error) => console.warn('Workout proof sync failed', error));
-  showToast('WORKOUT COMPLETE');
+  return runSingleFlight(`completion:sprint:${recordId}`, async () => withSavingButton(button, async () => {
+    const isNewProof = hasPendingWorkoutProof('sprint');
+    try {
+      if (isSupabaseConfigured && getCurrentUser()) {
+        await withOperationTimeout(
+          saveCloudSprintSession(activeResultRecord),
+          { timeoutMs: OPERATION_TIMEOUT_MS.IDENTITY_STAGING, operation: 'identity_staging' },
+        );
+      }
+      const attachment = await ensureWorkoutProofUploaded('sprint', activeResultRecord.id);
+      if (attachment) {
+        activeResultRecord = { ...activeResultRecord, proofPolicyVersion: PROOF_POLICY_VERSION, attachment };
+        if (isNewProof) enqueueWorkoutProofForSync(attachment);
+      }
+    } catch (error) {
+      console.warn('Sprint proof upload failed', error);
+      showToast(String(error?.message || error).toUpperCase());
+      return;
+    }
+
+    const completed = saveWorkoutCompletion(activeResultRecord);
+    if (!completed) {
+      showToast('OPEN WORKOUT FROM WEEK PLAN FIRST');
+      return;
+    }
+
+    activeResultRecord = completed;
+    updateCompleteWorkoutButton(completed);
+    window.dispatchEvent(new CustomEvent('ringready:workout-completed', { detail: completed }));
+    flushSyncQueue().catch((error) => console.warn('Workout proof sync failed', error));
+    showToast('WORKOUT COMPLETE');
+  })).finally(() => updateCompleteWorkoutButton(activeResultRecord));
 }
 
 export async function clearResultWorkoutCompletion() {

@@ -57,6 +57,21 @@ describe('proof staging plans', () => {
     });
   });
 
+  it('preserves canonical client_record_id when refreshing a provisional workout row', () => {
+    const existing = {
+      client_record_id: 'client-workout-A',
+      attachment_id: null,
+      proof_pending: true,
+    };
+    const retryRecord = { ...record, id: 'client-workout-B' };
+    expect(planWorkoutIdentityStaging(existing, retryRecord)).toEqual({
+      action: 'refresh-provisional',
+      created: true,
+      clientRecordId: 'client-workout-A',
+      completionKey: '1:2',
+    });
+  });
+
   it('preserves existing rows with attachment during replacement attempts', () => {
     const existing = {
       client_record_id: 'client-workout-1',
@@ -92,6 +107,21 @@ describe('mile proof staging plans', () => {
       action: 'insert-provisional',
       created: true,
       clientRecordId: 'client-mile-1',
+      testKey: 'mile-test:week-2',
+    });
+  });
+
+  it('preserves canonical client_record_id when refreshing a provisional mile row', () => {
+    const existing = {
+      client_record_id: 'client-mile-A',
+      attachment_id: null,
+      proof_pending: true,
+    };
+    const retryResult = { id: 'client-mile-B', testKey: 'mile-test:week-2' };
+    expect(planMileTestIdentityStaging(existing, retryResult, testContext)).toEqual({
+      action: 'refresh-provisional',
+      created: true,
+      clientRecordId: 'client-mile-A',
       testKey: 'mile-test:week-2',
     });
   });
