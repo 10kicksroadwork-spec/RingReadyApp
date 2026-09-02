@@ -8,6 +8,7 @@ const mockUser = { id: 'user-a' };
 const showToast = vi.fn();
 const clearCloudWorkoutCompletionWithProof = vi.fn();
 const saveCloudSprintSession = vi.fn();
+const saveCloudWorkoutCompletion = vi.fn();
 const ensureWorkoutProofUploaded = vi.fn();
 const hasWorkoutProof = vi.fn();
 const hasPendingWorkoutProof = vi.fn();
@@ -15,6 +16,7 @@ const hasPendingWorkoutProof = vi.fn();
 vi.mock('../src/auth.js', () => ({
   getCurrentUser: vi.fn(() => mockUser),
   saveCloudSprintSession: (...args) => saveCloudSprintSession(...args),
+  saveCloudWorkoutCompletion: (...args) => saveCloudWorkoutCompletion(...args),
   clearCloudWorkoutCompletionWithProof: (...args) => clearCloudWorkoutCompletionWithProof(...args),
 }));
 
@@ -96,6 +98,7 @@ describe('sprint proof completion', () => {
     hasWorkoutProof.mockReturnValue(true);
     hasPendingWorkoutProof.mockReturnValue(false);
     saveCloudSprintSession.mockResolvedValue(undefined);
+    saveCloudWorkoutCompletion.mockResolvedValue(undefined);
     ensureWorkoutProofUploaded.mockResolvedValue({ id: 'proof-attachment-1' });
     clearCloudWorkoutCompletionWithProof.mockResolvedValue(undefined);
   });
@@ -129,17 +132,30 @@ describe('sprint proof completion', () => {
     await completeWorkout();
 
     expect(callOrder).toEqual(['saveCloudSprintSession', 'ensureWorkoutProofUploaded']);
+    expect(saveCloudWorkoutCompletion).toHaveBeenCalledTimes(1);
     expect(getWorkoutCompletion(1, 0)).toBeTruthy();
   });
 
-  it('does not upload proof when the completion-time cloud save fails', async () => {
+  it('does not upload proof when the identity staging cloud save fails', async () => {
     showSavedWorkoutResult(buildSprintResultRecord());
     saveCloudSprintSession.mockRejectedValue(new Error('cloud save failed'));
 
     await completeWorkout();
 
     expect(ensureWorkoutProofUploaded).not.toHaveBeenCalled();
+    expect(saveCloudWorkoutCompletion).not.toHaveBeenCalled();
     expect(showToast).toHaveBeenCalledWith('CLOUD SAVE FAILED');
+    expect(getWorkoutCompletion(1, 0)).toBeNull();
+  });
+
+  it('does not persist completion locally when cloud workout save fails', async () => {
+    showSavedWorkoutResult(buildSprintResultRecord({ completedAt: undefined, completionKey: undefined }));
+    saveCloudWorkoutCompletion.mockRejectedValue(new Error('cloud completion failed'));
+
+    await completeWorkout();
+
+    expect(ensureWorkoutProofUploaded).toHaveBeenCalledTimes(1);
+    expect(showToast).toHaveBeenCalledWith('COULD NOT SAVE WORKOUT');
     expect(getWorkoutCompletion(1, 0)).toBeNull();
   });
 

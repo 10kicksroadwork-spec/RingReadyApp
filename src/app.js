@@ -31,15 +31,18 @@ import {
   hasActiveSessionCheckpoint,
   isCheckpointResumable,
   checkpointHasProgress,
+  isCheckpointStorageAvailable,
   loadActiveSessionCheckpoint,
   saveActiveSessionCheckpoint,
   resolveRestCaptureAttempted,
 } from './session-checkpoint.js';
 import {
+  buildSessionRecord,
+  finalizeWorkoutCompletionRecord,
   markWorkoutCompletionCleared,
+  persistSessionRecord,
+  persistWorkoutCompletion,
   removeWorkoutCompletion,
-  saveSessionToHistory,
-  saveWorkoutCompletion,
 } from './storage.js';
 import {
   applyCompletionActionState,
@@ -53,7 +56,7 @@ import {
   getAthleteProfile,
   saveAthleteProfile,
 } from './sync.js';
-import { getCurrentUser, saveCloudSprintSession, clearCloudWorkoutCompletionWithProof } from './auth.js';
+import { getCurrentUser, saveCloudSprintSession, saveCloudWorkoutCompletion, clearCloudWorkoutCompletionWithProof } from './auth.js';
 import { isSupabaseConfigured } from './supabase-client.js';
 import {
   getAutoCapturedHR,
@@ -469,6 +472,13 @@ function runStartSession({ forceFresh = false } = {}) {
     const profileInput = document.getElementById('profile-athlete-name');
     if (profileInput) setTimeout(() => profileInput.focus(), 100);
     return;
+  }
+
+  if (!isCheckpointStorageAvailable()) {
+    const proceed = window.confirm(
+      'SESSION RESUME STORAGE IS UNAVAILABLE\n\nYou can continue, but if Safari closes or reloads, this sprint may not resume.\n\nTap OK to START ANYWAY or Cancel to go back.'
+    );
+    if (!proceed) return;
   }
 
   if (!forceFresh) {
@@ -1031,7 +1041,8 @@ export async function finishSession() {
   setMainBtn('disabled', 'COMPLETE');
   syncHoldToCancelLabels();
   vibrate([100, 50, 100, 50, 200]);
-  activeResultRecord = saveSessionToHistory(cfg, state.data);
+
+  activeResultRecord = buildSessionRecord(cfg, state.data);
   if (isSupabaseConfigured && getCurrentUser()) {
     try {
       await saveCloudSprintSession(activeResultRecord);
@@ -1039,6 +1050,11 @@ export async function finishSession() {
       console.warn('Cloud sprint session save failed', error);
     }
   }
+  const { localCacheOk } = persistSessionRecord(activeResultRecord);
+  if (!localCacheOk) {
+    console.warn('Sprint session saved to cloud but local history cache failed');
+  }
+
   window.dispatchEvent(new CustomEvent('ringready:sprint-session-saved', { detail: activeResultRecord }));
   enqueueSessionForSync(cfg, state.data, activeResultRecord);
   flushSyncQueue().then((result) => {
@@ -1231,17 +1247,38 @@ export async function completeWorkout() {
       return;
     }
 
-    const completed = saveWorkoutCompletion(activeResultRecord);
+    const completed = finalizeWorkoutCompletionRecord(activeResultRecord);
     if (!completed) {
       showToast('OPEN WORKOUT FROM WEEK PLAN FIRST');
       return;
     }
 
-    activeResultRecord = completed;
-    updateCompleteWorkoutButton(completed);
-    window.dispatchEvent(new CustomEvent('ringready:workout-completed', { detail: completed }));
+    if (isSupabaseConfigured && getCurrentUser()) {
+      try {
+        await withOperationTimeout(
+          saveCloudWorkoutCompletion(completed),
+          { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_COMPLETION, operation: 'cloud_completion' },
+        );
+      } catch (error) {
+        console.warn('Cloud sprint workout completion save failed', error);
+        showToast('COULD NOT SAVE WORKOUT');
+        return;
+      }
+    }
+
+    const local = persistWorkoutCompletion(completed);
+    const savedRecord = local.record || completed;
+    if (!local.localCacheOk && isSupabaseConfigured && getCurrentUser()) {
+      showToast('SAVED TO ACCOUNT · LOCAL CACHE WILL REFRESH');
+    }
+
+    activeResultRecord = savedRecord;
+    updateCompleteWorkoutButton(savedRecord);
+    window.dispatchEvent(new CustomEvent('ringready:workout-completed', { detail: savedRecord }));
     flushSyncQueue().catch((error) => console.warn('Workout proof sync failed', error));
-    showToast('WORKOUT COMPLETE');
+    showToast(!local.localCacheOk && isSupabaseConfigured && getCurrentUser()
+      ? 'SAVED TO ACCOUNT · LOCAL CACHE WILL REFRESH'
+      : 'WORKOUT COMPLETE');
   })).finally(() => updateCompleteWorkoutButton(activeResultRecord));
 }
 

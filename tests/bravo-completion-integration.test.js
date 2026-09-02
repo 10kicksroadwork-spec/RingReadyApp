@@ -16,6 +16,7 @@ const hasWorkoutProof = vi.fn();
 const hasPendingWorkoutProof = vi.fn();
 const initWorkoutProof = vi.fn();
 const flushSyncQueue = vi.fn();
+const loadCloudWorkoutCompletions = vi.fn();
 
 vi.mock('../src/auth.js', () => ({
   getCurrentUser: vi.fn(() => mockUser),
@@ -34,7 +35,7 @@ vi.mock('../src/auth.js', () => ({
   loadCloudMileTest: vi.fn(),
   loadCloudProfile: vi.fn(),
   loadCloudSprintSessions: vi.fn(),
-  loadCloudWorkoutCompletions: vi.fn(),
+  loadCloudWorkoutCompletions: (...args) => loadCloudWorkoutCompletions(...args),
   saveCloudProfile: vi.fn(),
   saveCloudSprintSession: vi.fn(),
   signInWithEmail: vi.fn(),
@@ -132,6 +133,7 @@ describe('Bravo completion integration', () => {
     saveCloudMileTest.mockResolvedValue(undefined);
     saveCloudHRInfo.mockResolvedValue(undefined);
     flushSyncQueue.mockResolvedValue({ dispatched: 0, status: 'idle' });
+    loadCloudWorkoutCompletions.mockResolvedValue({});
   });
 
   it('deduplicates concurrent detail completion submissions', async () => {
@@ -233,5 +235,34 @@ describe('Bravo completion integration', () => {
 
     expect(rollbackCloudWorkoutIdentity).toHaveBeenCalledTimes(1);
     expect(getWorkoutCompletion(0, 1)).toBeNull();
+  });
+
+  it('keeps cloud completion authoritative when local cache write fails', async () => {
+    setupDetailDom();
+    const original = Storage.prototype.setItem;
+    let blockedCompletionWrite = false;
+    Storage.prototype.setItem = function blockingSetItem(key, value) {
+      if (!blockedCompletionWrite && String(key).includes('ringReadyWorkoutCompletions')) {
+        blockedCompletionWrite = true;
+        throw new DOMException('quota', 'QuotaExceededError');
+      }
+      return original.call(this, key, value);
+    };
+
+    try {
+      saveCloudWorkoutCompletion.mockImplementation(async (record) => {
+        loadCloudWorkoutCompletions.mockResolvedValue({
+          '0:1': { ...record, completionKey: '0:1' },
+        });
+      });
+
+      await completeWorkoutFromDetail(0, 1);
+
+      expect(saveCloudWorkoutCompletion).toHaveBeenCalledTimes(1);
+      expect(getWorkoutCompletion(0, 1)).toBeTruthy();
+      expect(getWorkoutCompletion(0, 1)?.completionKey).toBe('0:1');
+    } finally {
+      Storage.prototype.setItem = original;
+    }
   });
 });
