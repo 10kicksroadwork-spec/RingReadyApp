@@ -10,6 +10,13 @@ import { calculateAvgDrop, calculatePeakHR, isLoggedDrop } from './workout.js';
 import { hrState } from './hr-service.js';
 import { MODALITY_RUNNING, normalizeModality, readOutputFromWorkoutLog } from './modality.js';
 import { getCurrentUser, getAccessToken } from './auth.js';
+import {
+  getStorageItem,
+  readJSONValue,
+  removeStorageKey,
+  setStorageItem,
+  writeJSON,
+} from './safe-storage.js';
 
 export const MAX_QUEUE_ITEMS = 50;
 export const MAX_SYNC_ATTEMPTS = 5;
@@ -57,16 +64,15 @@ function cleanProfile(profile = {}) {
 }
 
 function readJSON(key, fallback) {
-  try {
-    return JSON.parse(localStorage.getItem(key) || JSON.stringify(fallback));
-  } catch {
-    console.warn(`Could not read ${key}`);
-    return fallback;
-  }
+  return readJSONValue(key, fallback);
 }
 
-function writeJSON(key, value) {
-  localStorage.setItem(key, JSON.stringify(value));
+function persistJSON(key, value) {
+  const result = writeJSON(key, value);
+  if (!result.ok) {
+    console.warn(`Could not write ${key}`, result.error);
+  }
+  return result;
 }
 
 function makeEventId() {
@@ -110,14 +116,14 @@ export function getSyncEndpoint() {
   if (isProductionBuild()) {
     return buildEndpoint;
   }
-  const stored = String(localStorage.getItem(SYNC_ENDPOINT_KEY) || '').trim();
+  const stored = String(getStorageItem(SYNC_ENDPOINT_KEY).value || '').trim();
   if (stored && isAllowedSyncEndpoint(stored)) return stored;
   return buildEndpoint;
 }
 
 export function applySyncEndpointFromURL() {
   if (isProductionBuild()) {
-    localStorage.removeItem(SYNC_ENDPOINT_KEY);
+    removeStorageKey(SYNC_ENDPOINT_KEY);
     return;
   }
 
@@ -127,13 +133,13 @@ export function applySyncEndpointFromURL() {
   let changed = false;
 
   if (clearSyncUrl) {
-    localStorage.removeItem(SYNC_ENDPOINT_KEY);
+    removeStorageKey(SYNC_ENDPOINT_KEY);
     changed = true;
   }
 
   if (syncUrl) {
     if (isAllowedSyncEndpoint(syncUrl)) {
-      localStorage.setItem(SYNC_ENDPOINT_KEY, syncUrl);
+      setStorageItem(SYNC_ENDPOINT_KEY, syncUrl);
       changed = true;
     } else {
       console.warn('Rejected sync URL override; endpoint must be a Google Apps Script /exec URL.');
@@ -202,21 +208,21 @@ export function trimSyncQueue(queue) {
 }
 
 function saveQueueForUser(queue, userId = resolveQueueUserId()) {
-  if (!userId) return;
-  writeJSON(syncQueueStorageKey(userId), trimSyncQueue(queue));
+  if (!userId) return { ok: false };
+  return persistJSON(syncQueueStorageKey(userId), trimSyncQueue(queue));
 }
 
 export function quarantineLegacySyncQueue() {
   const legacy = readJSON(LEGACY_SYNC_QUEUE_KEY, []);
   if (!Array.isArray(legacy) || legacy.length === 0) {
-    localStorage.removeItem(LEGACY_SYNC_QUEUE_KEY);
+    removeStorageKey(LEGACY_SYNC_QUEUE_KEY);
     return { quarantined: 0 };
   }
 
   const existing = readJSON(LEGACY_SYNC_QUEUE_QUARANTINE_KEY, []);
   const merged = [...existing, ...legacy.map((item) => ({ ...item, quarantinedAt: new Date().toISOString() }))];
-  writeJSON(LEGACY_SYNC_QUEUE_QUARANTINE_KEY, trimSyncQueue(merged));
-  localStorage.removeItem(LEGACY_SYNC_QUEUE_KEY);
+  persistJSON(LEGACY_SYNC_QUEUE_QUARANTINE_KEY, trimSyncQueue(merged));
+  removeStorageKey(LEGACY_SYNC_QUEUE_KEY);
   return { quarantined: legacy.length };
 }
 
@@ -227,12 +233,12 @@ export function getLegacySyncQueueQuarantineCount() {
 
 export function clearSyncQueueForUser(userId = resolveQueueUserId()) {
   if (!userId) return;
-  localStorage.removeItem(syncQueueStorageKey(userId));
+  removeStorageKey(syncQueueStorageKey(userId));
 }
 
 export function clearAllSyncQueues() {
   clearSyncQueueForUser(resolveQueueUserId());
-  localStorage.removeItem(LEGACY_SYNC_QUEUE_KEY);
+  removeStorageKey(LEGACY_SYNC_QUEUE_KEY);
 }
 
 export function getAthleteProfile() {
@@ -249,7 +255,7 @@ export function saveAthleteProfile(profile, options = {}) {
   } else {
     next.updatedAt = new Date().toISOString();
   }
-  writeJSON(PROFILE_STORAGE_KEY, next);
+  persistJSON(PROFILE_STORAGE_KEY, next);
   return next;
 }
 

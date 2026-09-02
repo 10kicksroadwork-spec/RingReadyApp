@@ -4,6 +4,7 @@ import { initAthleteShell } from './shell.js';
 import { enforceAthleteOnboarding, installSignupNameCapture } from './onboarding.js';
 import { openCoachPreviewIfRequested } from './coach-preview.js';
 import { MILE_TEST_STORAGE_KEY } from './app-content.js';
+import { readJSONValue } from './safe-storage.js';
 import { parseDurationMinutes, sanitizeDurationInput } from './workout.js';
 import { getHRMonitorSetupCopy, getSprintHRMonitorDisclaimer } from './platform.js';
 import { initSyncControls } from './sync.js';
@@ -115,12 +116,7 @@ function formatDate(value) {
 }
 
 function getSavedMileResult() {
-  try {
-    return JSON.parse(localStorage.getItem(MILE_TEST_STORAGE_KEY) || 'null');
-  } catch (error) {
-    console.warn('Could not read saved Mile Test result', error);
-    return null;
-  }
+  return readJSONValue(MILE_TEST_STORAGE_KEY, null);
 }
 
 function getSavedMileDuration(result) {

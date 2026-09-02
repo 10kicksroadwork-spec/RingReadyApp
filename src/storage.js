@@ -1,4 +1,5 @@
 import { STORAGE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY } from './constants.js';
+import { readJSONValue, writeJSON } from './safe-storage.js';
 import { calculateAvgDrop, calculatePeakHR } from './workout.js';
 
 const MAX_STORED_SESSIONS = 50;
@@ -12,16 +13,15 @@ function makeLocalId() {
 }
 
 function readJSON(key, fallback) {
-  try {
-    return JSON.parse(localStorage.getItem(key) || JSON.stringify(fallback));
-  } catch (err) {
-    console.warn(`Could not read ${key}`, err);
-    return fallback;
-  }
+  return readJSONValue(key, fallback);
 }
 
-function writeJSON(key, value) {
-  localStorage.setItem(key, JSON.stringify(value));
+function persistJSON(key, value) {
+  const result = writeJSON(key, value);
+  if (!result.ok) {
+    console.warn(`Could not write ${key}`, result.error);
+  }
+  return result.ok;
 }
 
 function cloneSessionData(data) {
@@ -61,7 +61,9 @@ export function saveSessionToHistory(cfg, data) {
     const record = buildSessionRecord(cfg, data);
     sessions.unshift(record);
     if (sessions.length > MAX_STORED_SESSIONS) sessions.length = MAX_STORED_SESSIONS;
-    writeJSON(STORAGE_KEY, sessions);
+    if (!persistJSON(STORAGE_KEY, sessions)) {
+      return buildSessionRecord(cfg, data);
+    }
     return record;
   } catch (err) {
     console.warn('Could not save session history', err);
@@ -117,7 +119,7 @@ export function markWorkoutCompletionCleared(weekIndex, workoutIndex) {
   const cleared = getClearedWorkoutCompletions();
   const stamp = new Date().toISOString();
   cleared[key] = stamp;
-  writeJSON(CLEARED_COMPLETIONS_KEY, cleared);
+  persistJSON(CLEARED_COMPLETIONS_KEY, cleared);
   return stamp;
 }
 
@@ -127,7 +129,7 @@ export function clearWorkoutCompletionClearedMarker(weekIndex, workoutIndex) {
   const cleared = getClearedWorkoutCompletions();
   if (!(key in cleared)) return;
   delete cleared[key];
-  writeJSON(CLEARED_COMPLETIONS_KEY, cleared);
+  persistJSON(CLEARED_COMPLETIONS_KEY, cleared);
 }
 
 export function saveWorkoutCompletion(record) {
@@ -141,10 +143,10 @@ export function saveWorkoutCompletion(record) {
     completedAt: new Date().toISOString(),
   };
   completions[key] = completed;
-  writeJSON(WORKOUT_COMPLETIONS_STORAGE_KEY, completions);
+  const saved = persistJSON(WORKOUT_COMPLETIONS_STORAGE_KEY, completions);
   const context = record?.workoutContext || record?.cfg?.workoutContext || {};
   clearWorkoutCompletionClearedMarker(context.weekIndex, context.workoutIndex);
-  return completed;
+  return saved ? completed : null;
 }
 
 export function removeWorkoutCompletion(weekIndex, workoutIndex) {
@@ -155,6 +157,5 @@ export function removeWorkoutCompletion(weekIndex, workoutIndex) {
   if (!completions[key]) return false;
 
   delete completions[key];
-  writeJSON(WORKOUT_COMPLETIONS_STORAGE_KEY, completions);
-  return true;
+  return persistJSON(WORKOUT_COMPLETIONS_STORAGE_KEY, completions);
 }

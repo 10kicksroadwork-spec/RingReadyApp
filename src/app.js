@@ -5,6 +5,7 @@ import {
   REST_LOG_ALERT_REMAINING_SEC,
 } from './constants.js';
 import { HR_INFO_DEFAULTS, HR_INFO_STORAGE_KEY } from './app-content.js';
+import { readJSONValue } from './safe-storage.js';
 import {
   applySprintPrescriptionToCfg,
   formatSprintPrescriptionHrCapture,
@@ -357,13 +358,9 @@ export function clearSessionTimer() {
 }
 
 function readAthleteMaxHR() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(HR_INFO_STORAGE_KEY) || '{}');
-    const maxHr = Number(saved.maxHr);
-    if (Number.isFinite(maxHr) && maxHr > 0) return Math.round(maxHr);
-  } catch (err) {
-    console.warn('Could not read stored max HR', err);
-  }
+  const saved = readJSONValue(HR_INFO_STORAGE_KEY, {});
+  const maxHr = Number(saved.maxHr);
+  if (Number.isFinite(maxHr) && maxHr > 0) return Math.round(maxHr);
   return Math.round(Number(HR_INFO_DEFAULTS.maxHr) || 181);
 }
 

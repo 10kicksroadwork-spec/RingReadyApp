@@ -7,7 +7,7 @@ import {
   clearSharedLocalState,
   shouldClearSharedStateOnSwitch,
 } from './account-switch.js';
-import { clearActiveSessionCheckpointsForAllUsers } from './session-checkpoint.js';
+import { clearActiveSessionCheckpoint, clearActiveSessionCheckpointsForAllUsers } from './session-checkpoint.js';
 import { getHRInfo, saveHRInfo } from './hr-local.js';
 import {
   clearSyncQueueForUser,
@@ -122,6 +122,13 @@ import { shouldRollbackProvisionalIdentity } from './proof-diagnostics.js';
 import { OPERATION_TIMEOUT_MS, withOperationTimeout } from './operation-timeout.js';
 import { runSingleFlight } from './single-flight.js';
 import { withSavingButton } from './ui.js';
+import {
+  getStorageItem,
+  readJSONValue,
+  removeStorageKey,
+  setStorageItem,
+  writeJSON,
+} from './safe-storage.js';
 
 const WEEK_INDEX_KEY = 'ringReadyActiveWeekIndex';
 const PROFILE_FORM_COLLAPSED_KEY = 'ringReadyProfileFormCollapsed';
@@ -133,9 +140,9 @@ const CAMP_RESET_SEEN_KEY = 'ringReadyCampResetAtSeen';
 const WORKOUT_NOTE_MAX_LENGTH = 200;
 const DETAIL_MODALITY_NOTE_KEY = 'ringReadyModalitySwitchNoteSeen';
 
-let activeWeekIndex = Number(localStorage.getItem(WEEK_INDEX_KEY) || 0);
-let scMode = localStorage.getItem(SC_MODE_STORAGE_KEY) || 'Gym Machines';
-let scWeek = Number(localStorage.getItem(SC_WEEK_STORAGE_KEY) || activeWeekIndex + 1);
+let activeWeekIndex = Number(getStorageItem(WEEK_INDEX_KEY).value || 0);
+let scMode = getStorageItem(SC_MODE_STORAGE_KEY).value || 'Gym Machines';
+let scWeek = Number(getStorageItem(SC_WEEK_STORAGE_KEY).value || activeWeekIndex + 1);
 let shellHooks = null;
 let authMode = 'sign-in';
 let passwordRecoveryPending = false;
@@ -144,10 +151,16 @@ let detailModality = MODALITY_RUNNING;
 let detailModalityInitialized = false;
 
 function readJSON(key, fallback) {
-  try { return JSON.parse(localStorage.getItem(key) || JSON.stringify(fallback)); }
-  catch (err) { console.warn(`Could not read ${key}`, err); return fallback; }
+  return readJSONValue(key, fallback);
 }
-function writeJSON(key, value) { localStorage.setItem(key, JSON.stringify(value)); }
+
+function persistJSON(key, value) {
+  const result = writeJSON(key, value);
+  if (!result.ok) {
+    console.warn(`Could not write ${key}`, result.error);
+  }
+  return result.ok;
+}
 function escapeHTML(value) {
   return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
 }
@@ -252,24 +265,27 @@ import {
 
 function clearAccountLocalData(explicitUserId = '') {
   const userId = String(explicitUserId || getCurrentUser()?.id || '').trim();
-  if (userId) clearSyncQueueForUser(userId);
+  if (userId) {
+    clearSyncQueueForUser(userId);
+    clearActiveSessionCheckpoint(userId);
+  }
   clearSharedLocalState();
 }
 function clearLocalTrainingData({ markResetAt = '' } = {}) {
   const userId = getCurrentUser()?.id;
   if (userId) clearSyncQueueForUser(userId);
   clearActiveSessionCheckpointsForAllUsers();
-  [STORAGE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY, MILE_TEST_STORAGE_KEY, WORKOUT_NOTES_STORAGE_KEY, WEEK_INDEX_KEY, SC_WEEK_STORAGE_KEY, 'ringReadyClearedWorkoutCompletions'].forEach((key) => localStorage.removeItem(key));
+  [STORAGE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY, MILE_TEST_STORAGE_KEY, WORKOUT_NOTES_STORAGE_KEY, WEEK_INDEX_KEY, SC_WEEK_STORAGE_KEY, 'ringReadyClearedWorkoutCompletions'].forEach((key) => removeStorageKey(key));
   activeWeekIndex = 0;
   scWeek = 1;
   saveWeek(0);
-  localStorage.setItem(SC_WEEK_STORAGE_KEY, '1');
-  if (markResetAt) localStorage.setItem(CAMP_RESET_SEEN_KEY, String(markResetAt));
+  setStorageItem(SC_WEEK_STORAGE_KEY, '1');
+  if (markResetAt) setStorageItem(CAMP_RESET_SEEN_KEY, String(markResetAt));
 }
 function applyCampResetIfNeeded(cloudProfile) {
   const resetAt = String(cloudProfile?.campResetAt || '').trim();
   if (!resetAt) return false;
-  const seen = String(localStorage.getItem(CAMP_RESET_SEEN_KEY) || '').trim();
+  const seen = String(getStorageItem(CAMP_RESET_SEEN_KEY).value || '').trim();
   if (seen === resetAt) return false;
   clearLocalTrainingData({ markResetAt: resetAt });
   return true;
@@ -278,7 +294,7 @@ function prepareCoachSession() {
   if (!isCoachUser()) return;
   clearAccountLocalData();
   const userId = getCurrentUser()?.id;
-  if (userId) localStorage.setItem(AUTH_USER_STORAGE_KEY, userId);
+  if (userId) setStorageItem(AUTH_USER_STORAGE_KEY, userId);
 }
 function mergeWorkoutCompletionsLocal(localCompletions = {}, cloudCompletions = {}) {
   return mergeWorkoutCompletions(localCompletions, cloudCompletions, isWorkoutCompletionCleared);
@@ -425,9 +441,9 @@ function showAuthScreen(message = '') {
 async function hydrateCloudData() {
   if (!isSupabaseConfigured || !getCurrentUser()) return;
   const user = getCurrentUser();
-  const lastUserId = localStorage.getItem(AUTH_USER_STORAGE_KEY);
+  const lastUserId = getStorageItem(AUTH_USER_STORAGE_KEY).value;
   if (shouldClearSharedStateOnSwitch(lastUserId, user.id)) clearSharedLocalState();
-  localStorage.setItem(AUTH_USER_STORAGE_KEY, user.id);
+  setStorageItem(AUTH_USER_STORAGE_KEY, user.id);
   quarantineLegacySyncQueue();
 
   const localProfile = getAthleteProfile();
@@ -495,10 +511,10 @@ async function hydrateCloudData() {
   const mergedSessions = mergeSprintSessions(freshLocalSessions, cloudSessions);
   const latestMileTest = chooseLatestMileResult(freshLocalMileTest, cloudMileTest);
 
-  writeJSON(WORKOUT_COMPLETIONS_STORAGE_KEY, mergedCompletions);
-  writeJSON(STORAGE_KEY, mergedSessions);
-  if (latestMileTest) writeJSON(MILE_TEST_STORAGE_KEY, latestMileTest);
-  else localStorage.removeItem(MILE_TEST_STORAGE_KEY);
+  persistJSON(WORKOUT_COMPLETIONS_STORAGE_KEY, mergedCompletions);
+  persistJSON(STORAGE_KEY, mergedSessions);
+  if (latestMileTest) persistJSON(MILE_TEST_STORAGE_KEY, latestMileTest);
+  else removeStorageKey(MILE_TEST_STORAGE_KEY);
 
   // Re-attempt cloud deletes for workouts cleared on this device that still exist remotely.
   const staleCloudClears = Object.keys(cloudCompletions || {}).filter((key) => {
@@ -634,7 +650,7 @@ async function handleLogout() {
     });
     passwordRecoveryPending = false;
     authMode = 'sign-in';
-    localStorage.removeItem(AUTH_USER_STORAGE_KEY);
+    removeStorageKey(AUTH_USER_STORAGE_KEY);
     syncSignOutControls();
     await refreshCoachPreview();
     renderAllPages();
@@ -676,7 +692,7 @@ function getCampWeekLimit() { return Math.min(PROGRAM.length, getAthleteProfile(
 function getVisibleProgram() { return PROGRAM.slice(0, getCampWeekLimit()); }
 function clampWeek(index) { const limit = Math.max(1, getCampWeekLimit()); return Math.max(0, Math.min(limit - 1, Number(index) || 0)); }
 function clampSCWeek(week) { return Math.max(1, Math.min(getCampWeekLimit(), Number(week) || 1)); }
-function saveWeek(index) { activeWeekIndex = clampWeek(index); localStorage.setItem(WEEK_INDEX_KEY, String(activeWeekIndex)); }
+function saveWeek(index) { activeWeekIndex = clampWeek(index); setStorageItem(WEEK_INDEX_KEY, String(activeWeekIndex)); }
 
 function calculateZoneBPMFromZone(zone, hrInfo) { return calculateZoneBPM(zone, hrInfo); }
 function getWorkoutTargetPcts(workout) {
@@ -1025,7 +1041,7 @@ function setStoredWorkoutNote(weekIndex, workoutIndex, value) {
   const note = sanitizeWorkoutNote(value);
   if (note) notes[key] = note;
   else delete notes[key];
-  writeJSON(WORKOUT_NOTES_STORAGE_KEY, notes);
+  persistJSON(WORKOUT_NOTES_STORAGE_KEY, notes);
   return note;
 }
 function getCompletionWorkoutNote(completion) {
@@ -1217,7 +1233,7 @@ function showDetailModalitySwitchNote(modality) {
   }
   note.textContent = `Modality changed to ${formatModalityLabel(modality)}. Ring Ready will establish a new performance baseline so your camp progress continues without resetting.`;
   note.hidden = false;
-  writeJSON(DETAIL_MODALITY_NOTE_KEY, { ...seen, [modality]: true });
+  persistJSON(DETAIL_MODALITY_NOTE_KEY, { ...seen, [modality]: true });
 }
 
 function setDetailModality(nextModality, options = {}) {
@@ -1586,10 +1602,10 @@ function renderAthleteProfileDashboard() {
 }
 function isProfileFormCollapsed(profile = getAthleteProfile()) {
   if (!profile.athleteName) return false;
-  const stored = localStorage.getItem(PROFILE_FORM_COLLAPSED_KEY);
+  const stored = getStorageItem(PROFILE_FORM_COLLAPSED_KEY).value;
   return stored === null ? true : stored === '1';
 }
-function setProfileFormCollapsed(isCollapsed) { localStorage.setItem(PROFILE_FORM_COLLAPSED_KEY, isCollapsed ? '1' : '0'); renderAthleteProfilePage(); }
+function setProfileFormCollapsed(isCollapsed) { setStorageItem(PROFILE_FORM_COLLAPSED_KEY, isCollapsed ? '1' : '0'); renderAthleteProfilePage(); }
 function syncProfileModalityNote() {
   const note = document.getElementById('profile-modality-note');
   const select = document.getElementById('profile-default-modality-select');
@@ -1632,7 +1648,7 @@ function clearLocalTestData() {
   quarantineLegacySyncQueue();
   const userId = getCurrentUser()?.id;
   if (userId) clearSyncQueueForUser(userId);
-  [PROFILE_STORAGE_KEY, STORAGE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY, HR_INFO_STORAGE_KEY, MILE_TEST_STORAGE_KEY, AUTH_USER_STORAGE_KEY, SC_MODE_STORAGE_KEY, SC_WEEK_STORAGE_KEY, WEEK_INDEX_KEY, PROFILE_FORM_COLLAPSED_KEY, PROGRAM_GUIDE_COLLAPSED_KEY, ONBOARDING_DISMISSED_KEY, WORKOUT_NOTES_STORAGE_KEY, CAMP_RESET_SEEN_KEY, 'ringReadyClearedWorkoutCompletions'].forEach((key) => localStorage.removeItem(key));
+  [PROFILE_STORAGE_KEY, STORAGE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY, HR_INFO_STORAGE_KEY, MILE_TEST_STORAGE_KEY, AUTH_USER_STORAGE_KEY, SC_MODE_STORAGE_KEY, SC_WEEK_STORAGE_KEY, WEEK_INDEX_KEY, PROFILE_FORM_COLLAPSED_KEY, PROGRAM_GUIDE_COLLAPSED_KEY, ONBOARDING_DISMISSED_KEY, WORKOUT_NOTES_STORAGE_KEY, CAMP_RESET_SEEN_KEY, 'ringReadyClearedWorkoutCompletions'].forEach((key) => removeStorageKey(key));
   activeWeekIndex = 0;
   scMode = 'Gym Machines';
   scWeek = 1;
@@ -1708,7 +1724,7 @@ async function saveAthleteProfileFromInputs() {
   }
 
   if (profile.athleteName) {
-    localStorage.setItem(PROFILE_FORM_COLLAPSED_KEY, '1');
+    setStorageItem(PROFILE_FORM_COLLAPSED_KEY, '1');
     enqueueProfileForSync(profile);
     flushQueuedEvent('CLOUD SAVED');
   }
@@ -1737,10 +1753,10 @@ function getActionCopy(workout, completion = null) {
   return 'VIEW';
 }
 function isProgramGuideCollapsed() {
-  return localStorage.getItem(PROGRAM_GUIDE_COLLAPSED_KEY) === '1';
+  return getStorageItem(PROGRAM_GUIDE_COLLAPSED_KEY).value === '1';
 }
 function setProgramGuideCollapsed(isCollapsed) {
-  localStorage.setItem(PROGRAM_GUIDE_COLLAPSED_KEY, isCollapsed ? '1' : '0');
+  setStorageItem(PROGRAM_GUIDE_COLLAPSED_KEY, isCollapsed ? '1' : '0');
   syncProgramGuideCollapse();
 }
 function syncProgramGuideCollapse() {
@@ -1821,8 +1837,8 @@ async function saveHRInfoFromInputs() {
 }
 function renderSCPage() {
   scWeek = clampSCWeek(scWeek);
-  localStorage.setItem(SC_MODE_STORAGE_KEY, scMode);
-  localStorage.setItem(SC_WEEK_STORAGE_KEY, String(scWeek));
+  setStorageItem(SC_MODE_STORAGE_KEY, scMode);
+  setStorageItem(SC_WEEK_STORAGE_KEY, String(scWeek));
   document.querySelectorAll('[data-sc-mode]').forEach((btn) => btn.classList.toggle('active', btn.dataset.scMode === scMode));
   const tabs = document.getElementById('sc-week-tabs');
   if (tabs) tabs.innerHTML = Array.from({ length: getCampWeekLimit() }, (_, index) => `<button type="button" class="sc-week-btn ${index + 1 === scWeek ? 'active' : ''}" data-sc-week="${index + 1}">W${index + 1}</button>`).join('');
@@ -1927,7 +1943,7 @@ async function saveMileTestResult() {
       shellHooks?.showToast?.(String(error?.message || error).toUpperCase());
       return;
     }
-    writeJSON(MILE_TEST_STORAGE_KEY, result);
+    persistJSON(MILE_TEST_STORAGE_KEY, result);
     if (maxBpm > 0) saveHRInfo({ ...getHRInfo(), maxHr: maxBpm });
     let cloudSaved = false;
     if (isSupabaseConfigured && getCurrentUser()) {
@@ -1984,7 +2000,7 @@ function setActiveNavigation(screenId) {
   document.querySelectorAll('[data-page-target]').forEach((btn) => btn.classList.toggle('active', btn.dataset.pageTarget === screenId));
 }
 function dismissOnboarding() {
-  localStorage.setItem(ONBOARDING_DISMISSED_KEY, '1');
+  setStorageItem(ONBOARDING_DISMISSED_KEY, '1');
   const modal = document.getElementById('onboarding-modal');
   if (!modal) return;
   modal.hidden = true;
@@ -1999,7 +2015,7 @@ function maybeShowOnboarding() {
     return;
   }
   const hasProfile = !!getAthleteProfile().athleteName;
-  const dismissed = localStorage.getItem(ONBOARDING_DISMISSED_KEY) === '1';
+  const dismissed = getStorageItem(ONBOARDING_DISMISSED_KEY).value === '1';
   modal.hidden = hasProfile || dismissed;
   modal.setAttribute('aria-hidden', String(hasProfile || dismissed));
 }

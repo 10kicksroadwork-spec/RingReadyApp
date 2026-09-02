@@ -1,5 +1,12 @@
 import { ACTIVE_SESSION_KEY_PREFIX, ACTIVE_SESSION_MAX_AGE_MS, LEGACY_ACTIVE_SESSION_STORAGE_KEY } from './constants.js';
 import { getCurrentUser } from './auth.js';
+import {
+  listStorageKeys,
+  probeStorageWrite,
+  readJSONValue,
+  removeStorageKey,
+  writeJSON,
+} from './safe-storage.js';
 
 export const CHECKPOINT_VERSION = 1;
 
@@ -11,16 +18,7 @@ const RESUMABLE_PHASES = new Set([
 ]);
 
 function readJSON(key, fallback) {
-  try {
-    return JSON.parse(localStorage.getItem(key) || JSON.stringify(fallback));
-  } catch (err) {
-    console.warn(`Could not read ${key}`, err);
-    return fallback;
-  }
-}
-
-function writeJSON(key, value) {
-  localStorage.setItem(key, JSON.stringify(value));
+  return readJSONValue(key, fallback);
 }
 
 function activeSessionStorageKey(userId) {
@@ -34,11 +32,14 @@ function resolveCheckpointUserId(explicitUserId) {
 
 function discardCheckpoint(userId = resolveCheckpointUserId()) {
   if (!userId) return;
-  try {
-    localStorage.removeItem(activeSessionStorageKey(userId));
-  } catch (err) {
-    console.warn('Could not discard active sprint session checkpoint', err);
+  const result = removeStorageKey(activeSessionStorageKey(userId));
+  if (!result.ok) {
+    console.warn('Could not discard active sprint session checkpoint', result.error);
   }
+}
+
+export function isCheckpointStorageAvailable() {
+  return probeStorageWrite().ok;
 }
 
 function clonePendingRep(pendingRep) {
@@ -122,10 +123,9 @@ export function loadActiveSessionCheckpoint(userId = resolveCheckpointUserId()) 
   if (!userId) return null;
 
   // Remove pre-account-scoping global checkpoint; never resume cross-account.
-  try {
-    localStorage.removeItem(LEGACY_ACTIVE_SESSION_STORAGE_KEY);
-  } catch (err) {
-    console.warn('Could not clear legacy active sprint session', err);
+  const legacyResult = removeStorageKey(LEGACY_ACTIVE_SESSION_STORAGE_KEY);
+  if (!legacyResult.ok && legacyResult.code !== 'storage_unavailable') {
+    console.warn('Could not clear legacy active sprint session', legacyResult.error);
   }
 
   const checkpoint = readJSON(activeSessionStorageKey(userId), null);
@@ -148,10 +148,12 @@ export function saveActiveSessionCheckpoint(cfg, state, timer = null) {
   const checkpoint = buildActiveSessionCheckpoint(cfg, state, timer, userId);
   if (existing?.createdAt) checkpoint.createdAt = existing.createdAt;
 
-  try {
-    writeJSON(activeSessionStorageKey(userId), checkpoint);
-  } catch (err) {
-    console.warn('Could not persist active sprint session', err);
+  const writeResult = writeJSON(activeSessionStorageKey(userId), checkpoint);
+  if (!writeResult.ok) {
+    console.warn('Could not persist active sprint session', writeResult.error);
+    checkpoint.storageWriteFailed = true;
+    checkpoint.storageWriteCode = writeResult.code;
+    return checkpoint;
   }
   return checkpoint;
 }
@@ -165,17 +167,15 @@ export function clearActiveSessionCheckpoint(userId = resolveCheckpointUserId())
 }
 
 export function clearActiveSessionCheckpointsForAllUsers() {
-  try {
-    localStorage.removeItem(LEGACY_ACTIVE_SESSION_STORAGE_KEY);
-    const keysToRemove = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (key && key.startsWith(ACTIVE_SESSION_KEY_PREFIX)) keysToRemove.push(key);
-    }
-    keysToRemove.forEach((key) => localStorage.removeItem(key));
-  } catch (err) {
-    console.warn('Could not clear active sprint session checkpoints', err);
+  removeStorageKey(LEGACY_ACTIVE_SESSION_STORAGE_KEY);
+  const listed = listStorageKeys(ACTIVE_SESSION_KEY_PREFIX);
+  if (!listed.ok) {
+    console.warn('Could not clear active sprint session checkpoints', listed.error);
+    return;
   }
+  listed.value.forEach((key) => {
+    removeStorageKey(key);
+  });
 }
 
 export function hasActiveSessionCheckpoint(userId = resolveCheckpointUserId()) {

@@ -13,6 +13,7 @@ import {
 } from './app-content.js';
 import { isSupabaseConfigured, supabase } from './supabase-client.js';
 import { getAthleteProfile, saveAthleteProfile } from './sync.js';
+import { readJSONValue, writeJSON } from './safe-storage.js';
 
 const ONBOARDING_SCREEN_ID = 'onboarding-gate';
 const ONBOARDING_STYLE_ID = 'ring-ready-onboarding-styles';
@@ -23,16 +24,15 @@ let gateState = null;
 let navigationGuardInstalled = false;
 
 function readJSON(key, fallback) {
-  try {
-    return JSON.parse(localStorage.getItem(key) || JSON.stringify(fallback));
-  } catch (error) {
-    console.warn(`Could not read ${key}`, error);
-    return fallback;
-  }
+  return readJSONValue(key, fallback);
 }
 
-function writeJSON(key, value) {
-  localStorage.setItem(key, JSON.stringify(value));
+function persistJSON(key, value) {
+  const result = writeJSON(key, value);
+  if (!result.ok) {
+    console.warn(`Could not write ${key}`, result.error);
+  }
+  return result.ok;
 }
 
 function text(value) {
@@ -795,7 +795,7 @@ async function finishOnboarding() {
       restingHr,
     };
 
-    writeJSON(HR_INFO_STORAGE_KEY, nextHR);
+    persistJSON(HR_INFO_STORAGE_KEY, nextHR);
     await saveCloudHRInfo(nextHR);
     await updateMetadata({
       max_hr_source: maxHrSource,
@@ -876,7 +876,7 @@ export async function enforceAthleteOnboarding({ showScreen }) {
 
   if (profileComplete && hrComplete) {
     saveAthleteProfile(profile);
-    writeJSON(HR_INFO_STORAGE_KEY, {
+    persistJSON(HR_INFO_STORAGE_KEY, {
       ...HR_INFO_DEFAULTS,
       ...hrInfo,
     });

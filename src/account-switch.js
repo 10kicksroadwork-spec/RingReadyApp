@@ -7,6 +7,7 @@ import {
   HR_INFO_STORAGE_KEY,
   MILE_TEST_STORAGE_KEY,
 } from './app-content.js';
+import { removeStorageKey } from './safe-storage.js';
 
 const SHARED_LOCAL_STATE_KEYS = [
   PROFILE_STORAGE_KEY,
@@ -26,5 +27,7 @@ export function shouldClearSharedStateOnSwitch(lastUserId, newUserId) {
 }
 
 export function clearSharedLocalState() {
-  SHARED_LOCAL_STATE_KEYS.forEach((key) => localStorage.removeItem(key));
+  SHARED_LOCAL_STATE_KEYS.forEach((key) => {
+    removeStorageKey(key);
+  });
 }
