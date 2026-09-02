@@ -533,6 +533,57 @@ async function run() {
     const { data: stillThereB } = await client.from('workout_completions').select('id').eq('id', mismatchRowB.id).maybeSingle();
     assert(stillThereA && stillThereB, 'Mismatched clear attempt must leave both completions intact');
 
+    const idempotentMileKey = `${testPrefix}:idempotent-mile`;
+    const idempotentClientId = `${testPrefix}:idempotent-client-id`;
+    const { data: idempotentMileRow, error: idempotentMileError } = await client.from('mile_tests').insert({
+      user_id: user.id,
+      test_key: idempotentMileKey,
+      client_record_id: idempotentClientId,
+    }).select('id').single();
+    assert(!idempotentMileError && idempotentMileRow?.id, `Could not seed idempotent mile test: ${idempotentMileError?.message || 'unknown'}`);
+    createdMileTestIds.push(idempotentMileRow.id);
+
+    const idempotentPath = `${user.id}/${idempotentMileKey}/retry.webp`;
+    storagePaths.push(idempotentPath);
+    await uploadProofBlob(client, idempotentPath);
+    const idempotentParams = {
+      p_proof_key: idempotentMileKey,
+      p_linked_record_id: idempotentClientId,
+      p_storage_path: idempotentPath,
+    };
+    const firstIdempotent = await createProof(client, idempotentParams);
+    assert(!firstIdempotent.error && firstIdempotent.data?.id, `First idempotent RPC must succeed: ${firstIdempotent.error?.message || 'unknown'}`);
+    createdAttachmentIds.push(firstIdempotent.data.id);
+
+    const secondIdempotent = await createProof(client, idempotentParams);
+    assert(!secondIdempotent.error && secondIdempotent.data?.id === firstIdempotent.data.id, 'Repeated same-path RPC must return the same attachment id');
+
+    const [concurrentA, concurrentB] = await Promise.all([
+      createProof(client, idempotentParams),
+      createProof(client, idempotentParams),
+    ]);
+    assert(!concurrentA.error || !concurrentB.error, 'Concurrent same-path RPC calls must not both fail');
+    const concurrentIds = [concurrentA.data?.id, concurrentB.data?.id].filter(Boolean);
+    assert(new Set(concurrentIds).size <= 1, 'Concurrent same-path RPC must converge on one attachment id');
+    if (concurrentA.data?.id) createdAttachmentIds.push(concurrentA.data.id);
+    if (concurrentB.data?.id && concurrentB.data.id !== concurrentA.data?.id) createdAttachmentIds.push(concurrentB.data.id);
+
+    const sharedConflictPath = `${user.id}/${idempotentMileKey}/shared-conflict.webp`;
+    storagePaths.push(sharedConflictPath);
+    await uploadProofBlob(client, sharedConflictPath);
+    const { data: seededConflictProof, error: seededConflictError } = await createProof(client, {
+      ...idempotentParams,
+      p_storage_path: sharedConflictPath,
+    });
+    assert(!seededConflictError && seededConflictProof?.id, `Could not seed shared conflict path: ${seededConflictError?.message || 'unknown'}`);
+    createdAttachmentIds.push(seededConflictProof.id);
+    const { error: conflictError } = await createProof(client, {
+      ...idempotentParams,
+      p_storage_path: sharedConflictPath,
+      p_proof_key: `${testPrefix}:different-proof-key`,
+    });
+    assert(!!conflictError, 'Same storage path with conflicting proof key must be rejected');
+
     console.log('PASS: proof authorization matrix');
   } finally {
     cleanupErrors = await runCleanup(client, {

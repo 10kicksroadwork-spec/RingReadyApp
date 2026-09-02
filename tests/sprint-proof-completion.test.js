@@ -49,6 +49,7 @@ vi.mock('../src/ui.js', () => ({
   startRestLogAlert: vi.fn(),
   stopRestLogAlert: vi.fn(),
   syncHoldToCancelLabels: vi.fn(),
+  withSavingButton: async (_button, task) => task(),
 }));
 
 import {
@@ -140,5 +141,15 @@ describe('sprint proof completion', () => {
     expect(ensureWorkoutProofUploaded).not.toHaveBeenCalled();
     expect(showToast).toHaveBeenCalledWith('CLOUD SAVE FAILED');
     expect(getWorkoutCompletion(1, 0)).toBeNull();
+  });
+
+  it('deduplicates concurrent completeWorkout calls', async () => {
+    showSavedWorkoutResult(buildSprintResultRecord({ completedAt: undefined, completionKey: undefined }));
+
+    await Promise.all([completeWorkout(), completeWorkout()]);
+
+    expect(saveCloudSprintSession).toHaveBeenCalledTimes(1);
+    expect(ensureWorkoutProofUploaded).toHaveBeenCalledTimes(1);
+    expect(getWorkoutCompletion(1, 0)).toBeTruthy();
   });
 });

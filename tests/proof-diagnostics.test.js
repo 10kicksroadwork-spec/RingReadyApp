@@ -41,14 +41,17 @@ describe('proof upload diagnostics', () => {
     expect(storage.kind).toBe(PROOF_FAILURE_KIND.STORAGE);
     expect(storage.userMessage).toContain('Screenshot upload failed');
     expect(rpc.kind).toBe(PROOF_FAILURE_KIND.RPC);
-    expect(rpc.userMessage).toContain('Proof save failed');
+    expect(rpc.ambiguous).toBe(true);
+    expect(rpc.userMessage).toContain('COULDN\'T CONFIRM THE SAVE');
   });
 
-  it('classifies network and auth failures before storage phase', () => {
+  it('classifies network and auth failures with retry semantics', () => {
     expect(classifyProofUploadError(new Error('Failed to fetch')).kind).toBe(PROOF_FAILURE_KIND.NETWORK);
+    expect(classifyProofUploadError(new Error('Failed to fetch')).ambiguous).toBe(true);
     expect(classifyProofUploadError(new Error('JWT expired')).kind).toBe(PROOF_FAILURE_KIND.AUTH);
-    expect(classifyProofUploadError(new Error('Failed to fetch'), PROOF_UPLOAD_PHASE.STORAGE).kind)
-      .toBe(PROOF_FAILURE_KIND.NETWORK);
+    const storageNetwork = classifyProofUploadError(new Error('Failed to fetch'), PROOF_UPLOAD_PHASE.STORAGE);
+    expect(storageNetwork.kind).toBe(PROOF_FAILURE_KIND.STORAGE);
+    expect(storageNetwork.ambiguous).toBe(true);
     expect(classifyProofUploadError(new Error('JWT expired'), PROOF_UPLOAD_PHASE.STORAGE).kind)
       .toBe(PROOF_FAILURE_KIND.AUTH);
   });
