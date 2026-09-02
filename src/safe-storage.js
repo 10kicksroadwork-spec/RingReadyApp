@@ -341,25 +341,43 @@ export function readJSON(key, fallback) {
   return readStorageJSON(key, fallback);
 }
 
+function countActiveVolatileKeys() {
+  let count = 0;
+  volatileStorage.forEach((value) => {
+    if (!isVolatileTombstone(value)) count += 1;
+  });
+  return count;
+}
+
 export async function getStorageDiagnostics() {
+  const probe = probeStorageWrite();
   const diagnostics = {
     available: isStorageAvailable(),
-    probe: probeStorageWrite(),
-    volatileKeys: volatileStorage.size,
+    probe: {
+      ok: probe.ok,
+      code: probe.code || null,
+    },
+    volatileKeys: countActiveVolatileKeys(),
     estimate: null,
     persisted: null,
+    estimateError: null,
+    persistedError: null,
   };
 
   if (typeof navigator !== 'undefined' && navigator.storage) {
-    try {
-      if (typeof navigator.storage.estimate === 'function') {
+    if (typeof navigator.storage.estimate === 'function') {
+      try {
         diagnostics.estimate = await navigator.storage.estimate();
+      } catch (error) {
+        diagnostics.estimateError = classifyStorageError(error);
       }
-      if (typeof navigator.storage.persisted === 'function') {
+    }
+    if (typeof navigator.storage.persisted === 'function') {
+      try {
         diagnostics.persisted = await navigator.storage.persisted();
+      } catch (error) {
+        diagnostics.persistedError = classifyStorageError(error);
       }
-    } catch (error) {
-      diagnostics.estimateError = classifyStorageError(error);
     }
   }
 

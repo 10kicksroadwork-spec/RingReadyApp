@@ -17,6 +17,7 @@ import {
 } from './hr-service.js';
 import { checkRuntimeContract, CONTRACT_UPDATE_MESSAGE, getContractHealthDiagnosticDetail } from './contract-health.js';
 import { captureRuntimeDiagnostic, installGlobalRuntimeDiagnostics } from './runtime-diagnostics.js';
+import { scheduleStorageDiagnosticCapture } from './storage-diagnostics.js';
 import { registerMainHandlers, showToast, selectExportText, closeExportModal, showScreen, bindHoldToCancel } from './ui.js';
 import {
   setWorkoutContext,
@@ -288,6 +289,7 @@ function scheduleStartupContractHealthCheck() {
 
 async function init() {
   installGlobalRuntimeDiagnostics();
+  scheduleStorageDiagnosticCapture({ stage: 'startup' });
   registerServiceWorker({ showToast });
   initPWAInstall();
   initBuildMetadata();
