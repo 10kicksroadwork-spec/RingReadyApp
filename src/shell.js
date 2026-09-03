@@ -120,6 +120,10 @@ import {
 import { performSignOutCleanup } from './logout.js';
 import { resolveCanonicalClientRecordId } from './proof-staging.js';
 import { shouldRollbackProvisionalIdentity } from './proof-diagnostics.js';
+import {
+  athleteFacingWorkoutSaveError,
+  isDuplicateWorkoutIdentityError,
+} from './workout-completion-identity.js';
 import { OPERATION_TIMEOUT_MS, withOperationTimeout } from './operation-timeout.js';
 import { runSingleFlight } from './single-flight.js';
 import { withSavingButton } from './ui.js';
@@ -744,6 +748,11 @@ async function persistSignedInWorkoutCompletion(record, {
     );
   } catch (error) {
     console.warn('Cloud workout completion save failed', error);
+    if (isDuplicateWorkoutIdentityError(error)) {
+      scheduleTargetedWorkoutRehydrate(finalized);
+      shellHooks?.showToast?.(athleteFacingWorkoutSaveError(error));
+      return { success: false, record: finalized, cloudSaved: false, localCacheFailed: false, error, identityConflict: true };
+    }
     return { success: false, record: finalized, cloudSaved: false, localCacheFailed: false, error };
   }
 
@@ -1661,7 +1670,10 @@ async function completeWorkoutFromDetail(weekIndex, workoutIndex) {
         });
       }
       console.warn('Workout proof upload failed', error);
-      shellHooks?.showToast?.(String(error?.message || error).toUpperCase());
+      if (isDuplicateWorkoutIdentityError(error)) {
+        scheduleTargetedWorkoutRehydrate(record);
+      }
+      shellHooks?.showToast?.(athleteFacingWorkoutSaveError(error).toUpperCase());
       return;
     }
     const result = await persistSignedInWorkoutCompletion(record, {
@@ -1674,7 +1686,9 @@ async function completeWorkoutFromDetail(weekIndex, workoutIndex) {
     renderAthleteProfileDashboard();
     openWorkoutDetail(safeWeekIndex, safeWorkoutIndex);
     if (!result.success) {
-      shellHooks?.showToast?.('COULD NOT SAVE WORKOUT');
+      if (!result.identityConflict) {
+        shellHooks?.showToast?.('COULD NOT SAVE WORKOUT');
+      }
     } else if (!result.cloudSaved) {
       shellHooks?.showToast?.(existing ? 'WORKOUT UPDATED' : 'WORKOUT COMPLETE');
     }

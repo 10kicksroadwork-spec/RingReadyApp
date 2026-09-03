@@ -21,6 +21,7 @@ Run these **in order** on a fresh or partially migrated project. Do not run file
 | 15 | [014_workout_modality_output.sql](./migrations/014_workout_modality_output.sql) | First-class modality/output/watts columns on workout_completions |
 | 16 | [015_clear_workout_completion_with_proof.sql](./migrations/015_clear_workout_completion_with_proof.sql) | Transactional completion clear + proof attachment reconcile RPC |
 | 17 | [016_idempotent_proof_attachment.sql](./migrations/016_idempotent_proof_attachment.sql) | Same-path proof RPC idempotency for safe mobile retries |
+| 18 | [017_workout_completion_position_unique.sql](./migrations/017_workout_completion_position_unique.sql) | Document/ensure UNIQUE(user_id, week_index, workout_index) matching production |
 
 ## Fresh database
 
@@ -34,7 +35,7 @@ For the Sprint proof-gap hotfix on an existing database that already ran 000–0
 
 ## Production deployment procedure
 
-1. Apply Supabase migrations **000–016** in the table above (required through attachment write revoke, modality output columns, transactional clear RPC, and idempotent proof RPC).
+1. Apply Supabase migrations **000–017** in the table above (required through attachment write revoke, modality output columns, transactional clear RPC, idempotent proof RPC, and positional workout uniqueness).
 2. Configure production Apps Script Script Property `RING_READY_SYNC_RELAY_SECRET` matching the Vercel relay environment.
 3. Deploy the compatible client to Vercel with client-side:
    - `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY`
@@ -57,7 +58,7 @@ Canonical migrations are schema-only. This file is the source of truth for migra
 RING_READY_REQUIRE_PROOF_TESTS=1 npm run test:proof-auth
 ```
 
-Verifies proof authorization **and** migrations **014** (modality/output columns), **015** (transactional clear RPC), and **016** (idempotent proof RPC).
+Verifies proof authorization **and** migrations **014** (modality/output columns), **015** (transactional clear RPC), **016** (idempotent proof RPC), and **017** (positional workout uniqueness + legacy identity reconcile).
 
 Requires `RING_READY_SUPABASE_URL`, `RING_READY_SUPABASE_ANON_KEY`, `RING_READY_TEST_EMAIL`, and `RING_READY_TEST_PASSWORD`. Without credentials the script skips unless `RING_READY_REQUIRE_PROOF_TESTS=1` is set (then it fails). The CI job always sets `RING_READY_REQUIRE_PROOF_TESTS=1` and **fails closed** when secrets are missing.
 

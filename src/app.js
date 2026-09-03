@@ -58,6 +58,10 @@ import {
   saveAthleteProfile,
 } from './sync.js';
 import { getCurrentUser, saveCloudSprintSession, saveCloudWorkoutCompletion, clearCloudWorkoutCompletionWithProof } from './auth.js';
+import {
+  athleteFacingWorkoutSaveError,
+  isDuplicateWorkoutIdentityError,
+} from './workout-completion-identity.js';
 import { isSupabaseConfigured } from './supabase-client.js';
 import {
   getAutoCapturedHR,
@@ -1266,7 +1270,7 @@ export async function completeWorkout() {
       }
     } catch (error) {
       console.warn('Sprint proof upload failed', error);
-      showToast(String(error?.message || error).toUpperCase());
+      showToast(athleteFacingWorkoutSaveError(error).toUpperCase());
       return;
     }
 
@@ -1284,7 +1288,11 @@ export async function completeWorkout() {
         );
       } catch (error) {
         console.warn('Cloud sprint workout completion save failed', error);
-        showToast('COULD NOT SAVE WORKOUT');
+        showToast(
+          isDuplicateWorkoutIdentityError(error)
+            ? athleteFacingWorkoutSaveError(error)
+            : 'COULD NOT SAVE WORKOUT',
+        );
         return;
       }
     }

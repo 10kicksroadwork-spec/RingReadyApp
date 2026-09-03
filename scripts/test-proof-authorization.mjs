@@ -12,7 +12,8 @@
  */
 
 import { createClient } from '@supabase/supabase-js';
-import { buildProvisionalMileTestCloudPayload, buildWorkoutCloudPayload } from '../src/cloud-record-mapper.js';
+import { buildProvisionalMileTestCloudPayload, buildWorkoutCloudPayload, getCompletionKeyFromRecord } from '../src/cloud-record-mapper.js';
+import { isVisibleCompletionRow } from '../src/proof-staging.js';
 
 const url = process.env.RING_READY_SUPABASE_URL || process.env.SUPABASE_URL || '';
 const anonKey = process.env.RING_READY_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || '';
@@ -721,6 +722,118 @@ async function run() {
       .eq('user_id', user.id)
       .eq('storage_path', replaceNewPath);
     assert(replaceNewCount === 1, `Replacement path must create exactly one row, got ${replaceNewCount}`);
+
+    // Migration 017 / conflicting legacy identity: stale completion_key + same week/workout.
+    const identityWeek = 14;
+    const identityWorkout = 2;
+    const legacyIdentityKey = `${testPrefix}:stale-completion-key`;
+    const identityClientId = `${testPrefix}:identity-client`;
+    const { data: stagedIdentityRow, error: stagedIdentityError } = await client.from('workout_completions').insert({
+      user_id: user.id,
+      completion_key: legacyIdentityKey,
+      client_record_id: identityClientId,
+      week_index: identityWeek,
+      workout_index: identityWorkout,
+      workout_type: 'Threshold Run',
+      proof_pending: true,
+      completed_at: null,
+      record_json: {
+        id: identityClientId,
+        status: 'pending_proof',
+        workoutContext: { weekIndex: identityWeek, workoutIndex: identityWorkout, workoutType: 'Threshold Run' },
+      },
+    }).select('id, completion_key, proof_pending').single();
+    assert(
+      !stagedIdentityError && stagedIdentityRow?.id,
+      `Could not seed legacy identity row: ${stagedIdentityError?.message || 'unknown'}`,
+    );
+    createdWorkoutIds.push(stagedIdentityRow.id);
+    assert(stagedIdentityRow.proof_pending === true, 'Seeded legacy identity row must be proof_pending');
+    assert(!isVisibleCompletionRow(stagedIdentityRow), 'proof_pending rows must stay hidden from athlete completion state');
+
+    const retryIdentityRecord = {
+      id: `${testPrefix}:retry-client`,
+      completionKey: legacyIdentityKey,
+      workoutContext: {
+        weekIndex: identityWeek,
+        workoutIndex: identityWorkout,
+        workoutType: 'Threshold Run',
+      },
+      workoutLog: {
+        totalMinutes: 40,
+        avgBpm: 150,
+        maxBpm: 165,
+        completedAt: new Date().toISOString(),
+      },
+      completedAt: new Date().toISOString(),
+    };
+    const canonicalIdentityKey = getCompletionKeyFromRecord(retryIdentityRecord);
+    assert(
+      canonicalIdentityKey === `${identityWeek}:${identityWorkout}`,
+      'Valid week/workout context must produce the canonical completion key',
+    );
+    const reconcilePayload = buildWorkoutCloudPayload(retryIdentityRecord, user.id);
+    assert(reconcilePayload.completion_key === canonicalIdentityKey, 'Cloud payload must use canonical completion key');
+
+    const { error: naiveIdentityError } = await client
+      .from('workout_completions')
+      .upsert(reconcilePayload, { onConflict: 'user_id,completion_key' });
+    assert(!!naiveIdentityError, 'Naive completion_key upsert must collide with positional uniqueness');
+    assert(
+      /duplicate key|week_index|unique constraint/i.test(String(naiveIdentityError.message || '')),
+      `Expected positional unique collision, got: ${naiveIdentityError.message || 'unknown'}`,
+    );
+
+    const { data: positionalIdentity, error: positionalIdentityError } = await client
+      .from('workout_completions')
+      .select('id, completion_key, proof_pending, attachment_id')
+      .eq('user_id', user.id)
+      .eq('week_index', identityWeek)
+      .eq('workout_index', identityWorkout)
+      .maybeSingle();
+    assert(
+      !positionalIdentityError && positionalIdentity?.id === stagedIdentityRow.id,
+      `Positional lookup must reuse the legacy row: ${positionalIdentityError?.message || 'missing'}`,
+    );
+
+    const { data: reconciledIdentity, error: reconcileIdentityError } = await client
+      .from('workout_completions')
+      .update(reconcilePayload)
+      .eq('id', positionalIdentity.id)
+      .select('id, completion_key, proof_pending, completed_at, week_index, workout_index')
+      .single();
+    assert(
+      !reconcileIdentityError && reconciledIdentity?.id,
+      `Legacy identity reconcile update must succeed: ${reconcileIdentityError?.message || 'unknown'}`,
+    );
+    assert(reconciledIdentity.completion_key === canonicalIdentityKey, 'Reconcile must repair completion_key');
+    assert(reconciledIdentity.proof_pending === false, 'Reconcile must finalize proof_pending');
+    assert(isVisibleCompletionRow(reconciledIdentity), 'Finalized row must be athlete-visible');
+    assert(Number(reconciledIdentity.week_index) === identityWeek, 'Reconcile must keep week_index');
+    assert(Number(reconciledIdentity.workout_index) === identityWorkout, 'Reconcile must keep workout_index');
+
+    const { count: identityCount, error: identityCountError } = await client
+      .from('workout_completions')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', user.id)
+      .eq('week_index', identityWeek)
+      .eq('workout_index', identityWorkout);
+    assert(!identityCountError, `Could not count reconciled identity rows: ${identityCountError?.message || 'unknown'}`);
+    assert(identityCount === 1, `Retry must converge on one row, got ${identityCount}`);
+
+    const { error: secondPositionalInsertError } = await client.from('workout_completions').insert({
+      user_id: user.id,
+      completion_key: `${testPrefix}:second-positional`,
+      client_record_id: `${testPrefix}:second-positional-client`,
+      week_index: identityWeek,
+      workout_index: identityWorkout,
+      workout_type: 'Threshold Run',
+      record_json: {},
+    });
+    assert(
+      !!secondPositionalInsertError,
+      'Migration 017 positional unique constraint must reject a second row for the same week/workout',
+    );
 
     console.log('PASS: proof authorization matrix');
   } finally {

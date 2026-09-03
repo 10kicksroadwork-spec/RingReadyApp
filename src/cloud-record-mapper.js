@@ -27,10 +27,12 @@ export function getRecordContext(record = {}) {
 
 export function getCompletionKeyFromRecord(record = {}) {
   const context = getRecordContext(record);
-  if (record.completionKey) return String(record.completionKey);
+  // Week/workout position is canonical. Prefer it over any stale completionKey so
+  // retries converge on the same row as production UNIQUE(user_id, week_index, workout_index).
   if (Number.isFinite(Number(context.weekIndex)) && Number.isFinite(Number(context.workoutIndex))) {
     return `${Number(context.weekIndex)}:${Number(context.workoutIndex)}`;
   }
+  if (record.completionKey) return String(record.completionKey);
   return '';
 }
 

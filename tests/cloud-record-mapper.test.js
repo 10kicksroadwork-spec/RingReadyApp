@@ -21,6 +21,21 @@ describe('cloud record mapper', () => {
     expect(getCompletionKeyFromRecord(record)).toBe('0:2');
   });
 
+  it('derives completion identity from week/workout over a stale completionKey', () => {
+    const record = {
+      id: 'client-workout-legacy',
+      completionKey: 'legacy-stale-key',
+      workoutContext: { weekIndex: 2, workoutIndex: 1, workoutType: 'Threshold Run' },
+    };
+    expect(getCompletionKeyFromRecord(record)).toBe('2:1');
+    expect(buildWorkoutCloudPayload(record, 'user-a').completion_key).toBe('2:1');
+  });
+
+  it('falls back to existing completionKey only when week/workout context is missing', () => {
+    expect(getCompletionKeyFromRecord({ completionKey: 'orphan-key' })).toBe('orphan-key');
+    expect(getCompletionKeyFromRecord({})).toBe('');
+  });
+
   it('maps machine workout watts to first-class cloud columns', () => {
     const record = {
       id: 'client-workout-bike',

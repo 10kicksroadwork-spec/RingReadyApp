@@ -17,6 +17,7 @@ import {
 } from './proof-staging.js';
 import { MODALITY_RUNNING, normalizeModality } from './modality.js';
 import { isSupabaseConfigured, supabase } from './supabase-client.js';
+import { isDuplicateWorkoutIdentityError } from './workout-completion-identity.js';
 
 let currentSession = null;
 let authSubscription = null;
@@ -477,21 +478,57 @@ export async function loadCloudWorkoutCompletions() {
   }, {});
 }
 
+const WORKOUT_IDENTITY_COLUMNS = 'id, client_record_id, attachment_id, proof_pending, proof_policy_version, completion_key, week_index, workout_index';
+
+async function findWorkoutCompletionRow(userId, record, columns = WORKOUT_IDENTITY_COLUMNS) {
+  const completionKey = getCompletionKeyFromRecord(record);
+  const context = getRecordContext(record);
+  const week = integerOrNull(context.weekIndex);
+  const workout = integerOrNull(context.workoutIndex);
+
+  if (completionKey) {
+    const { data, error } = await supabase
+      .from('workout_completions')
+      .select(columns)
+      .eq('user_id', userId)
+      .eq('completion_key', completionKey)
+      .maybeSingle();
+    if (error) throw error;
+    if (data) return data;
+  }
+
+  // Production also enforces UNIQUE(user_id, week_index, workout_index). If the
+  // completion_key lookup misses (legacy/stale key), reuse the positional row.
+  if (week !== null && workout !== null) {
+    const { data, error } = await supabase
+      .from('workout_completions')
+      .select(columns)
+      .eq('user_id', userId)
+      .eq('week_index', week)
+      .eq('workout_index', workout)
+      .maybeSingle();
+    if (error) throw error;
+    if (data) return data;
+  }
+
+  return null;
+}
+
+async function updateWorkoutCompletionById(id, payload) {
+  const { error } = await supabase
+    .from('workout_completions')
+    .update(payload)
+    .eq('id', id);
+  if (error) throw error;
+}
+
 export async function ensureCloudWorkoutIdentity(record) {
   const user = getCurrentUser();
   if (!isSupabaseConfigured || !supabase || !user || !record?.id) {
     return { clientRecordId: '', created: false };
   }
 
-  const completionKey = getCompletionKeyFromRecord(record);
-  const { data: existing, error: loadError } = await supabase
-    .from('workout_completions')
-    .select('id, client_record_id, attachment_id, proof_pending, proof_policy_version')
-    .eq('user_id', user.id)
-    .eq('completion_key', completionKey)
-    .maybeSingle();
-  if (loadError) throw loadError;
-
+  let existing = await findWorkoutCompletionRow(user.id, record);
   const staging = planWorkoutIdentityStaging(existing, record);
   if (staging.action === 'skip') {
     return { clientRecordId: staging.clientRecordId, created: false };
@@ -506,6 +543,7 @@ export async function ensureCloudWorkoutIdentity(record) {
       .from('workout_completions')
       .update({
         client_record_id: staging.clientRecordId,
+        completion_key: staging.completionKey,
         updated_at: new Date().toISOString(),
       })
       .eq('id', existing.id);
@@ -519,6 +557,7 @@ export async function ensureCloudWorkoutIdentity(record) {
       .from('workout_completions')
       .update({
         client_record_id: staging.clientRecordId,
+        completion_key: payload.completion_key,
         week_index: payload.week_index,
         workout_index: payload.workout_index,
         week_label: payload.week_label,
@@ -542,8 +581,62 @@ export async function ensureCloudWorkoutIdentity(record) {
   const { error } = await supabase
     .from('workout_completions')
     .insert(payload);
-  if (error) throw error;
-  return { clientRecordId: staging.clientRecordId, created: true };
+  if (!error) {
+    return { clientRecordId: staging.clientRecordId, created: true };
+  }
+
+  // Concurrent retry or legacy positional row: reuse instead of failing the athlete.
+  if (!isDuplicateWorkoutIdentityError(error)) throw error;
+  existing = await findWorkoutCompletionRow(user.id, record);
+  if (!existing) throw error;
+
+  const racedStaging = planWorkoutIdentityStaging(existing, record);
+  if (racedStaging.action === 'noop' || racedStaging.action === 'skip') {
+    return { clientRecordId: racedStaging.clientRecordId || staging.clientRecordId, created: false };
+  }
+  if (racedStaging.action === 'patch-client-id') {
+    const { error: patchError } = await supabase
+      .from('workout_completions')
+      .update({
+        client_record_id: racedStaging.clientRecordId,
+        completion_key: racedStaging.completionKey,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', existing.id);
+    if (patchError) throw patchError;
+    return { clientRecordId: racedStaging.clientRecordId, created: false };
+  }
+  if (racedStaging.action === 'refresh-provisional') {
+    const refreshPayload = buildProvisionalWorkoutCloudPayload(
+      { ...record, id: racedStaging.clientRecordId },
+      user.id,
+    );
+    const { error: refreshError } = await supabase
+      .from('workout_completions')
+      .update({
+        client_record_id: racedStaging.clientRecordId,
+        completion_key: refreshPayload.completion_key,
+        week_index: refreshPayload.week_index,
+        workout_index: refreshPayload.workout_index,
+        week_label: refreshPayload.week_label,
+        week_title: refreshPayload.week_title,
+        day_of_week: refreshPayload.day_of_week,
+        workout_type: refreshPayload.workout_type,
+        description: refreshPayload.description,
+        warmup: refreshPayload.warmup,
+        target_zone: refreshPayload.target_zone,
+        target_bpm: refreshPayload.target_bpm,
+        proof_pending: true,
+        record_json: refreshPayload.record_json,
+        updated_at: refreshPayload.updated_at,
+      })
+      .eq('id', existing.id)
+      .eq('proof_pending', true);
+    if (refreshError) throw refreshError;
+    return { clientRecordId: racedStaging.clientRecordId, created: true };
+  }
+
+  throw error;
 }
 
 export async function rollbackCloudWorkoutIdentity(record, staging = {}) {
@@ -554,13 +647,7 @@ export async function rollbackCloudWorkoutIdentity(record, staging = {}) {
   const completionKey = getCompletionKeyFromRecord(record);
   if (!completionKey) return false;
 
-  const { data, error } = await supabase
-    .from('workout_completions')
-    .select('id, proof_pending')
-    .eq('user_id', user.id)
-    .eq('completion_key', completionKey)
-    .maybeSingle();
-  if (error) throw error;
+  const data = await findWorkoutCompletionRow(user.id, record, 'id, proof_pending');
   if (!canRollbackProvisionalStaging(staging, data)) return false;
 
   const { error: deleteError } = await supabase
@@ -581,11 +668,35 @@ export async function saveCloudWorkoutCompletion(record) {
     payload.completed_at = normalizeISODate(record.completedAt || record.date);
   }
 
+  const existing = await findWorkoutCompletionRow(user.id, record);
+  if (existing) {
+    // Preserve an existing proof attachment when this write does not carry one.
+    if (!payload.attachment_id && existing.attachment_id) {
+      payload.attachment_id = existing.attachment_id;
+    }
+    if (!payload.proof_policy_version && existing.proof_policy_version) {
+      payload.proof_policy_version = existing.proof_policy_version;
+    }
+    await updateWorkoutCompletionById(existing.id, payload);
+    return record;
+  }
+
   const { error } = await supabase
     .from('workout_completions')
     .upsert(payload, { onConflict: 'user_id,completion_key' });
 
-  if (error) throw error;
+  if (!error) return record;
+  if (!isDuplicateWorkoutIdentityError(error)) throw error;
+
+  const raced = await findWorkoutCompletionRow(user.id, record);
+  if (!raced) throw error;
+  if (!payload.attachment_id && raced.attachment_id) {
+    payload.attachment_id = raced.attachment_id;
+  }
+  if (!payload.proof_policy_version && raced.proof_policy_version) {
+    payload.proof_policy_version = raced.proof_policy_version;
+  }
+  await updateWorkoutCompletionById(raced.id, payload);
   return record;
 }
 
