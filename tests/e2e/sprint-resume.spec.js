@@ -1,8 +1,10 @@
 import { test, expect } from './fixtures.js';
 import {
   openSprintWorkout,
+  readActiveSessionCheckpoint,
   saveAthleteProfile,
   startSprintInterval,
+  waitForActiveSessionCheckpoint,
   waitForHome,
 } from './helpers/app.js';
 
@@ -33,22 +35,23 @@ test.describe('sprint checkpoint resume', () => {
 
     await startSprintInterval(page);
 
-    await page.waitForFunction(() => (
-      Object.keys(localStorage).some((key) => key.startsWith('ringReadyActiveSession:'))
-    ));
+    const checkpointBefore = await waitForActiveSessionCheckpoint(page);
+    expect(checkpointBefore.state.phase).toBe('sprinting');
+    expect(checkpointBefore.state.currentRep).toBe(1);
+    expect(String(checkpointBefore.sessionId || '').trim()).toBeTruthy();
 
     await page.reload();
-    await page.waitForLoadState('domcontentloaded');
 
-    if (!(await page.locator('#session.screen.active').isVisible())) {
-      await waitForHome(page);
-      await openSprintWorkout(page);
-      page.on('dialog', (dialog) => dialog.accept());
-      await page.locator('#start-session-btn').click();
-    }
-
-    await expect(page.locator('#session.screen.active')).toBeVisible({ timeout: 15000 });
+    await Promise.all([
+      expect(page.locator('#session.screen.active')).toBeVisible({ timeout: 15000 }),
+      expect(page.locator('#toast')).toContainText(/SESSION RESUMED/i, { timeout: 15000 }),
+    ]);
     await expect(page.locator('#curr-interval')).toHaveText('1');
+
+    const checkpointAfter = await readActiveSessionCheckpoint(page);
+    expect(checkpointAfter?.sessionId).toBe(checkpointBefore.sessionId);
+    expect(checkpointAfter?.state.currentRep).toBe(1);
+    expect(checkpointAfter?.state.phase).toBe('sprinting');
 
     consoleGate.assertClean();
   });

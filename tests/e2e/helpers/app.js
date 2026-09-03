@@ -113,6 +113,31 @@ export async function startSprintInterval(page) {
   await expect(page.locator('#curr-interval')).toHaveText('1');
 }
 
+export async function readActiveSessionCheckpoint(page) {
+  return page.evaluate(() => {
+    const prefix = 'ringReadyActiveSession:';
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (!key || !key.startsWith(prefix)) continue;
+      try {
+        return JSON.parse(localStorage.getItem(key) || 'null');
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  });
+}
+
+export async function waitForActiveSessionCheckpoint(page) {
+  await page.waitForFunction(() => (
+    Object.keys(localStorage).some((key) => key.startsWith('ringReadyActiveSession:'))
+  ));
+  const checkpoint = await readActiveSessionCheckpoint(page);
+  expect(checkpoint?.sessionId).toBeTruthy();
+  return checkpoint;
+}
+
 export async function assertNoHorizontalOverflow(page) {
   const overflow = await page.evaluate(() => {
     const root = document.documentElement;
@@ -120,3 +145,4 @@ export async function assertNoHorizontalOverflow(page) {
   });
   expect(overflow).toBe(false);
 }
+

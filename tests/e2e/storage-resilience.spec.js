@@ -1,6 +1,36 @@
 import { test, expect } from './fixtures.js';
-import { goHome, navigateFromDrawer, waitForHome } from './helpers/app.js';
+import {
+  goHome,
+  navigateFromDrawer,
+  openSprintWorkout,
+  waitForHome,
+} from './helpers/app.js';
 import { attachConsoleGate } from './helpers/console-gate.js';
+
+function installQuotaExceededLocalStorage() {
+  return () => {
+    localStorage.setItem('ringReadyOnboardingDismissed', '1');
+    const original = window.localStorage;
+    const quotaError = new DOMException('Quota exceeded', 'QuotaExceededError');
+
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      get() {
+        return new Proxy(original, {
+          get(target, prop) {
+            if (prop === 'setItem') {
+              return () => {
+                throw quotaError;
+              };
+            }
+            const value = Reflect.get(target, prop, target);
+            return typeof value === 'function' ? value.bind(target) : value;
+          },
+        });
+      },
+    });
+  };
+}
 
 test.describe('storage and contract failure injection', () => {
   test('boots when localStorage getter throws SecurityError', async ({ page }) => {
@@ -25,32 +55,14 @@ test.describe('storage and contract failure injection', () => {
     gate.assertClean();
   });
 
-  test('remains usable when persistent storage writes throw QuotaExceededError', async ({ page }) => {
+  test('warns and allows degraded sprint start when persistent writes throw QuotaExceededError', async ({ page }) => {
     const gate = attachConsoleGate(page, {
-      allowlist: [/Could not write storage/i, /Could not persist active sprint session/i],
+      allowlist: [
+        /Could not write storage/i,
+        /Could not persist active sprint session/i,
+      ],
     });
-    await page.addInitScript(() => {
-      localStorage.setItem('ringReadyOnboardingDismissed', '1');
-      const original = window.localStorage;
-      const quotaError = new DOMException('Quota exceeded', 'QuotaExceededError');
-
-      Object.defineProperty(window, 'localStorage', {
-        configurable: true,
-        get() {
-          return new Proxy(original, {
-            get(target, prop) {
-              if (prop === 'setItem') {
-                return () => {
-                  throw quotaError;
-                };
-              }
-              const value = Reflect.get(target, prop, target);
-              return typeof value === 'function' ? value.bind(target) : value;
-            },
-          });
-        },
-      });
-    });
+    await page.addInitScript(installQuotaExceededLocalStorage());
 
     await page.goto('/');
     await waitForHome(page);
@@ -61,12 +73,30 @@ test.describe('storage and contract failure injection', () => {
     await goHome(page);
     await expect(page.locator('#week-workouts')).toBeVisible();
 
+    await openSprintWorkout(page);
+
+    page.once('dialog', async (dialog) => {
+      expect(dialog.message()).toMatch(/SESSION RESUME STORAGE IS UNAVAILABLE/i);
+      await dialog.dismiss();
+    });
+    await page.locator('#start-session-btn').click();
+    await expect(page.locator('#setup.screen.active')).toBeVisible();
+    await expect(page.locator('#session')).not.toHaveClass(/active/);
+
+    page.once('dialog', async (dialog) => {
+      expect(dialog.message()).toMatch(/SESSION RESUME STORAGE IS UNAVAILABLE/i);
+      await dialog.accept();
+    });
+    await page.locator('#start-session-btn').click();
+    await expect(page.locator('#session.screen.active')).toBeVisible({ timeout: 15000 });
+    await expect(page.locator('#main-btn')).toBeVisible();
+
     gate.assertClean();
   });
 
   test('keeps athlete UI usable when contract health is aborted', async ({ page }) => {
     const gate = attachConsoleGate(page, {
-      allowlist: [/Failed to load resource: net::ERR_FAILED/i],
+      allowlist: [/Failed to load resource: net::ERR_FAILED/i, /Failed to load resource/i],
     });
     await page.addInitScript(() => {
       localStorage.setItem('ringReadyOnboardingDismissed', '1');

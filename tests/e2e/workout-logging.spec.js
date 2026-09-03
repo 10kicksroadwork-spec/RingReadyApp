@@ -98,7 +98,10 @@ test.describe('normal workout logging', () => {
     consoleGate.assertClean();
   });
 
-  test('completes an assault bike workout with average watts', async ({ localAthletePage, consoleGate }) => {
+  test('completes an assault bike workout with average watts and persists after reload', async ({
+    localAthletePage,
+    consoleGate,
+  }) => {
     const page = localAthletePage;
 
     await completeLogWorkout(page, {
@@ -109,7 +112,14 @@ test.describe('normal workout logging', () => {
       outputLabelPattern: /Watts/i,
     });
 
+    await page.reload();
+    await waitForHome(page);
+    await openLogWorkout(page, 0, 1);
+
+    await expect(page.locator('[data-detail-modality="assault_bike"]')).toHaveClass(/active/);
+    await expect(page.locator('#detail-output-label')).toContainText(/Watts/i);
     await expect(page.locator('#detail-output-input')).toHaveValue('280');
+    await expect(page.locator('#detail-action-btn')).toHaveText('SAVE CHANGES');
 
     consoleGate.assertClean();
   });
