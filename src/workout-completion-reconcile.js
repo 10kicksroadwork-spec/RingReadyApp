@@ -14,6 +14,7 @@ import {
 import {
   createDualWorkoutIdentityError,
   isReconcileableUniqueConflict,
+  keyRowDisagreesWithCanonicalPosition,
   resolveCanonicalWorkoutIdentity,
 } from './workout-completion-identity.js';
 
@@ -63,10 +64,17 @@ export async function findWorkoutCompletionIdentity(
       : null;
 
     if (positional && byKey && positional.id !== byKey.id) {
-      throw createDualWorkoutIdentityError(positional, byKey);
+      throw createDualWorkoutIdentityError(positional, byKey, 'dual_row');
     }
     if (positional) return positional;
-    if (byKey) return byKey;
+    if (byKey) {
+      // Position is canonical. A key hit at a different stored position is an
+      // explicit conflict — never silently move that row into the requested slot.
+      if (keyRowDisagreesWithCanonicalPosition(byKey, identity)) {
+        throw createDualWorkoutIdentityError(null, byKey, 'key_position_mismatch');
+      }
+      return byKey;
+    }
     return null;
   }
 

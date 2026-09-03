@@ -13,6 +13,7 @@ function numberOrNull(value) {
 }
 
 function integerOrNull(value) {
+  // Non-position integers (HR, seconds, etc.) may still round.
   const parsed = numberOrNull(value);
   return parsed === null ? null : Math.round(parsed);
 }
@@ -102,13 +103,14 @@ export function mapCloudSprintSessionRow(row, parseJSON = (value, fallback) => {
 export function buildSprintCloudPayload(record, userId) {
   const cloudSafeRecord = stripClientSprintMetadata(record);
   const context = getRecordContext(cloudSafeRecord);
+  const identity = resolveCanonicalWorkoutIdentity(cloudSafeRecord);
   const data = Array.isArray(cloudSafeRecord.data) ? cloudSafeRecord.data : [];
   return {
     user_id: userId,
     session_id: String(cloudSafeRecord.id || globalThis.crypto?.randomUUID?.() || Date.now()),
     session_at: normalizeISODate(cloudSafeRecord.date || cloudSafeRecord.completedAt),
-    week_index: integerOrNull(context.weekIndex),
-    workout_index: integerOrNull(context.workoutIndex),
+    week_index: identity.weekIndex,
+    workout_index: identity.workoutIndex,
     workout_type: textOrEmpty(context.workoutType || 'Sprint Intervals'),
     hr_source: textOrEmpty(cloudSafeRecord.hrSource || cloudSafeRecord.cfg?.hrSource || ''),
     reps_planned: integerOrNull(cloudSafeRecord.cfg?.reps || context.reps),

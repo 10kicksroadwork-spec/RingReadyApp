@@ -40,8 +40,8 @@ function assertUniqueViolation(error, expectedKind, label) {
   assert(!!error, `${label}: expected a database error`);
   const code = String(error.code || error.error_code || '').toUpperCase();
   assert(
-    code === '23505' || /duplicate key|unique constraint/i.test(String(error.message || '')),
-    `${label}: expected SQLSTATE 23505 unique violation, got code=${code || 'none'} message=${error.message || 'unknown'}`,
+    code === '23505',
+    `${label}: expected literal SQLSTATE 23505, got code=${code || 'none'} message=${error.message || 'unknown'}`,
   );
   if (expectedKind) {
     assert(
@@ -930,6 +930,73 @@ async function run() {
       dualError = error;
     }
     assert(dualError?.workoutIdentityConflict === 'dual_row', 'Mismatched key/position rows must raise explicit dual-row conflict');
+
+    // Key-only wrong-position disagreement: key exists, correct position absent.
+    const mismatchWeek = 19;
+    const mismatchWorkout = 1;
+    const { data: wrongPosKeyRow, error: wrongPosKeyError } = await client.from('workout_completions').insert({
+      user_id: user.id,
+      completion_key: `${mismatchWeek}:${mismatchWorkout}`,
+      client_record_id: `${testPrefix}:wrong-pos-key`,
+      week_index: 1,
+      workout_index: 0,
+      workout_type: 'Easy Run',
+      total_minutes: 30,
+      avg_bpm: 140,
+      proof_pending: false,
+      record_json: { id: `${testPrefix}:wrong-pos-key` },
+    }).select('id, completion_key, week_index, workout_index, total_minutes').single();
+    assert(!wrongPosKeyError && wrongPosKeyRow?.id, `Wrong-position key seed failed: ${wrongPosKeyError?.message || 'unknown'}`);
+    createdWorkoutIds.push(wrongPosKeyRow.id);
+
+    let keyMismatchError = null;
+    try {
+      await findWorkoutCompletionIdentity(client, user.id, {
+        id: `${testPrefix}:wrong-pos-retry`,
+        workoutContext: { weekIndex: mismatchWeek, workoutIndex: mismatchWorkout },
+        workoutLog: { totalMinutes: 40, avgBpm: 150, maxBpm: 165 },
+      });
+    } catch (error) {
+      keyMismatchError = error;
+    }
+    assert(
+      keyMismatchError?.workoutIdentityConflict === 'key_position_mismatch',
+      'Key row at wrong position must raise explicit key_position_mismatch',
+    );
+
+    let saveMismatchError = null;
+    try {
+      await saveWorkoutCompletionReconciled(client, user.id, {
+        id: `${testPrefix}:wrong-pos-retry`,
+        workoutContext: { weekIndex: mismatchWeek, workoutIndex: mismatchWorkout },
+        workoutLog: { totalMinutes: 40, avgBpm: 150, maxBpm: 165, completedAt: new Date().toISOString() },
+        completedAt: new Date().toISOString(),
+      });
+    } catch (error) {
+      saveMismatchError = error;
+    }
+    assert(
+      saveMismatchError?.workoutIdentityConflict === 'key_position_mismatch',
+      'Save must not silently mutate a key row that points at another position',
+    );
+
+    const { data: unchangedWrongPos } = await client
+      .from('workout_completions')
+      .select('id, week_index, workout_index, total_minutes, completion_key')
+      .eq('id', wrongPosKeyRow.id)
+      .single();
+    assert(Number(unchangedWrongPos.week_index) === 1, 'Wrong-position key row week must remain unchanged');
+    assert(Number(unchangedWrongPos.workout_index) === 0, 'Wrong-position key row workout must remain unchanged');
+    assert(Number(unchangedWrongPos.total_minutes) === 30, 'Wrong-position key row metrics must remain unchanged');
+    assert(unchangedWrongPos.completion_key === `${mismatchWeek}:${mismatchWorkout}`, 'Wrong-position key must remain unchanged');
+
+    const { count: mismatchPosCount } = await client
+      .from('workout_completions')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', user.id)
+      .eq('week_index', mismatchWeek)
+      .eq('workout_index', mismatchWorkout);
+    assert(mismatchPosCount === 0, 'No new row may be created at the requested position after key-position conflict');
 
     console.log('PASS: proof authorization matrix');
   } finally {

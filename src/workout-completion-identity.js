@@ -3,6 +3,8 @@
  *  Identity, Idempotency, Recoverability, Authority, and Error UX contracts.
  */
 
+import { readOutputFromWorkoutLog } from './modality.js';
+
 export const UNIQUE_CONFLICT = {
   POSITION: 'POSITION_CONFLICT',
   COMPLETION_KEY: 'COMPLETION_KEY_CONFLICT',
@@ -18,7 +20,8 @@ function lowerTextOf(error) {
   return textOf(error).toLowerCase();
 }
 
-function parseNonNegativeInteger(value) {
+/** Single canonical parser for workout position indices. */
+export function parseNonNegativeInteger(value) {
   if (value === null || value === undefined) return null;
   if (typeof value === 'string' && !value.trim()) return null;
   if (typeof value === 'number' && !Number.isInteger(value)) return null;
@@ -142,7 +145,6 @@ function isKnownAthleteSafeMessage(message) {
 
 /** Athletes must never see raw SQL/RLS/Supabase/JS infrastructure text. */
 export function athleteFacingWorkoutSaveError(error) {
-  // Proof-diagnostics already produced athlete-safe copy — do not flatten it.
   if (error?.proofFailureKind || error?.proofUserMessage) {
     const proofMessage = String(error.proofUserMessage || error.message || '').trim();
     if (proofMessage) return proofMessage;
@@ -155,7 +157,7 @@ export function athleteFacingWorkoutSaveError(error) {
   if (uniqueKind === UNIQUE_CONFLICT.CLIENT_RECORD_ID || uniqueKind === UNIQUE_CONFLICT.UNKNOWN) {
     return 'COULD NOT SAVE WORKOUT — TRY AGAIN. IF THIS CONTINUES, CONTACT YOUR COACH.';
   }
-  if (error?.workoutIdentityConflict === 'dual_row') {
+  if (error?.workoutIdentityConflict) {
     return 'WORKOUT IDENTITY CONFLICT — CONTACT YOUR COACH.';
   }
   if (isAuthSessionError(error)) {
@@ -173,53 +175,145 @@ export function athleteFacingWorkoutSaveError(error) {
   return 'COULD NOT SAVE WORKOUT — TRY AGAIN. IF THIS CONTINUES, CONTACT YOUR COACH.';
 }
 
+function isPopulated(value) {
+  if (value === null || value === undefined) return false;
+  if (typeof value === 'string') return value.trim() !== '';
+  if (typeof value === 'number') return Number.isFinite(value);
+  return true;
+}
+
+function numbersEqual(a, b) {
+  return Math.abs(Number(a) - Number(b)) <= 0.001;
+}
+
+function valuesEqual(requested, cloud) {
+  if (typeof requested === 'number' || typeof cloud === 'number') {
+    return Number.isFinite(Number(requested)) && Number.isFinite(Number(cloud)) && numbersEqual(requested, cloud);
+  }
+  return String(requested) === String(cloud);
+}
+
 /**
- * Authority check: soft-success only when the authoritative cloud row matches the
- * requested logical save enough to claim the write landed.
+ * Canonical comparable mutation projection (excludes nondeterministic timestamps).
+ * Used for Authority soft-success checks.
+ */
+export function buildComparableCompletionMutation(record = {}) {
+  const identity = resolveCanonicalWorkoutIdentity(record);
+  const workoutLog = record.workoutLog || {};
+  const output = readOutputFromWorkoutLog(workoutLog);
+  const attachmentId = record.attachment?.id || record.attachment_id || null;
+  return {
+    completion_key: identity.completionKey || null,
+    week_index: identity.weekIndex,
+    workout_index: identity.workoutIndex,
+    total_minutes: Number.isFinite(Number(workoutLog.totalMinutes)) ? Number(workoutLog.totalMinutes) : null,
+    total_seconds: parseNonNegativeInteger(workoutLog.totalSeconds),
+    avg_bpm: parseNonNegativeInteger(workoutLog.avgBpm),
+    max_bpm: parseNonNegativeInteger(workoutLog.maxBpm),
+    modality: output.modality || null,
+    output_type: output.outputType || null,
+    output_value: Number.isFinite(Number(output.outputValue)) ? Number(output.outputValue) : null,
+    distance: output.outputType === 'distance' && Number.isFinite(Number(output.outputValue))
+      ? Number(output.outputValue)
+      : (Number.isFinite(Number(workoutLog.distance)) ? Number(workoutLog.distance) : null),
+    avg_watts: output.outputType === 'watts' && Number.isFinite(Number(output.outputValue))
+      ? Number(output.outputValue)
+      : (Number.isFinite(Number(workoutLog.avgWatts)) ? Number(workoutLog.avgWatts) : null),
+    attachment_id: attachmentId ? String(attachmentId) : null,
+  };
+}
+
+export function projectCloudCompletionMutation(cloudRecord = {}) {
+  const context = cloudRecord.workoutContext || cloudRecord.cfg?.workoutContext || {};
+  const workoutLog = cloudRecord.workoutLog || {};
+  const week = parseNonNegativeInteger(
+    context.weekIndex ?? cloudRecord.week_index ?? cloudRecord.weekIndex,
+  );
+  const workout = parseNonNegativeInteger(
+    context.workoutIndex ?? cloudRecord.workout_index ?? cloudRecord.workoutIndex,
+  );
+  const completionKey = String(
+    cloudRecord.completionKey || cloudRecord.completion_key || '',
+  ).trim() || (week !== null && workout !== null ? `${week}:${workout}` : null);
+
+  const modality = workoutLog.modality || cloudRecord.modality || null;
+  const outputType = workoutLog.outputType || cloudRecord.output_type || cloudRecord.outputType || null;
+  const outputValueRaw = workoutLog.outputValue ?? cloudRecord.output_value ?? cloudRecord.outputValue;
+  const outputValue = Number.isFinite(Number(outputValueRaw)) ? Number(outputValueRaw) : null;
+  const attachmentId = cloudRecord.attachment?.id || cloudRecord.attachment_id || null;
+
+  const totalMinutesRaw = workoutLog.totalMinutes ?? cloudRecord.total_minutes ?? cloudRecord.totalMinutes;
+  const distanceRaw = workoutLog.distance ?? cloudRecord.distance
+    ?? (outputType === 'distance' ? outputValueRaw : null);
+  const avgWattsRaw = workoutLog.avgWatts ?? cloudRecord.avg_watts ?? cloudRecord.avgWatts
+    ?? (outputType === 'watts' ? outputValueRaw : null);
+
+  return {
+    completion_key: completionKey,
+    week_index: week,
+    workout_index: workout,
+    total_minutes: Number.isFinite(Number(totalMinutesRaw)) ? Number(totalMinutesRaw) : null,
+    total_seconds: parseNonNegativeInteger(workoutLog.totalSeconds ?? cloudRecord.total_seconds ?? cloudRecord.totalSeconds),
+    avg_bpm: parseNonNegativeInteger(workoutLog.avgBpm ?? cloudRecord.avg_bpm ?? cloudRecord.avgBpm),
+    max_bpm: parseNonNegativeInteger(workoutLog.maxBpm ?? cloudRecord.max_bpm ?? cloudRecord.maxBpm),
+    modality: modality || null,
+    output_type: outputType || null,
+    output_value: outputValue,
+    distance: Number.isFinite(Number(distanceRaw)) ? Number(distanceRaw) : null,
+    avg_watts: Number.isFinite(Number(avgWattsRaw)) ? Number(avgWattsRaw) : null,
+    attachment_id: attachmentId ? String(attachmentId) : null,
+  };
+}
+
+/**
+ * Authority check: soft-success only when authoritative cloud state proves the
+ * requested mutation landed. If a requested metric is populated, cloud must
+ * contain and equal it.
  */
 export function doesCloudCompletionMatchRequestedSave(cloudRecord, requestedRecord = {}) {
   if (!cloudRecord) return false;
   if (cloudRecord.proof_pending === true || cloudRecord.proofPending === true) return false;
 
-  const requested = resolveCanonicalWorkoutIdentity(requestedRecord);
-  const cloudKey = String(
-    cloudRecord.completionKey
-    || cloudRecord.completion_key
-    || '',
-  ).trim();
-  if (requested.completionKey && cloudKey && cloudKey !== requested.completionKey) return false;
+  const requested = buildComparableCompletionMutation(requestedRecord);
+  const cloud = projectCloudCompletionMutation(cloudRecord);
 
-  if (requested.source === 'week_workout') {
-    const cloudWeek = Number(cloudRecord.workoutContext?.weekIndex ?? cloudRecord.week_index ?? cloudRecord.weekIndex);
-    const cloudWorkout = Number(cloudRecord.workoutContext?.workoutIndex ?? cloudRecord.workout_index ?? cloudRecord.workoutIndex);
-    if (cloudWeek !== requested.weekIndex || cloudWorkout !== requested.workoutIndex) return false;
+  const fields = [
+    'completion_key',
+    'week_index',
+    'workout_index',
+    'total_minutes',
+    'total_seconds',
+    'avg_bpm',
+    'max_bpm',
+    'modality',
+    'output_type',
+    'output_value',
+    'distance',
+    'avg_watts',
+    'attachment_id',
+  ];
+
+  for (const field of fields) {
+    if (!isPopulated(requested[field])) continue;
+    if (!isPopulated(cloud[field])) return false;
+    if (!valuesEqual(requested[field], cloud[field])) return false;
   }
-
-  const requestedLog = requestedRecord.workoutLog || {};
-  const cloudLog = cloudRecord.workoutLog || {};
-  const requestedMinutes = Number(requestedLog.totalMinutes);
-  const cloudMinutes = Number(
-    cloudLog.totalMinutes
-    ?? cloudRecord.total_minutes
-    ?? cloudRecord.totalMinutes,
-  );
-  if (Number.isFinite(requestedMinutes) && Number.isFinite(cloudMinutes)) {
-    if (Math.abs(requestedMinutes - cloudMinutes) > 0.001) return false;
-  }
-
-  const requestedAvg = Number(requestedLog.avgBpm);
-  const cloudAvg = Number(cloudLog.avgBpm ?? cloudRecord.avg_bpm ?? cloudRecord.avgBpm);
-  if (Number.isFinite(requestedAvg) && Number.isFinite(cloudAvg) && requestedAvg !== cloudAvg) {
-    return false;
-  }
-
   return true;
 }
 
-export function createDualWorkoutIdentityError(positionalRow, keyRow) {
+export function createDualWorkoutIdentityError(positionalRow, keyRow, kind = 'dual_row') {
   const error = new Error('WORKOUT IDENTITY CONFLICT — CONTACT YOUR COACH.');
-  error.workoutIdentityConflict = 'dual_row';
+  error.workoutIdentityConflict = kind;
   error.positionalRowId = positionalRow?.id || null;
   error.completionKeyRowId = keyRow?.id || null;
   return error;
+}
+
+/** True when a key-row's stored position disagrees with the requested canonical position. */
+export function keyRowDisagreesWithCanonicalPosition(keyRow, identity) {
+  if (!keyRow || identity?.source !== 'week_workout') return false;
+  const keyWeek = parseNonNegativeInteger(keyRow.week_index ?? keyRow.weekIndex);
+  const keyWorkout = parseNonNegativeInteger(keyRow.workout_index ?? keyRow.workoutIndex);
+  if (keyWeek === null && keyWorkout === null) return false;
+  return keyWeek !== identity.weekIndex || keyWorkout !== identity.workoutIndex;
 }

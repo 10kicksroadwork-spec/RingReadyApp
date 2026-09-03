@@ -7,9 +7,22 @@ import {
   isAuthSessionError,
   isReconcileableUniqueConflict,
   looksLikeInfrastructureError,
+  parseNonNegativeInteger,
   resolveCanonicalWorkoutIdentity,
   UNIQUE_CONFLICT,
 } from '../src/workout-completion-identity.js';
+
+describe('parseNonNegativeInteger', () => {
+  it('accepts only exact non-negative integers', () => {
+    expect(parseNonNegativeInteger(0)).toBe(0);
+    expect(parseNonNegativeInteger('12')).toBe(12);
+    expect(parseNonNegativeInteger(1.5)).toBeNull();
+    expect(parseNonNegativeInteger('1.5')).toBeNull();
+    expect(parseNonNegativeInteger(-1)).toBeNull();
+    expect(parseNonNegativeInteger('')).toBeNull();
+    expect(parseNonNegativeInteger(null)).toBeNull();
+  });
+});
 
 describe('resolveCanonicalWorkoutIdentity', () => {
   it('makes week/workout canonical over a stale completionKey', () => {
@@ -76,19 +89,87 @@ describe('unique conflict classification', () => {
   it('does not treat generic 23505 soft-success without matching requested metrics', () => {
     const requested = {
       workoutContext: { weekIndex: 0, workoutIndex: 2 },
-      workoutLog: { totalMinutes: 40, avgBpm: 150 },
+      workoutLog: { totalMinutes: 40, avgBpm: 150, maxBpm: 172, distance: 4, modality: 'running', outputType: 'distance', outputValue: 4 },
     };
-    const staleVisible = {
+    expect(doesCloudCompletionMatchRequestedSave({
       completionKey: '0:2',
       proof_pending: false,
       workoutContext: { weekIndex: 0, workoutIndex: 2 },
-      workoutLog: { totalMinutes: 35, avgBpm: 140 },
-    };
-    expect(doesCloudCompletionMatchRequestedSave(staleVisible, requested)).toBe(false);
+      workoutLog: { totalMinutes: 40, avgBpm: 150, maxBpm: 165, distance: 3.25, modality: 'running', outputType: 'distance', outputValue: 3.25 },
+    }, requested)).toBe(false);
+
     expect(doesCloudCompletionMatchRequestedSave({
-      ...staleVisible,
+      completionKey: '0:2',
+      proof_pending: false,
+      workoutContext: { weekIndex: 0, workoutIndex: 2 },
       workoutLog: { totalMinutes: 40, avgBpm: 150 },
+    }, requested)).toBe(false);
+
+    expect(doesCloudCompletionMatchRequestedSave({
+      completionKey: '0:2',
+      proof_pending: false,
+      workoutContext: { weekIndex: 0, workoutIndex: 2 },
+      workoutLog: {
+        totalMinutes: 40,
+        avgBpm: 150,
+        maxBpm: 172,
+        distance: 4,
+        modality: 'running',
+        outputType: 'distance',
+        outputValue: 4,
+      },
     }, requested)).toBe(true);
+  });
+
+  it('rejects soft-success when distance/watts/maxHR diverge or cloud omits requested metrics', () => {
+    const base = {
+      workoutContext: { weekIndex: 1, workoutIndex: 0 },
+      workoutLog: { totalMinutes: 30, avgBpm: 140, maxBpm: 160, modality: 'running', outputType: 'distance', outputValue: 3.1 },
+    };
+    expect(doesCloudCompletionMatchRequestedSave({
+      completion_key: '1:0',
+      week_index: 1,
+      workout_index: 0,
+      proof_pending: false,
+      total_minutes: 30,
+      avg_bpm: 140,
+      max_bpm: 160,
+      modality: 'running',
+      output_type: 'distance',
+      output_value: 2.8,
+      distance: 2.8,
+    }, base)).toBe(false);
+
+    expect(doesCloudCompletionMatchRequestedSave({
+      completion_key: '1:0',
+      week_index: 1,
+      workout_index: 0,
+      proof_pending: false,
+      total_minutes: 30,
+      avg_bpm: 140,
+      max_bpm: 155,
+      modality: 'running',
+      output_type: 'distance',
+      output_value: 3.1,
+      distance: 3.1,
+    }, base)).toBe(false);
+
+    const bike = {
+      workoutContext: { weekIndex: 1, workoutIndex: 1 },
+      workoutLog: { totalMinutes: 30, avgBpm: 140, modality: 'assault_bike', outputType: 'watts', outputValue: 200 },
+    };
+    expect(doesCloudCompletionMatchRequestedSave({
+      completion_key: '1:1',
+      week_index: 1,
+      workout_index: 1,
+      proof_pending: false,
+      total_minutes: 30,
+      avg_bpm: 140,
+      modality: 'assault_bike',
+      output_type: 'watts',
+      output_value: 180,
+      avg_watts: 180,
+    }, bike)).toBe(false);
   });
 });
 
