@@ -144,7 +144,7 @@ describe('sprint proof completion', () => {
 
     expect(ensureWorkoutProofUploaded).not.toHaveBeenCalled();
     expect(saveCloudWorkoutCompletion).not.toHaveBeenCalled();
-    expect(showToast).toHaveBeenCalledWith('CLOUD SAVE FAILED');
+    expect(showToast).toHaveBeenCalledWith('COULD NOT SAVE WORKOUT — TRY AGAIN. IF THIS CONTINUES, CONTACT YOUR COACH.');
     expect(getWorkoutCompletion(1, 0)).toBeNull();
   });
 
@@ -155,7 +155,7 @@ describe('sprint proof completion', () => {
     await completeWorkout();
 
     expect(ensureWorkoutProofUploaded).toHaveBeenCalledTimes(1);
-    expect(showToast).toHaveBeenCalledWith('COULD NOT SAVE WORKOUT');
+    expect(showToast).toHaveBeenCalledWith('COULD NOT SAVE WORKOUT — TRY AGAIN. IF THIS CONTINUES, CONTACT YOUR COACH.');
     expect(getWorkoutCompletion(1, 0)).toBeNull();
   });
 

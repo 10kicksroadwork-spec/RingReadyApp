@@ -1,6 +1,7 @@
 /** Cloud payload builders shared by auth saves and proof-identity tests. */
 
 import { readOutputFromWorkoutLog } from './modality.js';
+import { resolveCanonicalWorkoutIdentity } from './workout-completion-identity.js';
 
 function textOrEmpty(value) {
   return String(value || '').trim();
@@ -26,15 +27,10 @@ export function getRecordContext(record = {}) {
 }
 
 export function getCompletionKeyFromRecord(record = {}) {
-  const context = getRecordContext(record);
-  // Week/workout position is canonical. Prefer it over any stale completionKey so
-  // retries converge on the same row as production UNIQUE(user_id, week_index, workout_index).
-  if (Number.isFinite(Number(context.weekIndex)) && Number.isFinite(Number(context.workoutIndex))) {
-    return `${Number(context.weekIndex)}:${Number(context.workoutIndex)}`;
-  }
-  if (record.completionKey) return String(record.completionKey);
-  return '';
+  return resolveCanonicalWorkoutIdentity(record).completionKey;
 }
+
+export { resolveCanonicalWorkoutIdentity };
 
 export function buildWorkoutCloudPayload(record, userId) {
   const context = getRecordContext(record);

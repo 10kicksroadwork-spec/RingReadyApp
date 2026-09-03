@@ -749,10 +749,41 @@ async function persistSignedInWorkoutCompletion(record, {
   } catch (error) {
     console.warn('Cloud workout completion save failed', error);
     if (isDuplicateWorkoutIdentityError(error)) {
-      scheduleTargetedWorkoutRehydrate(finalized);
+      // Recoverability: authoritative row likely already exists — reconcile cache and
+      // treat as success when cloud hydration restores the completion.
+      const owner = captureClientStateOwner();
+      let rehydrated = false;
+      try {
+        rehydrated = await withOperationTimeout(
+          rehydrateWorkoutCompletionFromCloud(finalized, owner),
+          { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_HYDRATION, operation: 'identity_conflict_rehydrate' },
+        );
+      } catch (rehydrateError) {
+        console.warn('Identity-conflict rehydrate failed', rehydrateError);
+        rehydrated = false;
+      }
       shellHooks?.showToast?.(athleteFacingWorkoutSaveError(error));
-      return { success: false, record: finalized, cloudSaved: false, localCacheFailed: false, error, identityConflict: true };
+      if (rehydrated) {
+        const context = finalized?.workoutContext || finalized?.cfg?.workoutContext || {};
+        const restored = getWorkoutCompletion(context.weekIndex, context.workoutIndex) || finalized;
+        return {
+          success: true,
+          record: restored,
+          cloudSaved: true,
+          localCacheFailed: false,
+          identityConflict: true,
+        };
+      }
+      return {
+        success: false,
+        record: finalized,
+        cloudSaved: false,
+        localCacheFailed: false,
+        error,
+        identityConflict: true,
+      };
     }
+    shellHooks?.showToast?.(athleteFacingWorkoutSaveError(error));
     return { success: false, record: finalized, cloudSaved: false, localCacheFailed: false, error };
   }
 
@@ -1686,9 +1717,13 @@ async function completeWorkoutFromDetail(weekIndex, workoutIndex) {
     renderAthleteProfileDashboard();
     openWorkoutDetail(safeWeekIndex, safeWorkoutIndex);
     if (!result.success) {
-      if (!result.identityConflict) {
+      // persistSignedInWorkoutCompletion already showed an athlete-safe toast when
+      // it classified the cloud error; only fall back when no error object exists.
+      if (!result.error && !result.identityConflict) {
         shellHooks?.showToast?.('COULD NOT SAVE WORKOUT');
       }
+    } else if (result.identityConflict) {
+      // Already toasted the refresh message; skip the normal save toast.
     } else if (!result.cloudSaved) {
       shellHooks?.showToast?.(existing ? 'WORKOUT UPDATED' : 'WORKOUT COMPLETE');
     }
@@ -1710,7 +1745,7 @@ async function clearCompletionFromDetail(weekIndex, workoutIndex) {
       await clearCloudWorkoutCompletionWithProof(safeWeekIndex, safeWorkoutIndex, attachmentId);
     } catch (error) {
       console.warn('Could not clear workout from cloud', error);
-      shellHooks?.showToast?.(String(error?.message || error).toUpperCase());
+      shellHooks?.showToast?.(athleteFacingWorkoutSaveError(error).toUpperCase());
       return;
     }
   }

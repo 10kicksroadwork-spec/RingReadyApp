@@ -723,7 +723,59 @@ async function run() {
       .eq('storage_path', replaceNewPath);
     assert(replaceNewCount === 1, `Replacement path must create exactly one row, got ${replaceNewCount}`);
 
-    // Migration 017 / conflicting legacy identity: stale completion_key + same week/workout.
+    // ── Layer C schema fingerprint: workout_completions uniqueness contract ──
+    // Production must keep BOTH completion_key and positional uniqueness.
+    const fingerprintWeek = 15;
+    const fingerprintWorkout = 0;
+    const fingerprintKey = `${fingerprintWeek}:${fingerprintWorkout}`;
+    const fingerprintClientA = `${testPrefix}:fingerprint-client-a`;
+    const fingerprintClientB = `${testPrefix}:fingerprint-client-b`;
+    const { data: fingerprintRow, error: fingerprintInsertError } = await client.from('workout_completions').insert({
+      user_id: user.id,
+      completion_key: fingerprintKey,
+      client_record_id: fingerprintClientA,
+      week_index: fingerprintWeek,
+      workout_index: fingerprintWorkout,
+      workout_type: 'Easy Run',
+      proof_pending: false,
+      record_json: { id: fingerprintClientA },
+    }).select('id').single();
+    assert(!fingerprintInsertError && fingerprintRow?.id, `Schema fingerprint seed failed: ${fingerprintInsertError?.message || 'unknown'}`);
+    createdWorkoutIds.push(fingerprintRow.id);
+
+    const { error: fingerprintKeyConflict } = await client.from('workout_completions').insert({
+      user_id: user.id,
+      completion_key: fingerprintKey,
+      client_record_id: `${testPrefix}:fingerprint-key-conflict`,
+      week_index: fingerprintWeek,
+      workout_index: fingerprintWorkout + 1,
+      record_json: {},
+    });
+    assert(!!fingerprintKeyConflict, 'Schema fingerprint: completion_key uniqueness must reject duplicates');
+
+    const { error: fingerprintPositionConflict } = await client.from('workout_completions').insert({
+      user_id: user.id,
+      completion_key: `${testPrefix}:fingerprint-position`,
+      client_record_id: fingerprintClientB,
+      week_index: fingerprintWeek,
+      workout_index: fingerprintWorkout,
+      record_json: {},
+    });
+    assert(!!fingerprintPositionConflict, 'Schema fingerprint: week/workout uniqueness must reject duplicates');
+
+    const { error: fingerprintClientConflict } = await client.from('workout_completions').insert({
+      user_id: user.id,
+      completion_key: `${testPrefix}:fingerprint-client-key`,
+      client_record_id: fingerprintClientA,
+      week_index: fingerprintWeek,
+      workout_index: fingerprintWorkout + 2,
+      record_json: {},
+    });
+    assert(!!fingerprintClientConflict, 'Schema fingerprint: non-empty client_record_id uniqueness must reject duplicates');
+
+    // ── Cross-lifecycle database chaos (SoT §9 / next-day retry) ──
+    // DAY A: provisional/staged row with legacy completion_key (hidden from athletes).
+    // DAY B: fresh retry with canonical key must converge onto ONE finalized visible row.
     const identityWeek = 14;
     const identityWorkout = 2;
     const legacyIdentityKey = `${testPrefix}:stale-completion-key`;
@@ -750,6 +802,16 @@ async function run() {
     createdWorkoutIds.push(stagedIdentityRow.id);
     assert(stagedIdentityRow.proof_pending === true, 'Seeded legacy identity row must be proof_pending');
     assert(!isVisibleCompletionRow(stagedIdentityRow), 'proof_pending rows must stay hidden from athlete completion state');
+
+    // DAY B hydrate simulation: completion_key lookup for canonical key misses.
+    const { data: dayBKeyMiss, error: dayBKeyMissError } = await client
+      .from('workout_completions')
+      .select('id')
+      .eq('user_id', user.id)
+      .eq('completion_key', `${identityWeek}:${identityWorkout}`)
+      .maybeSingle();
+    assert(!dayBKeyMissError, `Day B key lookup failed: ${dayBKeyMissError?.message || 'unknown'}`);
+    assert(!dayBKeyMiss, 'Day B canonical completion_key must miss against the legacy staged key');
 
     const retryIdentityRecord = {
       id: `${testPrefix}:retry-client`,
@@ -811,6 +873,26 @@ async function run() {
     assert(isVisibleCompletionRow(reconciledIdentity), 'Finalized row must be athlete-visible');
     assert(Number(reconciledIdentity.week_index) === identityWeek, 'Reconcile must keep week_index');
     assert(Number(reconciledIdentity.workout_index) === identityWorkout, 'Reconcile must keep workout_index');
+
+    // Idempotent second complete (Complete x2) must update the same row, not insert.
+    const secondCompletePayload = buildWorkoutCloudPayload({
+      ...retryIdentityRecord,
+      id: identityClientId,
+      workoutLog: {
+        ...retryIdentityRecord.workoutLog,
+        totalMinutes: 41,
+        completedAt: new Date().toISOString(),
+      },
+    }, user.id);
+    const { data: secondCompleteRow, error: secondCompleteError } = await client
+      .from('workout_completions')
+      .update(secondCompletePayload)
+      .eq('id', reconciledIdentity.id)
+      .select('id, completion_key, total_minutes, proof_pending')
+      .single();
+    assert(!secondCompleteError && secondCompleteRow?.id === reconciledIdentity.id, 'Second complete must update same row');
+    assert(Number(secondCompleteRow.total_minutes) === 41, 'Second complete must overwrite metrics on same identity');
+    assert(secondCompleteRow.proof_pending === false, 'Second complete must remain finalized');
 
     const { count: identityCount, error: identityCountError } = await client
       .from('workout_completions')

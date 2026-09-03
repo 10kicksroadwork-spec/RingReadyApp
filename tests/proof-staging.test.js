@@ -91,6 +91,26 @@ describe('proof staging plans', () => {
     expect(canRollbackProvisionalStaging({ created: false }, { proof_pending: true })).toBe(false);
   });
 
+  it('reuses a legacy positional row that still has a stale completion_key', () => {
+    const existing = {
+      client_record_id: 'legacy-client',
+      attachment_id: null,
+      proof_pending: true,
+      completion_key: 'stale-legacy-key',
+    };
+    const retry = {
+      id: 'new-client',
+      completionKey: 'stale-legacy-key',
+      workoutContext: { weekIndex: 0, workoutIndex: 2, workoutType: 'Threshold Run' },
+    };
+    expect(planWorkoutIdentityStaging(existing, retry)).toEqual({
+      action: 'refresh-provisional',
+      created: true,
+      clientRecordId: 'legacy-client',
+      completionKey: '0:2',
+    });
+  });
+
   it('hides pending rows from athlete and coach hydration', () => {
     expect(isVisibleCompletionRow({ proof_pending: true })).toBe(false);
     expect(isVisibleCompletionRow({ proof_pending: false })).toBe(true);
