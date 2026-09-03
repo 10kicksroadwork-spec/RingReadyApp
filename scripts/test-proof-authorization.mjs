@@ -12,7 +12,18 @@
  */
 
 import { createClient } from '@supabase/supabase-js';
-import { buildProvisionalMileTestCloudPayload, buildWorkoutCloudPayload } from '../src/cloud-record-mapper.js';
+import { buildProvisionalMileTestCloudPayload, buildWorkoutCloudPayload, getCompletionKeyFromRecord } from '../src/cloud-record-mapper.js';
+import { isVisibleCompletionRow } from '../src/proof-staging.js';
+import {
+  classifyUniqueViolation,
+  UNIQUE_CONFLICT,
+} from '../src/workout-completion-identity.js';
+import {
+  ensureWorkoutIdentityReconciled,
+  findWorkoutCompletionIdentity,
+  rollbackWorkoutIdentityIfOwned,
+  saveWorkoutCompletionReconciled,
+} from '../src/workout-completion-reconcile.js';
 
 const url = process.env.RING_READY_SUPABASE_URL || process.env.SUPABASE_URL || '';
 const anonKey = process.env.RING_READY_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || '';
@@ -23,6 +34,21 @@ const testPrefix = `auth-test:${Date.now()}`;
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+function assertUniqueViolation(error, expectedKind, label) {
+  assert(!!error, `${label}: expected a database error`);
+  const code = String(error.code || error.error_code || '').toUpperCase();
+  assert(
+    code === '23505',
+    `${label}: expected literal SQLSTATE 23505, got code=${code || 'none'} message=${error.message || 'unknown'}`,
+  );
+  if (expectedKind) {
+    assert(
+      classifyUniqueViolation(error) === expectedKind,
+      `${label}: expected ${expectedKind}, got ${classifyUniqueViolation(error)}`,
+    );
+  }
 }
 
 async function signIn(client, userEmail, userPassword) {
@@ -721,6 +747,256 @@ async function run() {
       .eq('user_id', user.id)
       .eq('storage_path', replaceNewPath);
     assert(replaceNewCount === 1, `Replacement path must create exactly one row, got ${replaceNewCount}`);
+
+    // ── Layer C schema fingerprint: workout_completions uniqueness contract ──
+    const fingerprintWeek = 15;
+    const fingerprintWorkout = 0;
+    const fingerprintKey = `${fingerprintWeek}:${fingerprintWorkout}`;
+    const fingerprintClientA = `${testPrefix}:fingerprint-client-a`;
+    const fingerprintClientB = `${testPrefix}:fingerprint-client-b`;
+    const { data: fingerprintRow, error: fingerprintInsertError } = await client.from('workout_completions').insert({
+      user_id: user.id,
+      completion_key: fingerprintKey,
+      client_record_id: fingerprintClientA,
+      week_index: fingerprintWeek,
+      workout_index: fingerprintWorkout,
+      workout_type: 'Easy Run',
+      proof_pending: false,
+      record_json: { id: fingerprintClientA },
+    }).select('id').single();
+    assert(!fingerprintInsertError && fingerprintRow?.id, `Schema fingerprint seed failed: ${fingerprintInsertError?.message || 'unknown'}`);
+    createdWorkoutIds.push(fingerprintRow.id);
+
+    const { error: fingerprintKeyConflict } = await client.from('workout_completions').insert({
+      user_id: user.id,
+      completion_key: fingerprintKey,
+      client_record_id: `${testPrefix}:fingerprint-key-conflict`,
+      week_index: fingerprintWeek,
+      workout_index: fingerprintWorkout + 1,
+      workout_type: 'Easy Run',
+      record_json: {},
+    });
+    assertUniqueViolation(fingerprintKeyConflict, UNIQUE_CONFLICT.COMPLETION_KEY, 'Schema fingerprint completion_key');
+
+    const { error: fingerprintPositionConflict } = await client.from('workout_completions').insert({
+      user_id: user.id,
+      completion_key: `${testPrefix}:fingerprint-position`,
+      client_record_id: fingerprintClientB,
+      week_index: fingerprintWeek,
+      workout_index: fingerprintWorkout,
+      workout_type: 'Easy Run',
+      record_json: {},
+    });
+    assertUniqueViolation(fingerprintPositionConflict, UNIQUE_CONFLICT.POSITION, 'Schema fingerprint week/workout');
+
+    const { error: fingerprintClientConflict } = await client.from('workout_completions').insert({
+      user_id: user.id,
+      completion_key: `${testPrefix}:fingerprint-client-key`,
+      client_record_id: fingerprintClientA,
+      week_index: fingerprintWeek,
+      workout_index: fingerprintWorkout + 2,
+      workout_type: 'Easy Run',
+      record_json: {},
+    });
+    assertUniqueViolation(fingerprintClientConflict, UNIQUE_CONFLICT.CLIENT_RECORD_ID, 'Schema fingerprint client_record_id');
+
+    // ── Shared-algorithm next-day chaos (SoT §9) — uses production reconcile path ──
+    const identityWeek = 14;
+    const identityWorkout = 2;
+    const legacyIdentityKey = `${testPrefix}:stale-completion-key`;
+    const identityClientId = `${testPrefix}:identity-client`;
+    const { data: stagedIdentityRow, error: stagedIdentityError } = await client.from('workout_completions').insert({
+      user_id: user.id,
+      completion_key: legacyIdentityKey,
+      client_record_id: identityClientId,
+      week_index: identityWeek,
+      workout_index: identityWorkout,
+      workout_type: 'Threshold Run',
+      proof_pending: true,
+      completed_at: null,
+      record_json: {
+        id: identityClientId,
+        status: 'pending_proof',
+        workoutContext: { weekIndex: identityWeek, workoutIndex: identityWorkout, workoutType: 'Threshold Run' },
+      },
+    }).select('id, completion_key, proof_pending, client_record_id').single();
+    assert(!stagedIdentityError && stagedIdentityRow?.id, `Could not seed legacy identity row: ${stagedIdentityError?.message || 'unknown'}`);
+    createdWorkoutIds.push(stagedIdentityRow.id);
+    assert(!isVisibleCompletionRow(stagedIdentityRow), 'proof_pending rows must stay hidden');
+
+    const retryIdentityRecord = {
+      id: `${testPrefix}:retry-client`,
+      completionKey: legacyIdentityKey,
+      workoutContext: {
+        weekIndex: identityWeek,
+        workoutIndex: identityWorkout,
+        workoutType: 'Threshold Run',
+      },
+      workoutLog: {
+        totalMinutes: 40,
+        avgBpm: 150,
+        maxBpm: 165,
+        completedAt: new Date().toISOString(),
+      },
+      completedAt: new Date().toISOString(),
+    };
+    assert(getCompletionKeyFromRecord(retryIdentityRecord) === `${identityWeek}:${identityWorkout}`, 'canonical key required');
+
+    const dayBEnsure = await ensureWorkoutIdentityReconciled(client, user.id, retryIdentityRecord);
+    assert(dayBEnsure.reused === true, 'Day B ensure must reuse the existing provisional row');
+    assert(dayBEnsure.rollbackOwned === false, 'Reused provisional must not be rollback-owned');
+    assert(dayBEnsure.clientRecordId === identityClientId, 'Ensure must keep Day A client_record_id');
+
+    const rolledBack = await rollbackWorkoutIdentityIfOwned(client, user.id, retryIdentityRecord, dayBEnsure);
+    assert(rolledBack === false, 'Deterministic-failure rollback must NOT delete reused Day A row');
+    const { data: afterFailedRollback } = await client
+      .from('workout_completions')
+      .select('id, client_record_id, proof_pending')
+      .eq('id', stagedIdentityRow.id)
+      .maybeSingle();
+    assert(afterFailedRollback?.id === stagedIdentityRow.id, 'Day A provisional row must still exist after non-owned rollback');
+    assert(afterFailedRollback.client_record_id === identityClientId, 'Day A client_record_id must be preserved');
+
+    const saveResult = await saveWorkoutCompletionReconciled(client, user.id, retryIdentityRecord);
+    assert(saveResult?.rowId === stagedIdentityRow.id, 'Production save path must update the positional Day A row');
+    const { data: finalizedIdentity } = await client
+      .from('workout_completions')
+      .select('id, completion_key, proof_pending, total_minutes, avg_bpm, week_index, workout_index, client_record_id')
+      .eq('id', stagedIdentityRow.id)
+      .single();
+    assert(finalizedIdentity.completion_key === `${identityWeek}:${identityWorkout}`, 'Save must repair completion_key');
+    assert(finalizedIdentity.proof_pending === false, 'Save must finalize proof_pending');
+    assert(isVisibleCompletionRow(finalizedIdentity), 'Finalized row must be visible');
+    assert(Number(finalizedIdentity.total_minutes) === 40, 'Save must persist requested minutes');
+
+    const secondSave = await saveWorkoutCompletionReconciled(client, user.id, {
+      ...retryIdentityRecord,
+      id: identityClientId,
+      workoutLog: {
+        ...retryIdentityRecord.workoutLog,
+        totalMinutes: 41,
+        completedAt: new Date().toISOString(),
+      },
+    });
+    assert(secondSave?.rowId === stagedIdentityRow.id, 'Complete x2 must converge on the same row id');
+    const { data: secondRead } = await client
+      .from('workout_completions')
+      .select('id, total_minutes, proof_pending')
+      .eq('id', stagedIdentityRow.id)
+      .single();
+    assert(Number(secondRead.total_minutes) === 41, 'Second complete must overwrite metrics on same identity');
+
+    const { count: identityCount } = await client
+      .from('workout_completions')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', user.id)
+      .eq('week_index', identityWeek)
+      .eq('workout_index', identityWorkout);
+    assert(identityCount === 1, `Retry must converge on one row, got ${identityCount}`);
+
+    // Dual mismatched rows: position must win / explicit conflict when keys disagree.
+    const dualWeek = 17;
+    const dualWorkout = 1;
+    const { data: dualKeyRow, error: dualKeyError } = await client.from('workout_completions').insert({
+      user_id: user.id,
+      completion_key: `${dualWeek}:${dualWorkout}`,
+      client_record_id: `${testPrefix}:dual-key-row`,
+      week_index: 18,
+      workout_index: 0,
+      workout_type: 'Easy Run',
+      record_json: {},
+    }).select('id').single();
+    assert(!dualKeyError && dualKeyRow?.id, `Dual-key seed failed: ${dualKeyError?.message || 'unknown'}`);
+    createdWorkoutIds.push(dualKeyRow.id);
+    const { data: dualPosRow, error: dualPosError } = await client.from('workout_completions').insert({
+      user_id: user.id,
+      completion_key: `${testPrefix}:dual-legacy-pos`,
+      client_record_id: `${testPrefix}:dual-pos-row`,
+      week_index: dualWeek,
+      workout_index: dualWorkout,
+      workout_type: 'Threshold Run',
+      record_json: {},
+    }).select('id').single();
+    assert(!dualPosError && dualPosRow?.id, `Dual-position seed failed: ${dualPosError?.message || 'unknown'}`);
+    createdWorkoutIds.push(dualPosRow.id);
+
+    let dualError = null;
+    try {
+      await findWorkoutCompletionIdentity(client, user.id, {
+        id: `${testPrefix}:dual-retry`,
+        workoutContext: { weekIndex: dualWeek, workoutIndex: dualWorkout },
+      });
+    } catch (error) {
+      dualError = error;
+    }
+    assert(dualError?.workoutIdentityConflict === 'dual_row', 'Mismatched key/position rows must raise explicit dual-row conflict');
+
+    // Key-only wrong-position disagreement: key exists, correct position absent.
+    const mismatchWeek = 19;
+    const mismatchWorkout = 1;
+    const { data: wrongPosKeyRow, error: wrongPosKeyError } = await client.from('workout_completions').insert({
+      user_id: user.id,
+      completion_key: `${mismatchWeek}:${mismatchWorkout}`,
+      client_record_id: `${testPrefix}:wrong-pos-key`,
+      week_index: 1,
+      workout_index: 0,
+      workout_type: 'Easy Run',
+      total_minutes: 30,
+      avg_bpm: 140,
+      proof_pending: false,
+      record_json: { id: `${testPrefix}:wrong-pos-key` },
+    }).select('id, completion_key, week_index, workout_index, total_minutes').single();
+    assert(!wrongPosKeyError && wrongPosKeyRow?.id, `Wrong-position key seed failed: ${wrongPosKeyError?.message || 'unknown'}`);
+    createdWorkoutIds.push(wrongPosKeyRow.id);
+
+    let keyMismatchError = null;
+    try {
+      await findWorkoutCompletionIdentity(client, user.id, {
+        id: `${testPrefix}:wrong-pos-retry`,
+        workoutContext: { weekIndex: mismatchWeek, workoutIndex: mismatchWorkout },
+        workoutLog: { totalMinutes: 40, avgBpm: 150, maxBpm: 165 },
+      });
+    } catch (error) {
+      keyMismatchError = error;
+    }
+    assert(
+      keyMismatchError?.workoutIdentityConflict === 'key_position_mismatch',
+      'Key row at wrong position must raise explicit key_position_mismatch',
+    );
+
+    let saveMismatchError = null;
+    try {
+      await saveWorkoutCompletionReconciled(client, user.id, {
+        id: `${testPrefix}:wrong-pos-retry`,
+        workoutContext: { weekIndex: mismatchWeek, workoutIndex: mismatchWorkout },
+        workoutLog: { totalMinutes: 40, avgBpm: 150, maxBpm: 165, completedAt: new Date().toISOString() },
+        completedAt: new Date().toISOString(),
+      });
+    } catch (error) {
+      saveMismatchError = error;
+    }
+    assert(
+      saveMismatchError?.workoutIdentityConflict === 'key_position_mismatch',
+      'Save must not silently mutate a key row that points at another position',
+    );
+
+    const { data: unchangedWrongPos } = await client
+      .from('workout_completions')
+      .select('id, week_index, workout_index, total_minutes, completion_key')
+      .eq('id', wrongPosKeyRow.id)
+      .single();
+    assert(Number(unchangedWrongPos.week_index) === 1, 'Wrong-position key row week must remain unchanged');
+    assert(Number(unchangedWrongPos.workout_index) === 0, 'Wrong-position key row workout must remain unchanged');
+    assert(Number(unchangedWrongPos.total_minutes) === 30, 'Wrong-position key row metrics must remain unchanged');
+    assert(unchangedWrongPos.completion_key === `${mismatchWeek}:${mismatchWorkout}`, 'Wrong-position key must remain unchanged');
+
+    const { count: mismatchPosCount } = await client
+      .from('workout_completions')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', user.id)
+      .eq('week_index', mismatchWeek)
+      .eq('workout_index', mismatchWorkout);
+    assert(mismatchPosCount === 0, 'No new row may be created at the requested position after key-position conflict');
 
     console.log('PASS: proof authorization matrix');
   } finally {

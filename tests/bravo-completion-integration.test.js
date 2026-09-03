@@ -125,8 +125,20 @@ describe('Bravo completion integration', () => {
     vi.clearAllMocks();
     hasWorkoutProof.mockReturnValue(true);
     hasPendingWorkoutProof.mockReturnValue(true);
-    ensureCloudWorkoutIdentity.mockResolvedValue({ created: true, clientRecordId: 'cloud-record-1' });
-    ensureCloudMileTestIdentity.mockResolvedValue({ created: true, clientRecordId: 'mile-record-1' });
+    ensureCloudWorkoutIdentity.mockResolvedValue({
+      created: true,
+      insertedThisAttempt: true,
+      rollbackOwned: true,
+      reused: false,
+      clientRecordId: 'cloud-record-1',
+    });
+    ensureCloudMileTestIdentity.mockResolvedValue({
+      created: true,
+      insertedThisAttempt: true,
+      rollbackOwned: true,
+      reused: false,
+      clientRecordId: 'mile-record-1',
+    });
     rollbackCloudWorkoutIdentity.mockResolvedValue(undefined);
     ensureWorkoutProofUploaded.mockResolvedValue({ id: 'proof-attachment-1' });
     saveCloudWorkoutCompletion.mockResolvedValue(true);

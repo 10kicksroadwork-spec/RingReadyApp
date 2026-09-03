@@ -21,6 +21,35 @@ describe('cloud record mapper', () => {
     expect(getCompletionKeyFromRecord(record)).toBe('0:2');
   });
 
+  it('derives completion identity from week/workout over a stale completionKey', () => {
+    const record = {
+      id: 'client-workout-legacy',
+      completionKey: 'legacy-stale-key',
+      workoutContext: { weekIndex: 2, workoutIndex: 1, workoutType: 'Threshold Run' },
+    };
+    expect(getCompletionKeyFromRecord(record)).toBe('2:1');
+    expect(buildWorkoutCloudPayload(record, 'user-a').completion_key).toBe('2:1');
+  });
+
+  it('does not invent a rounded week/workout position from decimal identity', () => {
+    const payload = buildWorkoutCloudPayload({
+      id: 'client-decimal',
+      completionKey: 'should-not-round',
+      workoutContext: { weekIndex: 1.5, workoutIndex: 2 },
+      workoutLog: { totalMinutes: 30, completedAt: '2026-08-31T12:00:00.000Z' },
+    }, 'user-a');
+    expect(payload.week_index).toBeNull();
+    expect(payload.workout_index).toBeNull();
+    // Invalid position must not invent 2 via Math.round; legacy key may remain only as fallback.
+    expect(payload.week_index).not.toBe(2);
+    expect(payload.workout_index).not.toBe(2);
+  });
+
+  it('falls back to existing completionKey only when week/workout context is missing', () => {
+    expect(getCompletionKeyFromRecord({ completionKey: 'orphan-key' })).toBe('orphan-key');
+    expect(getCompletionKeyFromRecord({})).toBe('');
+  });
+
   it('maps machine workout watts to first-class cloud columns', () => {
     const record = {
       id: 'client-workout-bike',

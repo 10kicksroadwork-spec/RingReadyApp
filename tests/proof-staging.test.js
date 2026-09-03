@@ -24,6 +24,9 @@ describe('proof staging plans', () => {
     expect(planWorkoutIdentityStaging(null, record)).toEqual({
       action: 'insert-provisional',
       created: true,
+      insertedThisAttempt: true,
+      reused: false,
+      rollbackOwned: true,
       clientRecordId: 'client-workout-1',
       completionKey: '1:2',
     });
@@ -38,6 +41,9 @@ describe('proof staging plans', () => {
     expect(planWorkoutIdentityStaging(existing, record)).toEqual({
       action: 'noop',
       created: false,
+      insertedThisAttempt: false,
+      reused: true,
+      rollbackOwned: false,
       clientRecordId: 'client-workout-1',
       completionKey: '1:2',
     });
@@ -52,6 +58,9 @@ describe('proof staging plans', () => {
     expect(planWorkoutIdentityStaging(existing, record)).toEqual({
       action: 'patch-client-id',
       created: false,
+      insertedThisAttempt: false,
+      reused: true,
+      rollbackOwned: false,
       clientRecordId: 'client-workout-1',
       completionKey: '1:2',
     });
@@ -66,7 +75,10 @@ describe('proof staging plans', () => {
     const retryRecord = { ...record, id: 'client-workout-B' };
     expect(planWorkoutIdentityStaging(existing, retryRecord)).toEqual({
       action: 'refresh-provisional',
-      created: true,
+      created: false,
+      insertedThisAttempt: false,
+      reused: true,
+      rollbackOwned: false,
       clientRecordId: 'client-workout-A',
       completionKey: '1:2',
     });
@@ -81,14 +93,43 @@ describe('proof staging plans', () => {
     const plan = planWorkoutIdentityStaging(existing, record);
     expect(plan.action).toBe('noop');
     expect(plan.created).toBe(false);
+    expect(plan.rollbackOwned).toBe(false);
     expect(canRollbackProvisionalStaging(plan, existing)).toBe(false);
   });
 
-  it('allows rollback only for explicitly provisional rows', () => {
-    const staging = { created: true };
+  it('allows rollback only for rows inserted by this attempt', () => {
+    const staging = { created: true, insertedThisAttempt: true, rollbackOwned: true };
     expect(canRollbackProvisionalStaging(staging, { proof_pending: true })).toBe(true);
     expect(canRollbackProvisionalStaging(staging, { proof_pending: false })).toBe(false);
-    expect(canRollbackProvisionalStaging({ created: false }, { proof_pending: true })).toBe(false);
+    expect(canRollbackProvisionalStaging({
+      created: false,
+      insertedThisAttempt: false,
+      rollbackOwned: false,
+    }, { proof_pending: true })).toBe(false);
+  });
+
+  it('reuses a legacy positional row that still has a stale completion_key', () => {
+    const existing = {
+      client_record_id: 'legacy-client',
+      attachment_id: null,
+      proof_pending: true,
+      completion_key: 'stale-legacy-key',
+    };
+    const retry = {
+      id: 'new-client',
+      completionKey: 'stale-legacy-key',
+      workoutContext: { weekIndex: 0, workoutIndex: 2, workoutType: 'Threshold Run',
+      },
+    };
+    expect(planWorkoutIdentityStaging(existing, retry)).toEqual({
+      action: 'refresh-provisional',
+      created: false,
+      insertedThisAttempt: false,
+      reused: true,
+      rollbackOwned: false,
+      clientRecordId: 'legacy-client',
+      completionKey: '0:2',
+    });
   });
 
   it('hides pending rows from athlete and coach hydration', () => {
@@ -106,6 +147,9 @@ describe('mile proof staging plans', () => {
     expect(planMileTestIdentityStaging(null, result, testContext)).toEqual({
       action: 'insert-provisional',
       created: true,
+      insertedThisAttempt: true,
+      reused: false,
+      rollbackOwned: true,
       clientRecordId: 'client-mile-1',
       testKey: 'mile-test:week-2',
     });
@@ -120,7 +164,10 @@ describe('mile proof staging plans', () => {
     const retryResult = { id: 'client-mile-B', testKey: 'mile-test:week-2' };
     expect(planMileTestIdentityStaging(existing, retryResult, testContext)).toEqual({
       action: 'refresh-provisional',
-      created: true,
+      created: false,
+      insertedThisAttempt: false,
+      reused: true,
+      rollbackOwned: false,
       clientRecordId: 'client-mile-A',
       testKey: 'mile-test:week-2',
     });

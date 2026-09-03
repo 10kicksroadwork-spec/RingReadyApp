@@ -1,6 +1,7 @@
 /** Cloud payload builders shared by auth saves and proof-identity tests. */
 
 import { readOutputFromWorkoutLog } from './modality.js';
+import { resolveCanonicalWorkoutIdentity } from './workout-completion-identity.js';
 
 function textOrEmpty(value) {
   return String(value || '').trim();
@@ -12,6 +13,7 @@ function numberOrNull(value) {
 }
 
 function integerOrNull(value) {
+  // Non-position integers (HR, seconds, etc.) may still round.
   const parsed = numberOrNull(value);
   return parsed === null ? null : Math.round(parsed);
 }
@@ -26,24 +28,22 @@ export function getRecordContext(record = {}) {
 }
 
 export function getCompletionKeyFromRecord(record = {}) {
-  const context = getRecordContext(record);
-  if (record.completionKey) return String(record.completionKey);
-  if (Number.isFinite(Number(context.weekIndex)) && Number.isFinite(Number(context.workoutIndex))) {
-    return `${Number(context.weekIndex)}:${Number(context.workoutIndex)}`;
-  }
-  return '';
+  return resolveCanonicalWorkoutIdentity(record).completionKey;
 }
+
+export { resolveCanonicalWorkoutIdentity };
 
 export function buildWorkoutCloudPayload(record, userId) {
   const context = getRecordContext(record);
+  const identity = resolveCanonicalWorkoutIdentity(record);
   const workoutLog = record.workoutLog || null;
   const output = readOutputFromWorkoutLog(workoutLog || {});
   return {
     user_id: userId,
     client_record_id: textOrEmpty(record.id),
-    completion_key: getCompletionKeyFromRecord(record),
-    week_index: integerOrNull(context.weekIndex),
-    workout_index: integerOrNull(context.workoutIndex),
+    completion_key: identity.completionKey,
+    week_index: identity.weekIndex,
+    workout_index: identity.workoutIndex,
     week_label: textOrEmpty(context.weekLabel),
     week_title: textOrEmpty(context.weekTitle),
     day_of_week: textOrEmpty(context.dayOfWeek),
@@ -103,13 +103,14 @@ export function mapCloudSprintSessionRow(row, parseJSON = (value, fallback) => {
 export function buildSprintCloudPayload(record, userId) {
   const cloudSafeRecord = stripClientSprintMetadata(record);
   const context = getRecordContext(cloudSafeRecord);
+  const identity = resolveCanonicalWorkoutIdentity(cloudSafeRecord);
   const data = Array.isArray(cloudSafeRecord.data) ? cloudSafeRecord.data : [];
   return {
     user_id: userId,
     session_id: String(cloudSafeRecord.id || globalThis.crypto?.randomUUID?.() || Date.now()),
     session_at: normalizeISODate(cloudSafeRecord.date || cloudSafeRecord.completedAt),
-    week_index: integerOrNull(context.weekIndex),
-    workout_index: integerOrNull(context.workoutIndex),
+    week_index: identity.weekIndex,
+    workout_index: identity.workoutIndex,
     workout_type: textOrEmpty(context.workoutType || 'Sprint Intervals'),
     hr_source: textOrEmpty(cloudSafeRecord.hrSource || cloudSafeRecord.cfg?.hrSource || ''),
     reps_planned: integerOrNull(cloudSafeRecord.cfg?.reps || context.reps),
@@ -153,12 +154,13 @@ export function buildMileTestCloudPayload(result, hrInfo, testContext, userId) {
 
 export function buildProvisionalWorkoutCloudPayload(record, userId) {
   const context = getRecordContext(record);
+  const identity = resolveCanonicalWorkoutIdentity(record);
   return {
     user_id: userId,
     client_record_id: textOrEmpty(record.id),
-    completion_key: getCompletionKeyFromRecord(record),
-    week_index: integerOrNull(context.weekIndex),
-    workout_index: integerOrNull(context.workoutIndex),
+    completion_key: identity.completionKey,
+    week_index: identity.weekIndex,
+    workout_index: identity.workoutIndex,
     week_label: textOrEmpty(context.weekLabel),
     week_title: textOrEmpty(context.weekTitle),
     day_of_week: textOrEmpty(context.dayOfWeek),
