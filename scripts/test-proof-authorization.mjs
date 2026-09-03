@@ -14,6 +14,16 @@
 import { createClient } from '@supabase/supabase-js';
 import { buildProvisionalMileTestCloudPayload, buildWorkoutCloudPayload, getCompletionKeyFromRecord } from '../src/cloud-record-mapper.js';
 import { isVisibleCompletionRow } from '../src/proof-staging.js';
+import {
+  classifyUniqueViolation,
+  UNIQUE_CONFLICT,
+} from '../src/workout-completion-identity.js';
+import {
+  ensureWorkoutIdentityReconciled,
+  findWorkoutCompletionIdentity,
+  rollbackWorkoutIdentityIfOwned,
+  saveWorkoutCompletionReconciled,
+} from '../src/workout-completion-reconcile.js';
 
 const url = process.env.RING_READY_SUPABASE_URL || process.env.SUPABASE_URL || '';
 const anonKey = process.env.RING_READY_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || '';
@@ -24,6 +34,21 @@ const testPrefix = `auth-test:${Date.now()}`;
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+function assertUniqueViolation(error, expectedKind, label) {
+  assert(!!error, `${label}: expected a database error`);
+  const code = String(error.code || error.error_code || '').toUpperCase();
+  assert(
+    code === '23505' || /duplicate key|unique constraint/i.test(String(error.message || '')),
+    `${label}: expected SQLSTATE 23505 unique violation, got code=${code || 'none'} message=${error.message || 'unknown'}`,
+  );
+  if (expectedKind) {
+    assert(
+      classifyUniqueViolation(error) === expectedKind,
+      `${label}: expected ${expectedKind}, got ${classifyUniqueViolation(error)}`,
+    );
+  }
 }
 
 async function signIn(client, userEmail, userPassword) {
@@ -724,7 +749,6 @@ async function run() {
     assert(replaceNewCount === 1, `Replacement path must create exactly one row, got ${replaceNewCount}`);
 
     // ── Layer C schema fingerprint: workout_completions uniqueness contract ──
-    // Production must keep BOTH completion_key and positional uniqueness.
     const fingerprintWeek = 15;
     const fingerprintWorkout = 0;
     const fingerprintKey = `${fingerprintWeek}:${fingerprintWorkout}`;
@@ -749,9 +773,10 @@ async function run() {
       client_record_id: `${testPrefix}:fingerprint-key-conflict`,
       week_index: fingerprintWeek,
       workout_index: fingerprintWorkout + 1,
+      workout_type: 'Easy Run',
       record_json: {},
     });
-    assert(!!fingerprintKeyConflict, 'Schema fingerprint: completion_key uniqueness must reject duplicates');
+    assertUniqueViolation(fingerprintKeyConflict, UNIQUE_CONFLICT.COMPLETION_KEY, 'Schema fingerprint completion_key');
 
     const { error: fingerprintPositionConflict } = await client.from('workout_completions').insert({
       user_id: user.id,
@@ -759,9 +784,10 @@ async function run() {
       client_record_id: fingerprintClientB,
       week_index: fingerprintWeek,
       workout_index: fingerprintWorkout,
+      workout_type: 'Easy Run',
       record_json: {},
     });
-    assert(!!fingerprintPositionConflict, 'Schema fingerprint: week/workout uniqueness must reject duplicates');
+    assertUniqueViolation(fingerprintPositionConflict, UNIQUE_CONFLICT.POSITION, 'Schema fingerprint week/workout');
 
     const { error: fingerprintClientConflict } = await client.from('workout_completions').insert({
       user_id: user.id,
@@ -769,13 +795,12 @@ async function run() {
       client_record_id: fingerprintClientA,
       week_index: fingerprintWeek,
       workout_index: fingerprintWorkout + 2,
+      workout_type: 'Easy Run',
       record_json: {},
     });
-    assert(!!fingerprintClientConflict, 'Schema fingerprint: non-empty client_record_id uniqueness must reject duplicates');
+    assertUniqueViolation(fingerprintClientConflict, UNIQUE_CONFLICT.CLIENT_RECORD_ID, 'Schema fingerprint client_record_id');
 
-    // ── Cross-lifecycle database chaos (SoT §9 / next-day retry) ──
-    // DAY A: provisional/staged row with legacy completion_key (hidden from athletes).
-    // DAY B: fresh retry with canonical key must converge onto ONE finalized visible row.
+    // ── Shared-algorithm next-day chaos (SoT §9) — uses production reconcile path ──
     const identityWeek = 14;
     const identityWorkout = 2;
     const legacyIdentityKey = `${testPrefix}:stale-completion-key`;
@@ -794,24 +819,10 @@ async function run() {
         status: 'pending_proof',
         workoutContext: { weekIndex: identityWeek, workoutIndex: identityWorkout, workoutType: 'Threshold Run' },
       },
-    }).select('id, completion_key, proof_pending').single();
-    assert(
-      !stagedIdentityError && stagedIdentityRow?.id,
-      `Could not seed legacy identity row: ${stagedIdentityError?.message || 'unknown'}`,
-    );
+    }).select('id, completion_key, proof_pending, client_record_id').single();
+    assert(!stagedIdentityError && stagedIdentityRow?.id, `Could not seed legacy identity row: ${stagedIdentityError?.message || 'unknown'}`);
     createdWorkoutIds.push(stagedIdentityRow.id);
-    assert(stagedIdentityRow.proof_pending === true, 'Seeded legacy identity row must be proof_pending');
-    assert(!isVisibleCompletionRow(stagedIdentityRow), 'proof_pending rows must stay hidden from athlete completion state');
-
-    // DAY B hydrate simulation: completion_key lookup for canonical key misses.
-    const { data: dayBKeyMiss, error: dayBKeyMissError } = await client
-      .from('workout_completions')
-      .select('id')
-      .eq('user_id', user.id)
-      .eq('completion_key', `${identityWeek}:${identityWorkout}`)
-      .maybeSingle();
-    assert(!dayBKeyMissError, `Day B key lookup failed: ${dayBKeyMissError?.message || 'unknown'}`);
-    assert(!dayBKeyMiss, 'Day B canonical completion_key must miss against the legacy staged key');
+    assert(!isVisibleCompletionRow(stagedIdentityRow), 'proof_pending rows must stay hidden');
 
     const retryIdentityRecord = {
       id: `${testPrefix}:retry-client`,
@@ -829,53 +840,36 @@ async function run() {
       },
       completedAt: new Date().toISOString(),
     };
-    const canonicalIdentityKey = getCompletionKeyFromRecord(retryIdentityRecord);
-    assert(
-      canonicalIdentityKey === `${identityWeek}:${identityWorkout}`,
-      'Valid week/workout context must produce the canonical completion key',
-    );
-    const reconcilePayload = buildWorkoutCloudPayload(retryIdentityRecord, user.id);
-    assert(reconcilePayload.completion_key === canonicalIdentityKey, 'Cloud payload must use canonical completion key');
+    assert(getCompletionKeyFromRecord(retryIdentityRecord) === `${identityWeek}:${identityWorkout}`, 'canonical key required');
 
-    const { error: naiveIdentityError } = await client
-      .from('workout_completions')
-      .upsert(reconcilePayload, { onConflict: 'user_id,completion_key' });
-    assert(!!naiveIdentityError, 'Naive completion_key upsert must collide with positional uniqueness');
-    assert(
-      /duplicate key|week_index|unique constraint/i.test(String(naiveIdentityError.message || '')),
-      `Expected positional unique collision, got: ${naiveIdentityError.message || 'unknown'}`,
-    );
+    const dayBEnsure = await ensureWorkoutIdentityReconciled(client, user.id, retryIdentityRecord);
+    assert(dayBEnsure.reused === true, 'Day B ensure must reuse the existing provisional row');
+    assert(dayBEnsure.rollbackOwned === false, 'Reused provisional must not be rollback-owned');
+    assert(dayBEnsure.clientRecordId === identityClientId, 'Ensure must keep Day A client_record_id');
 
-    const { data: positionalIdentity, error: positionalIdentityError } = await client
+    const rolledBack = await rollbackWorkoutIdentityIfOwned(client, user.id, retryIdentityRecord, dayBEnsure);
+    assert(rolledBack === false, 'Deterministic-failure rollback must NOT delete reused Day A row');
+    const { data: afterFailedRollback } = await client
       .from('workout_completions')
-      .select('id, completion_key, proof_pending, attachment_id')
-      .eq('user_id', user.id)
-      .eq('week_index', identityWeek)
-      .eq('workout_index', identityWorkout)
+      .select('id, client_record_id, proof_pending')
+      .eq('id', stagedIdentityRow.id)
       .maybeSingle();
-    assert(
-      !positionalIdentityError && positionalIdentity?.id === stagedIdentityRow.id,
-      `Positional lookup must reuse the legacy row: ${positionalIdentityError?.message || 'missing'}`,
-    );
+    assert(afterFailedRollback?.id === stagedIdentityRow.id, 'Day A provisional row must still exist after non-owned rollback');
+    assert(afterFailedRollback.client_record_id === identityClientId, 'Day A client_record_id must be preserved');
 
-    const { data: reconciledIdentity, error: reconcileIdentityError } = await client
+    const saveResult = await saveWorkoutCompletionReconciled(client, user.id, retryIdentityRecord);
+    assert(saveResult?.rowId === stagedIdentityRow.id, 'Production save path must update the positional Day A row');
+    const { data: finalizedIdentity } = await client
       .from('workout_completions')
-      .update(reconcilePayload)
-      .eq('id', positionalIdentity.id)
-      .select('id, completion_key, proof_pending, completed_at, week_index, workout_index')
+      .select('id, completion_key, proof_pending, total_minutes, avg_bpm, week_index, workout_index, client_record_id')
+      .eq('id', stagedIdentityRow.id)
       .single();
-    assert(
-      !reconcileIdentityError && reconciledIdentity?.id,
-      `Legacy identity reconcile update must succeed: ${reconcileIdentityError?.message || 'unknown'}`,
-    );
-    assert(reconciledIdentity.completion_key === canonicalIdentityKey, 'Reconcile must repair completion_key');
-    assert(reconciledIdentity.proof_pending === false, 'Reconcile must finalize proof_pending');
-    assert(isVisibleCompletionRow(reconciledIdentity), 'Finalized row must be athlete-visible');
-    assert(Number(reconciledIdentity.week_index) === identityWeek, 'Reconcile must keep week_index');
-    assert(Number(reconciledIdentity.workout_index) === identityWorkout, 'Reconcile must keep workout_index');
+    assert(finalizedIdentity.completion_key === `${identityWeek}:${identityWorkout}`, 'Save must repair completion_key');
+    assert(finalizedIdentity.proof_pending === false, 'Save must finalize proof_pending');
+    assert(isVisibleCompletionRow(finalizedIdentity), 'Finalized row must be visible');
+    assert(Number(finalizedIdentity.total_minutes) === 40, 'Save must persist requested minutes');
 
-    // Idempotent second complete (Complete x2) must update the same row, not insert.
-    const secondCompletePayload = buildWorkoutCloudPayload({
+    const secondSave = await saveWorkoutCompletionReconciled(client, user.id, {
       ...retryIdentityRecord,
       id: identityClientId,
       workoutLog: {
@@ -883,39 +877,59 @@ async function run() {
         totalMinutes: 41,
         completedAt: new Date().toISOString(),
       },
-    }, user.id);
-    const { data: secondCompleteRow, error: secondCompleteError } = await client
+    });
+    assert(secondSave?.rowId === stagedIdentityRow.id, 'Complete x2 must converge on the same row id');
+    const { data: secondRead } = await client
       .from('workout_completions')
-      .update(secondCompletePayload)
-      .eq('id', reconciledIdentity.id)
-      .select('id, completion_key, total_minutes, proof_pending')
+      .select('id, total_minutes, proof_pending')
+      .eq('id', stagedIdentityRow.id)
       .single();
-    assert(!secondCompleteError && secondCompleteRow?.id === reconciledIdentity.id, 'Second complete must update same row');
-    assert(Number(secondCompleteRow.total_minutes) === 41, 'Second complete must overwrite metrics on same identity');
-    assert(secondCompleteRow.proof_pending === false, 'Second complete must remain finalized');
+    assert(Number(secondRead.total_minutes) === 41, 'Second complete must overwrite metrics on same identity');
 
-    const { count: identityCount, error: identityCountError } = await client
+    const { count: identityCount } = await client
       .from('workout_completions')
       .select('id', { count: 'exact', head: true })
       .eq('user_id', user.id)
       .eq('week_index', identityWeek)
       .eq('workout_index', identityWorkout);
-    assert(!identityCountError, `Could not count reconciled identity rows: ${identityCountError?.message || 'unknown'}`);
     assert(identityCount === 1, `Retry must converge on one row, got ${identityCount}`);
 
-    const { error: secondPositionalInsertError } = await client.from('workout_completions').insert({
+    // Dual mismatched rows: position must win / explicit conflict when keys disagree.
+    const dualWeek = 17;
+    const dualWorkout = 1;
+    const { data: dualKeyRow, error: dualKeyError } = await client.from('workout_completions').insert({
       user_id: user.id,
-      completion_key: `${testPrefix}:second-positional`,
-      client_record_id: `${testPrefix}:second-positional-client`,
-      week_index: identityWeek,
-      workout_index: identityWorkout,
+      completion_key: `${dualWeek}:${dualWorkout}`,
+      client_record_id: `${testPrefix}:dual-key-row`,
+      week_index: 18,
+      workout_index: 0,
+      workout_type: 'Easy Run',
+      record_json: {},
+    }).select('id').single();
+    assert(!dualKeyError && dualKeyRow?.id, `Dual-key seed failed: ${dualKeyError?.message || 'unknown'}`);
+    createdWorkoutIds.push(dualKeyRow.id);
+    const { data: dualPosRow, error: dualPosError } = await client.from('workout_completions').insert({
+      user_id: user.id,
+      completion_key: `${testPrefix}:dual-legacy-pos`,
+      client_record_id: `${testPrefix}:dual-pos-row`,
+      week_index: dualWeek,
+      workout_index: dualWorkout,
       workout_type: 'Threshold Run',
       record_json: {},
-    });
-    assert(
-      !!secondPositionalInsertError,
-      'Migration 017 positional unique constraint must reject a second row for the same week/workout',
-    );
+    }).select('id').single();
+    assert(!dualPosError && dualPosRow?.id, `Dual-position seed failed: ${dualPosError?.message || 'unknown'}`);
+    createdWorkoutIds.push(dualPosRow.id);
+
+    let dualError = null;
+    try {
+      await findWorkoutCompletionIdentity(client, user.id, {
+        id: `${testPrefix}:dual-retry`,
+        workoutContext: { weekIndex: dualWeek, workoutIndex: dualWorkout },
+      });
+    } catch (error) {
+      dualError = error;
+    }
+    assert(dualError?.workoutIdentityConflict === 'dual_row', 'Mismatched key/position rows must raise explicit dual-row conflict');
 
     console.log('PASS: proof authorization matrix');
   } finally {

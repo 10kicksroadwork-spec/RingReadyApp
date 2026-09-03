@@ -122,7 +122,8 @@ import { resolveCanonicalClientRecordId } from './proof-staging.js';
 import { shouldRollbackProvisionalIdentity } from './proof-diagnostics.js';
 import {
   athleteFacingWorkoutSaveError,
-  isDuplicateWorkoutIdentityError,
+  doesCloudCompletionMatchRequestedSave,
+  isReconcileableUniqueConflict,
 } from './workout-completion-identity.js';
 import { OPERATION_TIMEOUT_MS, withOperationTimeout } from './operation-timeout.js';
 import { runSingleFlight } from './single-flight.js';
@@ -748,9 +749,9 @@ async function persistSignedInWorkoutCompletion(record, {
     );
   } catch (error) {
     console.warn('Cloud workout completion save failed', error);
-    if (isDuplicateWorkoutIdentityError(error)) {
-      // Recoverability: authoritative row likely already exists — reconcile cache and
-      // treat as success when cloud hydration restores the completion.
+    if (isReconcileableUniqueConflict(error)) {
+      // Soft-success only for position/completion_key conflicts when rehydrate
+      // positively matches the requested logical save (Authority).
       const owner = captureClientStateOwner();
       let rehydrated = false;
       try {
@@ -763,9 +764,9 @@ async function persistSignedInWorkoutCompletion(record, {
         rehydrated = false;
       }
       shellHooks?.showToast?.(athleteFacingWorkoutSaveError(error));
-      if (rehydrated) {
-        const context = finalized?.workoutContext || finalized?.cfg?.workoutContext || {};
-        const restored = getWorkoutCompletion(context.weekIndex, context.workoutIndex) || finalized;
+      const context = finalized?.workoutContext || finalized?.cfg?.workoutContext || {};
+      const restored = getWorkoutCompletion(context.weekIndex, context.workoutIndex);
+      if (rehydrated && doesCloudCompletionMatchRequestedSave(restored, finalized)) {
         return {
           success: true,
           record: restored,
@@ -1695,13 +1696,14 @@ async function completeWorkoutFromDetail(weekIndex, workoutIndex) {
         record.workoutLog = { ...record.workoutLog, proofPolicyVersion: PROOF_POLICY_VERSION, attachment };
       }
     } catch (error) {
-      if (identityStaging?.created && shouldRollbackProvisionalIdentity(error)) {
+      if ((identityStaging?.rollbackOwned || identityStaging?.insertedThisAttempt)
+        && shouldRollbackProvisionalIdentity(error)) {
         await rollbackCloudWorkoutIdentity(record, identityStaging).catch((rollbackError) => {
           console.warn('Could not roll back provisional workout identity', rollbackError);
         });
       }
       console.warn('Workout proof upload failed', error);
-      if (isDuplicateWorkoutIdentityError(error)) {
+      if (isReconcileableUniqueConflict(error)) {
         scheduleTargetedWorkoutRehydrate(record);
       }
       shellHooks?.showToast?.(athleteFacingWorkoutSaveError(error).toUpperCase());
@@ -2232,13 +2234,14 @@ async function saveMileTestResult() {
       result.attachment = await ensureWorkoutProofUploaded('mile', result.id);
       if (result.attachment) result.proofPolicyVersion = PROOF_POLICY_VERSION;
     } catch (error) {
-      if (identityStaging?.created && shouldRollbackProvisionalIdentity(error)) {
+      if ((identityStaging?.rollbackOwned || identityStaging?.insertedThisAttempt)
+        && shouldRollbackProvisionalIdentity(error)) {
         await rollbackCloudMileTestIdentity(result, testContext, identityStaging).catch((rollbackError) => {
           console.warn('Could not roll back provisional mile test identity', rollbackError);
         });
       }
       console.warn('Mile Test proof upload failed', error);
-      shellHooks?.showToast?.(String(error?.message || error).toUpperCase());
+      shellHooks?.showToast?.(athleteFacingWorkoutSaveError(error).toUpperCase());
       return;
     }
     let cloudSaved = false;

@@ -34,14 +34,15 @@ export { resolveCanonicalWorkoutIdentity };
 
 export function buildWorkoutCloudPayload(record, userId) {
   const context = getRecordContext(record);
+  const identity = resolveCanonicalWorkoutIdentity(record);
   const workoutLog = record.workoutLog || null;
   const output = readOutputFromWorkoutLog(workoutLog || {});
   return {
     user_id: userId,
     client_record_id: textOrEmpty(record.id),
-    completion_key: getCompletionKeyFromRecord(record),
-    week_index: integerOrNull(context.weekIndex),
-    workout_index: integerOrNull(context.workoutIndex),
+    completion_key: identity.completionKey,
+    week_index: identity.weekIndex,
+    workout_index: identity.workoutIndex,
     week_label: textOrEmpty(context.weekLabel),
     week_title: textOrEmpty(context.weekTitle),
     day_of_week: textOrEmpty(context.dayOfWeek),
@@ -151,12 +152,13 @@ export function buildMileTestCloudPayload(result, hrInfo, testContext, userId) {
 
 export function buildProvisionalWorkoutCloudPayload(record, userId) {
   const context = getRecordContext(record);
+  const identity = resolveCanonicalWorkoutIdentity(record);
   return {
     user_id: userId,
     client_record_id: textOrEmpty(record.id),
-    completion_key: getCompletionKeyFromRecord(record),
-    week_index: integerOrNull(context.weekIndex),
-    workout_index: integerOrNull(context.workoutIndex),
+    completion_key: identity.completionKey,
+    week_index: identity.weekIndex,
+    workout_index: identity.workoutIndex,
     week_label: textOrEmpty(context.weekLabel),
     week_title: textOrEmpty(context.weekTitle),
     day_of_week: textOrEmpty(context.dayOfWeek),
