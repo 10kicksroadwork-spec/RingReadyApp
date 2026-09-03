@@ -113,6 +113,47 @@ export async function startSprintInterval(page) {
   await expect(page.locator('#curr-interval')).toHaveText('1');
 }
 
+export async function finishSprintIntervalWithHold(page) {
+  const btn = page.locator('#main-btn');
+  await expect(btn).toHaveClass(/btn-sprint/);
+  await btn.focus();
+  await page.keyboard.down('Space');
+  // SPRINT_DONE_HOLD_MS is 2000; hold slightly longer so both engines commit.
+  await page.waitForTimeout(2200);
+  await page.keyboard.up('Space');
+  await expect(page.locator('#hr-modal.open')).toBeVisible({ timeout: 10000 });
+}
+
+export async function enterRestAfterManualSprintHr(page, sprintHr = '170') {
+  await expect(page.locator('#hr-modal.open')).toBeVisible({ timeout: 10000 });
+  await page.locator('#modal-sprint-hr').fill(String(sprintHr));
+  await page.locator('#modal-confirm-btn').click();
+  await expect(page.locator('#status-pill')).toContainText('REST', { timeout: 10000 });
+  await expect(page.locator('#timer-phase')).toContainText('REST');
+  await expect(page.locator('#timer-digits')).not.toHaveText(/GO|--/i);
+}
+
+export async function setDocumentVisibility(page, visible) {
+  await page.evaluate((isVisible) => {
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => (isVisible ? 'visible' : 'hidden'),
+    });
+    Object.defineProperty(document, 'hidden', {
+      configurable: true,
+      get: () => !isVisible,
+    });
+    document.dispatchEvent(new Event('visibilitychange'));
+  }, visible);
+}
+
+export async function readRestSeconds(page) {
+  const text = (await page.locator('#timer-digits').innerText()).trim();
+  const value = Number(text);
+  expect(Number.isFinite(value)).toBe(true);
+  return value;
+}
+
 export async function readActiveSessionCheckpoint(page) {
   return page.evaluate(() => {
     const prefix = 'ringReadyActiveSession:';

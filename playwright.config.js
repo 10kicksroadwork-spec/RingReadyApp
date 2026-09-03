@@ -25,12 +25,12 @@ export default defineConfig({
     {
       name: 'chromium-desktop',
       use: { ...devices['Desktop Chrome'] },
-      testIgnore: ['**/ios-shell.spec.js'],
+      testIgnore: ['**/ios-shell.spec.js', '**/sprint-rest-background.spec.js'],
     },
     {
       name: 'chromium-android',
       use: { ...devices['Pixel 7'] },
-      testIgnore: ['**/ios-shell.spec.js'],
+      testIgnore: ['**/ios-shell.spec.js', '**/sprint-rest-background.spec.js'],
     },
     {
       name: 'webkit-iphone',

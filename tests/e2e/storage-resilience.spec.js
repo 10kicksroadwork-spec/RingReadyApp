@@ -5,38 +5,15 @@ import {
   openSprintWorkout,
   waitForHome,
 } from './helpers/app.js';
-import { attachConsoleGate } from './helpers/console-gate.js';
 
-function installQuotaExceededLocalStorage() {
-  return () => {
-    localStorage.setItem('ringReadyOnboardingDismissed', '1');
-    const original = window.localStorage;
-    const quotaError = new DOMException('Quota exceeded', 'QuotaExceededError');
-
-    Object.defineProperty(window, 'localStorage', {
-      configurable: true,
-      get() {
-        return new Proxy(original, {
-          get(target, prop) {
-            if (prop === 'setItem') {
-              return () => {
-                throw quotaError;
-              };
-            }
-            const value = Reflect.get(target, prop, target);
-            return typeof value === 'function' ? value.bind(target) : value;
-          },
-        });
-      },
-    });
-  };
-}
-
-test.describe('storage and contract failure injection', () => {
-  test('boots when localStorage getter throws SecurityError', async ({ page }) => {
-    const gate = attachConsoleGate(page, {
+test.describe('storage SecurityError injection', () => {
+  test.use({
+    consoleGateOptions: {
       allowlist: [/Could not read storage/i, /Could not write storage/i],
-    });
+    },
+  });
+
+  test('boots when localStorage getter throws SecurityError', async ({ page, consoleGate }) => {
     await page.addInitScript(() => {
       localStorage.setItem('ringReadyOnboardingDismissed', '1');
       Object.defineProperty(window, 'localStorage', {
@@ -52,17 +29,46 @@ test.describe('storage and contract failure injection', () => {
     await expect(page.locator('#week-workouts')).toBeVisible();
     await expect(page.locator('#open-week-menu-btn')).toBeVisible();
 
-    gate.assertClean();
+    consoleGate.assertClean();
   });
+});
 
-  test('warns and allows degraded sprint start when persistent writes throw QuotaExceededError', async ({ page }) => {
-    const gate = attachConsoleGate(page, {
+test.describe('storage QuotaExceeded injection', () => {
+  test.use({
+    consoleGateOptions: {
       allowlist: [
         /Could not write storage/i,
         /Could not persist active sprint session/i,
       ],
+    },
+  });
+
+  test('warns and allows degraded sprint start when persistent writes throw QuotaExceededError', async ({
+    page,
+    consoleGate,
+  }) => {
+    await page.addInitScript(() => {
+      localStorage.setItem('ringReadyOnboardingDismissed', '1');
+      const original = window.localStorage;
+      const quotaError = new DOMException('Quota exceeded', 'QuotaExceededError');
+
+      Object.defineProperty(window, 'localStorage', {
+        configurable: true,
+        get() {
+          return new Proxy(original, {
+            get(target, prop) {
+              if (prop === 'setItem') {
+                return () => {
+                  throw quotaError;
+                };
+              }
+              const value = Reflect.get(target, prop, target);
+              return typeof value === 'function' ? value.bind(target) : value;
+            },
+          });
+        },
+      });
     });
-    await page.addInitScript(installQuotaExceededLocalStorage());
 
     await page.goto('/');
     await waitForHome(page);
@@ -91,23 +97,30 @@ test.describe('storage and contract failure injection', () => {
     await expect(page.locator('#session.screen.active')).toBeVisible({ timeout: 15000 });
     await expect(page.locator('#main-btn')).toBeVisible();
 
-    gate.assertClean();
+    consoleGate.assertClean();
   });
+});
 
-  test('keeps athlete UI usable when contract health is aborted', async ({ page }) => {
-    const gate = attachConsoleGate(page, {
-      allowlist: [/Failed to load resource: net::ERR_FAILED/i, /Failed to load resource/i],
+test.describe('contract health injection', () => {
+  test.describe('aborted health', () => {
+    test.use({
+      consoleGateOptions: {
+        allowlist: [/Failed to load resource: net::ERR_FAILED/i, /Failed to load resource/i],
+      },
     });
-    await page.addInitScript(() => {
-      localStorage.setItem('ringReadyOnboardingDismissed', '1');
+
+    test('keeps athlete UI usable when contract health is aborted', async ({ page, consoleGate }) => {
+      await page.addInitScript(() => {
+        localStorage.setItem('ringReadyOnboardingDismissed', '1');
+      });
+
+      await page.route('**/api/health', (route) => route.abort('failed'));
+      await page.goto('/');
+      await waitForHome(page);
+      await expect(page.locator('#home .home-title')).toContainText('Ring Ready');
+
+      consoleGate.assertClean();
     });
-
-    await page.route('**/api/health', (route) => route.abort('failed'));
-    await page.goto('/');
-    await waitForHome(page);
-    await expect(page.locator('#home .home-title')).toContainText('Ring Ready');
-
-    gate.assertClean();
   });
 
   test('keeps athlete UI usable when contract health is delayed', async ({ page, consoleGate }) => {

@@ -51,7 +51,7 @@ test.describe('webkit iPhone shell', () => {
     await navigateFromDrawer(page, 'welcome-page');
     await expect(page.locator('#install-panel')).toBeVisible();
     await expect(page.locator('#install-btn')).toBeVisible();
-    await expect(page.locator('#install-btn')).toContainText(/HOW TO INSTALL|INSTALL/i);
+    await expect(page.locator('#install-btn')).toContainText(/HOW TO INSTALL/i);
     await page.locator('#install-btn').click();
     await expect(page.locator('#install-instructions')).toBeVisible();
 
