@@ -654,6 +654,9 @@ function buildAthleteRecord(config) {
   const benchPoints = collectBenchmarkPoints(config, sessions);
   const sprintPoints = collectSprintPoints(config, sessions);
   const performance = buildPerformanceContinuity(sessions);
+  if (Number.isFinite(Number(config.forcePerformanceIndex))) {
+    performance.index = Number(Number(config.forcePerformanceIndex).toFixed(1));
+  }
   const scan = {
     bench: buildBenchSignal(benchPoints),
     zone: buildZoneSignal(sessions, config.maxHr, config.restingHr),
@@ -889,8 +892,9 @@ const MOCK_ATHLETES = [
     },
     benchmarks: [
       { weekIndex: 0, distance: 2.70, avgBpm: 140 },
-      { weekIndex: 1, distance: 2.68, avgBpm: 141 },
+      { weekIndex: 1, distance: 2.40, avgBpm: 145 },
     ],
+    forcePerformanceIndex: 92.4,
     sprints: [
       { weekIndex: 0, first5Avg: 24 },
       { weekIndex: 1, first5Avg: 24 },
