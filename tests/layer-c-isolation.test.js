@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
-const SCRIPT = readFileSync(new URL('../scripts/test-proof-authorization.mjs', import.meta.url), 'utf8');
+const SCRIPT = readFileSync('scripts/test-proof-authorization.mjs', 'utf8');
 
 describe('Layer C workout identity isolation', () => {
   it('defines a real-program ceiling and run-specific slot allocator', () => {
