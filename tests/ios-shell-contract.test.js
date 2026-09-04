@@ -68,6 +68,14 @@ describe('ios shell contract', () => {
     selectorUsesHorizontalSafeArea(/\.results-actions\s*\{[\s\S]*?\}/);
   });
 
+  it('keeps the workout detail HOME button below the top/right safe areas', () => {
+    const match = styleCss.match(/\.detail-header\s+\.header-action\s*\{[\s\S]*?\}/);
+    expect(match, 'Expected .detail-header .header-action rule').toBeTruthy();
+    const block = match[0];
+    expect(block).toMatch(/top:\s*max\(\s*16px\s*,\s*calc\(\s*var\(--safe-top\)\s*\+\s*8px\s*\)\s*\)/);
+    expect(block).toMatch(/right:\s*max\(\s*18px\s*,\s*calc\(\s*var\(--safe-right\)\s*\+\s*12px\s*\)\s*\)/);
+  });
+
   it('does not auto-activate the service worker during install', () => {
     const installBlock = swJs.match(/self\.addEventListener\('install'[\s\S]*?\n\}\);/)?.[0] || '';
     expect(installBlock).not.toContain('skipWaiting');

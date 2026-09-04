@@ -1187,8 +1187,8 @@
 
   .detail-header .header-action {
     position: absolute;
-    top: 16px;
-    right: 18px;
+    top: max(16px, calc(var(--safe-top) + 8px));
+    right: max(18px, calc(var(--safe-right) + 12px));
   }
 
   .detail-week { color: rgba(0,0,0,0.55); margin-top: 28px; }

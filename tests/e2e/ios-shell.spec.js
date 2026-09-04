@@ -39,6 +39,29 @@ test.describe('webkit iPhone shell', () => {
     consoleGate.assertClean();
   });
 
+  test('positions workout HOME below injected safe-top', async ({ localAthletePage, consoleGate }) => {
+    const page = localAthletePage;
+    await page.addStyleTag({
+      content: ':root { --safe-top: 47px !important; --safe-right: 12px !important; }',
+    });
+    await openLogWorkout(page, 0, 1);
+
+    const metrics = await page.locator('#detail-back-btn').evaluate((el) => {
+      const style = getComputedStyle(el);
+      return {
+        top: style.top,
+        right: style.right,
+        y: el.getBoundingClientRect().top,
+      };
+    });
+
+    expect(metrics.top).toBe('55px');
+    expect(metrics.right).toBe('24px');
+    expect(metrics.y).toBeGreaterThanOrEqual(47);
+
+    consoleGate.assertClean();
+  });
+
   test('accepts proof png selection and shows install instructions on welcome', async ({
     localAthletePage,
     consoleGate,
