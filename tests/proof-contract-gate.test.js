@@ -214,6 +214,13 @@ describe('service worker runtime api bypass', () => {
     expect(swContents).toMatch(/pathname\.startsWith\(['"]\/api\//);
     expect(swContents).toMatch(/\/api\//);
   });
+
+  it('never intercepts cross-origin requests before respondWith', () => {
+    const swContents = readFileSync('public/sw.js', 'utf8');
+    expect(swContents).toMatch(/url\.origin\s*!==\s*self\.location\.origin/);
+    expect(swContents.indexOf('url.origin !== self.location.origin'))
+      .toBeLessThan(swContents.indexOf('event.respondWith'));
+  });
 });
 
 describe('api health handler', () => {

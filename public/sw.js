@@ -72,10 +72,31 @@ self.addEventListener('fetch', (event) => {
   if (request.method !== 'GET') return;
 
   const url = new URL(request.url);
+
+  /*
+   * CRITICAL AUTHORITY / ISOLATION BOUNDARY
+   *
+   * RingReady's service worker owns only RingReady same-origin
+   * shell/static resources.
+   *
+   * Never intercept or cache Supabase REST/auth/storage traffic
+   * or any other third-party request.
+   */
+  if (url.origin !== self.location.origin) {
+    return;
+  }
+
+  /*
+   * RingReady server/API responses are dynamic and must never be
+   * satisfied from the application-shell cache.
+   */
   if (url.pathname.startsWith('/api/')) {
     return;
   }
 
+  /*
+   * Navigations are network-first with offline shell fallback.
+   */
   if (request.mode === 'navigate') {
     event.respondWith(
       fetch(request)
@@ -89,6 +110,10 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
+  /*
+   * Built JS/CSS assets are network-first so new deployments
+   * become visible promptly.
+   */
   if (isScriptOrStyleRequest(request)) {
     event.respondWith(
       fetch(request)
@@ -104,6 +129,9 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
+  /*
+   * Same-origin static assets may use cache-first behavior.
+   */
   event.respondWith(
     caches.match(request).then((cached) => {
       if (cached) return cached;
