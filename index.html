@@ -466,6 +466,7 @@
       </div>
     </div>
     <div class="page-body">
+      <p class="coach-source-warning" id="coach-athlete-source-warning" hidden></p>
       <section class="page-panel coach-athlete-select-panel">
         <div class="info-kicker">Athlete</div>
         <label class="app-input-wrap" for="coach-athlete-select">
@@ -506,7 +507,20 @@
         <p class="coach-note-copy">Archives this fighter’s current camp, then clears live workouts so the next camp starts empty. Profile name, HR, and coach note stay.</p>
         <button type="button" class="secondary-danger-btn" id="coach-clean-slate-btn">ARCHIVE CAMP &amp; CLEAN SLATE</button>
       </section>
-      <section class="page-panel">
+      
+      <section class="page-panel" id="coach-athlete-mile-test" aria-label="Mile Test">
+        <div class="info-kicker">Mile Test &amp; Max HR</div>
+        <div id="coach-athlete-mile-test-body" class="coach-parity-body"></div>
+      </section>
+      <section class="page-panel" id="coach-athlete-zone-heatmap" aria-label="Zone Adherence Heatmap">
+        <div class="info-kicker">Zone Adherence Heatmap</div>
+        <div id="coach-athlete-zone-heatmap-body" class="coach-parity-body"></div>
+      </section>
+      <section class="page-panel" id="coach-athlete-hr-pace" aria-label="HR vs Pace Efficiency">
+        <div class="info-kicker">HR vs Pace Efficiency</div>
+        <div id="coach-athlete-hr-pace-body" class="coach-parity-body"></div>
+      </section>
+<section class="page-panel">
         <div class="info-kicker" id="coach-athlete-notes-kicker">Coach-authored notes</div>
         <p class="coach-note-copy" id="coach-athlete-notes-copy">Shared with Gene and Daniel. Fighters do not see this note. Separate from generated guidance above.</p>
         <label class="app-input-wrap" for="coach-athlete-note">
@@ -531,6 +545,7 @@
       </div>
     </div>
     <div class="page-body">
+      <p class="coach-source-warning" id="coach-benchmark-stats-source-warning" hidden></p>
       <section class="page-hero coach-hero">
         <div class="field-label">Analysis</div>
         <h2>Benchmark Stats</h2>
@@ -573,6 +588,7 @@
       </div>
     </div>
     <div class="page-body">
+      <p class="coach-source-warning" id="coach-recovery-stats-source-warning" hidden></p>
       <section class="page-hero coach-hero">
         <div class="field-label">Analysis</div>
         <h2>Recovery Stats</h2>
@@ -615,6 +631,7 @@
       </div>
     </div>
     <div class="page-body">
+      <p class="coach-source-warning" id="coach-pace-stats-source-warning" hidden></p>
       <section class="page-hero coach-hero">
         <div class="field-label">Analysis</div>
         <h2>Overall Pace Stats</h2>
@@ -657,6 +674,7 @@
       </div>
     </div>
     <div class="page-body">
+      <p class="coach-source-warning" id="coach-hr-adherence-stats-source-warning" hidden></p>
       <section class="page-hero coach-hero">
         <div class="field-label">Analysis</div>
         <h2>HR Adherence Stats</h2>

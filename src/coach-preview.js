@@ -21,17 +21,23 @@ import {
   normalizeModality,
   readOutputFromWorkoutLog,
 } from './modality.js';
-import { scoreZoneAdherence } from './hr-analytics.js';
 import { sessionHasProof } from './coach-proof.js';
 import { readJSONValue, writeJSON } from './safe-storage.js';
+import {
+  getSessionZoneTarget,
+  isSessionAvgOnTarget,
+  scoreZoneAdherence,
+} from './hr-analytics.js';
 import {
   LENS_BENCHMARK,
   LENS_HR_ADHERENCE,
   LENS_PACE,
   LENS_RECOVERY,
   METRIC_PAGE_DEFS,
+  buildCoachAthleteAnalytics,
   buildLensCards,
   computeRunningTotals,
+  formatCoachSourceWarnings,
   lensForScreenId,
   selectVisibleCards,
 } from './coach-metrics.js';
@@ -264,13 +270,14 @@ function buildRecoverySignal(points) {
   const latest = points[points.length - 1].first5Avg;
   const first = points[0].first5Avg;
   const avg = points.reduce((sum, row) => sum + row.first5Avg, 0) / points.length;
+  // Canonical primary value is latest First-5 drop (camp average is secondary only).
   if (points.length < 2) {
     return {
       key: 'recovery',
       tone: 'neutral',
-      value: `${Math.round(avg)}`,
+      value: `${Math.round(latest)}`,
       short: `${Math.round(latest)}`,
-      detail: `Need another sprint week · target ${SPRINT_TARGET_DROP}+`,
+      detail: `Need another sprint week · target ${SPRINT_TARGET_DROP}+ · camp avg ${Math.round(avg)}`,
       points,
       latest,
       first,
@@ -285,9 +292,9 @@ function buildRecoverySignal(points) {
   return {
     key: 'recovery',
     tone,
-    value: `${Math.round(avg)}`,
+    value: `${Math.round(latest)}`,
     short: `${Math.round(latest)}`,
-    detail: `${Math.round(first)} → ${Math.round(latest)} bpm drop vs W1`,
+    detail: `${Math.round(first)} → ${Math.round(latest)} bpm drop vs W1 · camp avg ${Math.round(avg)}`,
     points,
     latest,
     first,
@@ -505,10 +512,14 @@ function buildHeadline(athlete) {
   } else if (scan.recovery.tone === 'green') {
     bits.push(`Drop ${Math.round(scan.recovery.first)}→${Math.round(scan.recovery.latest)}.`);
   }
-  if (scan.performance?.index && athlete.performance?.modalityCount > 1) {
-    bits.push(`Index ${formatPerformanceIndex(scan.performance.index)} after modality switch.`);
-  } else if (scan.performance?.index && !bits.some((bit) => /Index /.test(bit))) {
-    bits.push(`Index ${formatPerformanceIndex(scan.performance.index)}.`);
+  const piDisplay = athlete.analytics?.performance?.displayValue
+    || (Number.isFinite(Number(scan.performance?.index))
+      ? Number(scan.performance.index).toFixed(1)
+      : '');
+  if (piDisplay && athlete.performance?.modalityCount > 1) {
+    bits.push(`Index ${piDisplay} after modality switch.`);
+  } else if (piDisplay && !bits.some((bit) => /Index /.test(bit))) {
+    bits.push(`Index ${piDisplay}.`);
   }
 
   return bits.join(' ');
@@ -667,8 +678,96 @@ function buildAthleteRecord(config) {
     scan,
     performance,
   };
+
+  // Canonical analytics — shared by Detailed Summary + aggregate pages.
+  athlete.analytics = buildCoachAthleteAnalytics(athlete, {
+    scoreZoneAdherence,
+    getSessionZoneTarget,
+    isSessionAvgOnTarget,
+    normalizeModality,
+    runningModalityId: MODALITY_RUNNING,
+    workoutLookup: (session) => PROGRAM[session.weekIndex]?.workouts?.[session.workoutIndex] || null,
+  });
+  // Overwrite scan metric cards from canonical analytics so UI cannot diverge.
+  athlete.scan = {
+    ...athlete.scan,
+    ...scanFromAnalytics(athlete.analytics, athlete.scan),
+  };
   athlete.headline = buildHeadline(athlete);
   return athlete;
+}
+
+function scanFromAnalytics(analytics, priorScan = {}) {
+  const performance = analytics?.performance || {};
+  const recovery = analytics?.recovery || {};
+  const pace = analytics?.pace || {};
+  const hr = analytics?.hrAdherence || {};
+  return {
+    performance: {
+      key: 'performance',
+      tone: performance.tone || 'neutral',
+      value: performance.displayValue || '--',
+      short: performance.displayValue || '--',
+      detail: performance.detail || priorScan.performance?.detail || 'No Performance Index yet',
+      points: (performance.trendPoints || []).map((row) => ({
+        weekIndex: row.weekIndex,
+        pct: row.value,
+        index: row.value,
+      })),
+      index: performance.hasData ? performance.value : null,
+      status: performance.status,
+      badge: performance.badge,
+    },
+    recovery: {
+      key: 'recovery',
+      tone: recovery.tone || 'neutral',
+      value: recovery.displayValue || '--',
+      short: recovery.displayValue || '--',
+      detail: recovery.detail || priorScan.recovery?.detail || 'No sprint yet',
+      points: (recovery.trendPoints || []).map((row) => ({
+        weekIndex: row.weekIndex,
+        first5Avg: row.value,
+      })),
+      latest: recovery.latest ?? null,
+      first: recovery.baseline ?? null,
+      avg: recovery.campAverage ?? null,
+      status: recovery.status,
+      badge: recovery.badge,
+    },
+    pace: {
+      key: 'pace',
+      tone: pace.tone || 'neutral',
+      value: pace.displayValue || '--',
+      short: pace.displayValue || '--',
+      detail: pace.detail || priorScan.pace?.detail || 'Need two running weeks',
+      points: (pace.trendPoints || []).map((row) => ({
+        weekIndex: row.weekIndex,
+        pct: row.value,
+      })),
+      latestPct: pace.hasData ? pace.value : null,
+      status: pace.status,
+      badge: pace.badge,
+      buckets: priorScan.pace?.buckets || [],
+    },
+    zone: {
+      key: 'zone',
+      tone: hr.tone || 'neutral',
+      value: hr.displayValue || '--',
+      short: hr.displayValue || '--',
+      detail: hr.detail || priorScan.zone?.detail || 'No HR vs target yet',
+      points: (hr.trendPoints || []).map((row) => ({
+        weekIndex: row.weekIndex,
+        pct: row.pct ?? row.value,
+        scored: row.scored,
+        onTarget: row.onTarget,
+      })),
+      pct: hr.pct ?? null,
+      scored: hr.scored ?? null,
+      onTarget: hr.onTarget ?? null,
+      status: hr.status,
+      badge: hr.badge,
+    },
+  };
 }
 
 const MOCK_ATHLETES = [
@@ -733,6 +832,10 @@ const MOCK_ATHLETES = [
       '3:1': 137, '3:2': 164, '3:3': 138, '3:4': 136,
       '4:1': 136, '4:2': 163, '4:3': 137, '4:4': 135,
     },
+    mileTests: [
+      { weekIndex: 0, timeSec: 402 },
+      { weekIndex: 5, timeSec: 384 },
+    ],
   }),
   buildAthleteRecord({
     id: 'maya',
@@ -1514,7 +1617,7 @@ function renderSpark(points, valueKey, labelFn) {
 
 function renderMetricCard(id, title, signal, clickable) {
   const sparkKey = signal.key === 'recovery' ? 'first5Avg' : 'pct';
-  const sparkPoints = signal.key === 'zone' ? [] : (signal.points || []);
+  const sparkPoints = Array.isArray(signal.points) ? signal.points : [];
   const spark = sparkPoints.length
     ? renderSpark(sparkPoints, sparkKey, (row) => `W${row.weekIndex + 1}`)
     : '';
@@ -1525,6 +1628,9 @@ function renderMetricCard(id, title, signal, clickable) {
   const unit = signal.key === 'recovery' && signal.value !== '--'
     ? ' bpm'
     : '';
+  const secondary = signal.key === 'recovery' && signal.avg != null
+    ? `<p class="coach-metric-secondary">Camp avg ${Math.round(Number(signal.avg))} BPM</p>`
+    : '';
   return `<${tag} class="coach-metric-card is-${signal.tone}${clickable ? ' is-clickable' : ''}${athleteDrill === id ? ' is-open' : ''}" ${clickAttrs}>
     <div class="coach-metric-card-head">
       <span>${escapeHTML(title)}</span>
@@ -1532,6 +1638,7 @@ function renderMetricCard(id, title, signal, clickable) {
     </div>
     <strong>${escapeHTML(signal.value)}${unit}</strong>
     <p>${escapeHTML(signal.detail)}</p>
+    ${secondary}
     ${spark}
   </${tag}>`;
 }
@@ -1707,6 +1814,76 @@ function renderAthlete() {
 
   const startInput = document.getElementById('coach-athlete-start-date');
   if (startInput && document.activeElement !== startInput) startInput.value = athlete.campStartDate || '';
+
+  renderCoachSourceWarning('coach-athlete-source-warning');
+  renderAthleteParitySections(athlete);
+}
+
+function renderCoachSourceWarning(elementId) {
+  const el = document.getElementById(elementId);
+  if (!el) return;
+  const warnings = Array.isArray(rosterSourceWarnings) ? rosterSourceWarnings.filter(Boolean) : [];
+  if (!warnings.length) {
+    el.hidden = true;
+    el.textContent = '';
+    return;
+  }
+  el.hidden = false;
+  el.textContent = warnings.join(' ');
+}
+
+function renderAthleteParitySections(athlete) {
+  const analytics = athlete?.analytics || {};
+  const mile = analytics.mileTest || {};
+  const mileBody = document.getElementById('coach-athlete-mile-test-body');
+  if (mileBody) {
+    if (!mile.hasData) {
+      mileBody.innerHTML = '<p class="coach-parity-empty">No mile test logged yet.</p>';
+    } else {
+      mileBody.innerHTML = `
+        <div class="coach-parity-grid">
+          <article><span>Baseline</span><strong>${escapeHTML(mile.baselineDisplay || '--')}</strong></article>
+          <article><span>Latest</span><strong>${escapeHTML(mile.latestDisplay || '--')}</strong></article>
+          <article><span>Delta</span><strong>${escapeHTML(mile.deltaDisplay || '--')}</strong></article>
+          <article><span>Max HR</span><strong>${escapeHTML(mile.maxHrDisplay || '--')}</strong></article>
+        </div>
+        <p class="coach-parity-note">${escapeHTML(mile.badge || 'BASELINE')} · Mile Test &amp; Max HR context</p>
+      `;
+    }
+  }
+
+  const heatBody = document.getElementById('coach-athlete-zone-heatmap-body');
+  if (heatBody) {
+    const cells = Array.isArray(analytics.zoneHeatmap) ? analytics.zoneHeatmap : [];
+    if (!cells.length) {
+      heatBody.innerHTML = '<p class="coach-parity-empty">No scored zone sessions yet.</p>';
+    } else {
+      heatBody.innerHTML = `<div class="coach-zone-heatmap" role="list">${cells.map((cell) => `
+        <div class="coach-zone-heat-cell is-${escapeHTML(cell.status)}" role="listitem" title="${escapeHTML(cell.type || '')}">
+          <span>${escapeHTML(cell.label || '')}</span>
+          <strong>${cell.onTarget ? 'On' : 'Off'}</strong>
+          <em>${cell.avgBpm != null ? `${Math.round(cell.avgBpm)} bpm` : '--'}</em>
+        </div>
+      `).join('')}</div>`;
+    }
+  }
+
+  const paceBody = document.getElementById('coach-athlete-hr-pace-body');
+  if (paceBody) {
+    const rows = Array.isArray(analytics.hrPaceEfficiency) ? analytics.hrPaceEfficiency : [];
+    if (!rows.length) {
+      paceBody.innerHTML = '<p class="coach-parity-empty">No running sessions with HR + pace yet.</p>';
+    } else {
+      paceBody.innerHTML = `<div class="coach-hr-pace-table">${rows.map((row) => `
+        <div class="coach-hr-pace-row">
+          <span>${escapeHTML(row.label || '')}</span>
+          <strong>${escapeHTML(row.paceLabel || '--')}</strong>
+          <em>${row.avgBpm != null ? `${Math.round(row.avgBpm)} bpm` : '--'}</em>
+          <em>${row.efficiency != null ? `${row.efficiency} s/bpm` : '--'}</em>
+        </div>
+      `).join('')}</div>`;
+    }
+  }
 }
 
 function renderLensSpark(points) {
@@ -1761,6 +1938,7 @@ function renderMetricStatsPage(lens) {
       ${card.trendPoints.length ? renderLensSpark(card.trendPoints) : ''}
     </button>
   `).join('');
+  renderCoachSourceWarning(`${def.screenId}-source-warning`);
 }
 
 function setText(id, value) {
@@ -1861,16 +2039,7 @@ async function loadLiveRoster() {
   try {
     const payload = await loadCoachRosterPayload();
     const sourceErrors = payload?.sourceErrors || {};
-    rosterSourceWarnings = Object.entries(sourceErrors).map(([key, message]) => {
-      const labels = {
-        sprints: 'Sprint data unavailable',
-        completions: 'Completion data unavailable',
-        mileTests: 'Mile test data unavailable',
-        hrRows: 'HR data unavailable',
-        notes: 'Coach notes unavailable',
-      };
-      return labels[key] || `${key} unavailable: ${message}`;
-    });
+    rosterSourceWarnings = formatCoachSourceWarnings(sourceErrors);
     liveAthletes = buildLiveRoster(payload || {
       profiles: [], hrRows: [], completions: [], sprints: [], mileTests: [], notes: [], identities: [], exclusions: [], meta: [],
     });
