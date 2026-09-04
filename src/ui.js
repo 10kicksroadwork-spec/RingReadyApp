@@ -12,7 +12,13 @@
 let audioCtx = null;
 let restLogAlertTimer = null;
 let gestureReprimeBound = false;
+let gestureReprimeHandler = null;
+let tapForSoundShown = false;
+let htmlUnlockEl = null;
+let keepAliveOsc = null;
+let keepAliveGain = null;
 const holdActionSyncers = [];
+const WAV_SAMPLE_RATE = 22050;
 
 export function vibrate(p) {
   if (navigator.vibrate) navigator.vibrate(p);
@@ -31,11 +37,126 @@ function getAudioContextCtor() {
   return window.AudioContext || window.webkitAudioContext || null;
 }
 
+/** Prefer playback session so iOS is less likely to keep alerts muted. */
+function setAudioSessionPlayback() {
+  try {
+    if (navigator.audioSession) {
+      navigator.audioSession.type = 'playback';
+    }
+  } catch {
+    /* older WebKit */
+  }
+}
+
+function writeAscii(view, offset, text) {
+  for (let i = 0; i < text.length; i += 1) {
+    view.setUint8(offset + i, text.charCodeAt(i));
+  }
+}
+
+/** Short mono WAV data-URI for HTMLAudio fallback (more reliable on iOS than oscillators alone). */
+function buildBeepWavDataUri(freq, durationMs, volume) {
+  const hz = Math.max(80, Number(freq) || REST_COMPLETE_BEEP_HZ);
+  const ms = Math.max(20, Number(durationMs) || REST_COMPLETE_BEEP_MS);
+  const peak = Math.max(0.05, Math.min(0.4, Number(volume) || 0.2));
+  const sampleCount = Math.max(1, Math.floor((WAV_SAMPLE_RATE * ms) / 1000));
+  const dataBytes = sampleCount * 2;
+  const buffer = new ArrayBuffer(44 + dataBytes);
+  const view = new DataView(buffer);
+
+  writeAscii(view, 0, 'RIFF');
+  view.setUint32(4, 36 + dataBytes, true);
+  writeAscii(view, 8, 'WAVE');
+  writeAscii(view, 12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, WAV_SAMPLE_RATE, true);
+  view.setUint32(28, WAV_SAMPLE_RATE * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeAscii(view, 36, 'data');
+  view.setUint32(40, dataBytes, true);
+
+  const attack = Math.floor(WAV_SAMPLE_RATE * 0.01);
+  const release = Math.floor(WAV_SAMPLE_RATE * 0.02);
+  for (let i = 0; i < sampleCount; i += 1) {
+    const t = i / WAV_SAMPLE_RATE;
+    const aEnv = attack > 0 ? Math.min(1, i / attack) : 1;
+    const rEnv = release > 0 ? Math.min(1, (sampleCount - i) / release) : 1;
+    const sample = Math.sin(2 * Math.PI * hz * t) * peak * aEnv * rEnv;
+    view.setInt16(44 + i * 2, Math.max(-1, Math.min(1, sample)) * 0x7fff, true);
+  }
+
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i]);
+  return `data:audio/wav;base64,${btoa(binary)}`;
+}
+
+async function playHtmlBeep(freq, durationMs, volume) {
+  try {
+    if (typeof Audio === 'undefined') return false;
+    const audio = new Audio(buildBeepWavDataUri(freq, durationMs, volume));
+    audio.setAttribute('playsinline', 'true');
+    audio.playsInline = true;
+    await audio.play();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function unlockHtmlAudio() {
+  try {
+    if (typeof Audio === 'undefined') return false;
+    if (!htmlUnlockEl) {
+      htmlUnlockEl = new Audio(buildBeepWavDataUri(440, 24, 0.001));
+      htmlUnlockEl.setAttribute('playsinline', 'true');
+      htmlUnlockEl.playsInline = true;
+    }
+    htmlUnlockEl.currentTime = 0;
+    await htmlUnlockEl.play();
+    htmlUnlockEl.pause();
+    htmlUnlockEl.currentTime = 0;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function stopKeepAlive() {
+  try {
+    keepAliveOsc?.stop();
+  } catch {
+    /* already stopped */
+  }
+  keepAliveOsc = null;
+  keepAliveGain = null;
+}
+
+/** Near-silent tone keeps the iOS audio route warm while the session is active. */
+function startKeepAlive(ctx) {
+  stopKeepAlive();
+  if (!ctx || ctx.state !== 'running') return;
+  try {
+    keepAliveOsc = ctx.createOscillator();
+    keepAliveGain = ctx.createGain();
+    keepAliveGain.gain.value = 0.0001;
+    keepAliveOsc.frequency.value = 40;
+    keepAliveOsc.connect(keepAliveGain);
+    keepAliveGain.connect(ctx.destination);
+    keepAliveOsc.start();
+  } catch {
+    stopKeepAlive();
+  }
+}
+
 /** One-sample silent buffer — keeps iOS Web Audio routed after resume. */
 function primeSilentBuffer(ctx) {
   if (!ctx || ctx.state !== 'running') return;
   try {
-    const sampleRate = ctx.sampleRate || 22050;
+    const sampleRate = ctx.sampleRate || WAV_SAMPLE_RATE;
     const buffer = ctx.createBuffer(1, 1, sampleRate);
     const source = ctx.createBufferSource();
     source.buffer = buffer;
@@ -46,19 +167,60 @@ function primeSilentBuffer(ctx) {
   }
 }
 
+function bindContextStateWatch(ctx) {
+  if (!ctx) return;
+  ctx.onstatechange = () => {
+    logAudioState('statechange');
+    if (ctx.state !== 'running') {
+      stopKeepAlive();
+      armGestureReprime();
+    }
+  };
+}
+
+async function createFreshAudioContext(reason) {
+  const AudioContext = getAudioContextCtor();
+  if (!AudioContext) return null;
+  if (audioCtx) {
+    try {
+      audioCtx.onstatechange = null;
+      if (audioCtx.state !== 'closed') await audioCtx.close();
+    } catch {
+      /* ignore close errors */
+    }
+  }
+  stopKeepAlive();
+  audioCtx = new AudioContext();
+  bindContextStateWatch(audioCtx);
+  logAudioState(`${reason}:created`);
+  return audioCtx;
+}
+
 /**
  * Ensure AudioContext exists and is running.
- * Handles iOS suspended/interrupted after lock or background; awaits resume.
+ * On iOS, pass `{ fromGesture: true }` from a real tap — interrupted contexts
+ * often need a fresh AudioContext created inside that gesture.
  * @returns {Promise<boolean>}
  */
-export async function unlockAudio(reason = 'unlock') {
+export async function unlockAudio(reason = 'unlock', options = {}) {
+  const fromGesture = Boolean(options && options.fromGesture);
+  setAudioSessionPlayback();
+
   try {
     const AudioContext = getAudioContextCtor();
-    if (!AudioContext) return false;
+    if (!AudioContext) {
+      if (fromGesture) await unlockHtmlAudio();
+      return false;
+    }
 
-    if (!audioCtx || audioCtx.state === 'closed') {
-      audioCtx = new AudioContext();
-      logAudioState(`${reason}:created`);
+    const prior = getAudioContextState();
+    const needsFreshGestureCtx = fromGesture
+      && audioCtx
+      && prior !== 'running'
+      && prior !== 'none';
+
+    if (!audioCtx || audioCtx.state === 'closed' || needsFreshGestureCtx) {
+      await createFreshAudioContext(reason);
     }
 
     if (audioCtx.state !== 'running') {
@@ -67,53 +229,80 @@ export async function unlockAudio(reason = 'unlock') {
         await audioCtx.resume();
       } catch (err) {
         console.warn('Audio resume failed', err);
-        audioCtx = new AudioContext();
-        logAudioState(`${reason}:recreated`);
+        await createFreshAudioContext(`${reason}:recreate`);
+        await audioCtx.resume();
+      }
+
+      // Gesture path: if resume left us interrupted/suspended, force a brand-new context.
+      if (audioCtx.state !== 'running' && fromGesture) {
+        await createFreshAudioContext(`${reason}:gesture-fresh`);
         await audioCtx.resume();
       }
       logAudioState(`${reason}:after-resume`);
     }
 
+    if (fromGesture) {
+      await unlockHtmlAudio();
+    }
+
     if (audioCtx.state === 'running') {
       primeSilentBuffer(audioCtx);
+      startKeepAlive(audioCtx);
+      tapForSoundShown = false;
+      disarmGestureReprime();
       return true;
     }
 
     logAudioState(`${reason}:not-running`);
+    armGestureReprime();
     return false;
   } catch (err) {
     console.warn('Audio unlock failed', err);
+    armGestureReprime();
     return false;
   }
 }
 
-function disarmGestureReprime(reprime) {
+function disarmGestureReprime() {
   if (!gestureReprimeBound) return;
   gestureReprimeBound = false;
-  document.removeEventListener('pointerdown', reprime, true);
-  document.removeEventListener('touchstart', reprime, true);
-  document.removeEventListener('keydown', reprime, true);
+  if (!gestureReprimeHandler || typeof document === 'undefined') {
+    gestureReprimeHandler = null;
+    return;
+  }
+  document.removeEventListener('pointerdown', gestureReprimeHandler, true);
+  document.removeEventListener('touchstart', gestureReprimeHandler, true);
+  document.removeEventListener('keydown', gestureReprimeHandler, true);
+  gestureReprimeHandler = null;
+}
+
+/** Stay armed until a gesture successfully reaches running — iOS needs a real tap after lock. */
+function armGestureReprime() {
+  if (typeof document === 'undefined') return;
+  if (gestureReprimeBound) return;
+  gestureReprimeBound = true;
+
+  gestureReprimeHandler = () => {
+    logAudioState('gesture-reprime:fire');
+    void unlockAudio('gesture-reprime', { fromGesture: true });
+  };
+
+  document.addEventListener('pointerdown', gestureReprimeHandler, true);
+  document.addEventListener('keydown', gestureReprimeHandler, true);
+  // Older iOS without Pointer Events still needs touchstart; avoid double-firing when both exist.
+  if (typeof window.PointerEvent !== 'function') {
+    document.addEventListener('touchstart', gestureReprimeHandler, true);
+  }
+  logAudioState('gesture-reprime:armed');
 }
 
 /**
- * After background/lock, attempt resume and arm a one-shot user-gesture re-prime.
- * iOS often needs an explicit gesture before alerts are audible again.
+ * After background/lock, attempt resume and keep gesture re-prime armed until audio runs.
  */
 export function recoverAudioAfterBackground() {
   logAudioState('foreground');
   void unlockAudio('foreground');
-
-  if (gestureReprimeBound || typeof document === 'undefined') return;
-  gestureReprimeBound = true;
-
-  const reprime = () => {
-    disarmGestureReprime(reprime);
-    void unlockAudio('gesture-reprime');
-  };
-
-  document.addEventListener('pointerdown', reprime, true);
-  document.addEventListener('touchstart', reprime, true);
-  document.addEventListener('keydown', reprime, true);
+  armGestureReprime();
 }
 
 export function beep(freq = REST_COMPLETE_BEEP_HZ, duration = REST_COMPLETE_BEEP_MS, volume = 0.2) {
@@ -121,32 +310,47 @@ export function beep(freq = REST_COMPLETE_BEEP_HZ, duration = REST_COMPLETE_BEEP
 }
 
 async function playBeep(freq, duration, volume) {
+  const peak = Math.max(0.05, Math.min(0.4, Number(volume) || 0.2));
+  let webOk = false;
+
   try {
     const ready = await unlockAudio('beep');
     const ctx = audioCtx;
-    if (!ready || !ctx || ctx.state !== 'running') {
-      logAudioState('beep:skipped');
-      return;
+    if (ready && ctx && ctx.state === 'running') {
+      const oscillator = ctx.createOscillator();
+      const gain = ctx.createGain();
+      const now = ctx.currentTime;
+      const durSec = Math.max(0.05, (Number(duration) || REST_COMPLETE_BEEP_MS) / 1000);
+
+      oscillator.type = 'sine';
+      oscillator.frequency.value = freq;
+
+      // Linear ramps — Safari can choke on near-zero exponential ramps.
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.linearRampToValueAtTime(peak, now + 0.02);
+      gain.gain.linearRampToValueAtTime(0.0001, now + durSec);
+
+      oscillator.connect(gain);
+      gain.connect(ctx.destination);
+      oscillator.start(now);
+      oscillator.stop(now + durSec + 0.02);
+      webOk = true;
+    } else {
+      logAudioState('beep:web-skipped');
     }
-
-    const oscillator = ctx.createOscillator();
-    const gain = ctx.createGain();
-    const peak = Math.max(0.05, Math.min(0.4, Number(volume) || 0.2));
-
-    oscillator.type = 'sine';
-    oscillator.frequency.value = freq;
-
-    gain.gain.setValueAtTime(0.001, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(peak, ctx.currentTime + 0.02);
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration / 1000);
-
-    oscillator.connect(gain);
-    gain.connect(ctx.destination);
-
-    oscillator.start();
-    oscillator.stop(ctx.currentTime + duration / 1000);
   } catch (err) {
     console.warn('Beep failed', err);
+  }
+
+  const htmlOk = await playHtmlBeep(freq, duration, peak);
+  if (htmlOk) logAudioState('beep:html');
+
+  if (!webOk && !htmlOk) {
+    armGestureReprime();
+    if (!tapForSoundShown) {
+      tapForSoundShown = true;
+      showToast('TAP FOR SOUND');
+    }
   }
 }
 
@@ -164,6 +368,7 @@ function pulseRestLogAlert() {
 export function startRestLogAlert() {
   if (restLogAlertTimer) return;
   void unlockAudio('rest-log-alert');
+  armGestureReprime();
   pulseRestLogAlert();
   restLogAlertTimer = setInterval(pulseRestLogAlert, REST_LOG_ALERT_INTERVAL_MS);
 }
@@ -173,6 +378,13 @@ export function stopRestLogAlert() {
   clearInterval(restLogAlertTimer);
   restLogAlertTimer = null;
   if (navigator.vibrate) navigator.vibrate(0);
+}
+
+/** Test/helper: drop gesture locks and keep-alive without closing the page. */
+export function releaseAudioLocks() {
+  disarmGestureReprime();
+  stopKeepAlive();
+  tapForSoundShown = false;
 }
 
 function setHoldActionLabel(el, text) {
