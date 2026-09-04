@@ -52,6 +52,7 @@ import {
 } from './completion-hints.js';
 import {
   enqueueSessionForSync,
+  enqueueWorkoutCompletionClearForSync,
   enqueueWorkoutProofForSync,
   flushSyncQueue,
   getAthleteProfile,
@@ -1333,6 +1334,11 @@ export async function clearResultWorkoutCompletion() {
   if (!removed.logicalOk) {
     showToast('NO COMPLETION TO CLEAR');
     return;
+  }
+
+  const syncContext = context;
+  if (enqueueWorkoutCompletionClearForSync(syncContext, activeResultRecord?.id || '')) {
+    flushSyncQueue().catch((error) => console.warn('Workout clear sync failed', error));
   }
 
   activeResultRecord = { ...activeResultRecord };

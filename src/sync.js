@@ -326,7 +326,8 @@ export function enqueuePayloadForSync(payload) {
   }
 
   const queue = getSyncQueue(userId);
-  const id = payload.sessionId || payload.linkedRecordId || payload.eventId || makeEventId();
+  const canonicalId = String(payload.sessionId || payload.linkedRecordId || '').trim();
+  const id = canonicalId || payload.eventId || makeEventId();
   const item = {
     id,
     userId,
@@ -334,7 +335,11 @@ export function enqueuePayloadForSync(payload) {
     createdAt: payload.submittedAt || new Date().toISOString(),
     attempts: 0,
     lastError: '',
-    payload: { ...payload, eventId: payload.eventId || id, userId },
+    payload: {
+      ...payload,
+      eventId: canonicalId || payload.eventId || id,
+      userId,
+    },
   };
 
   queue.unshift(item);
@@ -512,6 +517,29 @@ export function buildDailyWorkoutPayload(workoutLog, workoutContext = {}, linked
 
 export function enqueueDailyWorkoutForSync(workoutLog, workoutContext, linkedRecordId = '') {
   return enqueuePayloadForSync(buildDailyWorkoutPayload(workoutLog, workoutContext, linkedRecordId));
+}
+
+export function buildWorkoutCompletionClearPayload(workoutContext = {}, linkedRecordId = '') {
+  const proofMeta = buildProofMetadata(workoutContext, linkedRecordId);
+  const base = buildBasePayload('workout_completion_clear');
+  const originalId = String(linkedRecordId || proofMeta.linkedRecordId || '');
+
+  return {
+    ...base,
+    eventId: originalId || base.eventId,
+    sessionId: originalId || base.sessionId || '',
+    linkedRecordId: proofMeta.linkedRecordId,
+    proofKey: proofMeta.proofKey,
+    weekIndex: proofMeta.weekIndex,
+    workoutIndex: proofMeta.workoutIndex,
+    weekTab: workoutContext.weekTab || '',
+    dayOfWeek: workoutContext.dayOfWeek || '',
+    workoutContext: Object.keys(workoutContext).length ? workoutContext : null,
+  };
+}
+
+export function enqueueWorkoutCompletionClearForSync(workoutContext = {}, linkedRecordId = '') {
+  return enqueuePayloadForSync(buildWorkoutCompletionClearPayload(workoutContext, linkedRecordId));
 }
 
 export function buildWorkoutProofPayload(attachment) {
