@@ -215,9 +215,367 @@ function formatPi(value) {
   return Number.isFinite(num) ? num.toFixed(1) : '--';
 }
 
+export function statusToTone(status) {
+  if (status === STATUS_IMPROVING || status === STATUS_ON_TARGET) return 'green';
+  if (status === STATUS_DECLINING || status === STATUS_NEEDS_ATTENTION) return 'red';
+  if (status === STATUS_BASELINE || status === STATUS_WATCH) return 'amber';
+  return 'neutral';
+}
+
+/**
+ * Coach-facing copy for partial source outages. Never silently treat an
+ * outage as athlete "No Data" without this banner on analysis pages.
+ */
+export function formatCoachSourceWarnings(sourceErrors = {}) {
+  const entries = sourceErrors && typeof sourceErrors === 'object'
+    ? Object.entries(sourceErrors)
+    : [];
+  return entries.map(([key, message]) => {
+    const lower = `${key} ${message || ''}`.toLowerCase();
+    if (lower.includes('sprint')) {
+      return 'Sprint data is temporarily unavailable. Recovery metrics may be incomplete.';
+    }
+    if (lower.includes('mile')) {
+      return 'Mile test data is temporarily unavailable. Benchmark / mile metrics may be incomplete.';
+    }
+    if (lower.includes('hr')) {
+      return 'HR data is temporarily unavailable. Zone adherence metrics may be incomplete.';
+    }
+    if (lower.includes('completion')) {
+      return 'Completion data is temporarily unavailable. Adherence metrics may be incomplete.';
+    }
+    if (lower.includes('note')) {
+      return 'Coach notes are temporarily unavailable.';
+    }
+    return String(message || `${key} unavailable`);
+  }).filter(Boolean);
+}
+
+function formatClockFromSeconds(totalSeconds) {
+  const total = Math.round(Number(totalSeconds) || 0);
+  if (!(total > 0)) return '--';
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
+
+function formatSignedNumber(value, digits = 0, suffix = '') {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '--';
+  const sign = n > 0 ? '+' : '';
+  return `${sign}${n.toFixed(digits)}${suffix}`;
+}
+
+function isMileTestSession(session) {
+  const text = String(session?.type || '').toLowerCase();
+  return /\bmile\b/.test(text) && /\b(test|re-?test|time trial)\b/.test(text);
+}
+
+function mileSecondsFromSession(session) {
+  const explicit = Number(session?.timeSec ?? session?.time_sec ?? session?.seconds);
+  if (Number.isFinite(explicit) && explicit > 0) return explicit;
+  const minutes = Number(session?.minutes);
+  if (Number.isFinite(minutes) && minutes > 0 && minutes < 20) return minutes * 60;
+  return null;
+}
+
+function collectMileTestRows(athlete) {
+  const fromConfig = (athlete?.mileTests || [])
+    .map((row) => ({
+      weekIndex: Number(row.weekIndex),
+      seconds: Number(row.timeSec ?? row.seconds),
+      label: row.label || null,
+    }))
+    .filter((row) => Number.isFinite(row.weekIndex) && Number.isFinite(row.seconds) && row.seconds > 0);
+  if (fromConfig.length) return fromConfig.sort((a, b) => a.weekIndex - b.weekIndex);
+
+  return (athlete?.sessions || [])
+    .filter((session) => session.status === 'logged' && isMileTestSession(session))
+    .map((session) => ({
+      weekIndex: Number(session.weekIndex),
+      seconds: mileSecondsFromSession(session),
+      label: session.type || 'Mile Test',
+    }))
+    .filter((row) => Number.isFinite(row.weekIndex) && Number.isFinite(row.seconds) && row.seconds > 0)
+    .sort((a, b) => a.weekIndex - b.weekIndex);
+}
+
+function buildWeeklyHrTrend(athlete, helpers = {}) {
+  const sessions = Array.isArray(athlete?.sessions) ? athlete.sessions : [];
+  const byWeek = new Map();
+  sessions.forEach((session) => {
+    if (session.status !== 'logged') return;
+    if (/sprint|mile/i.test(String(session.type || ''))) return;
+    const weekIndex = Number(session.weekIndex);
+    if (!Number.isFinite(weekIndex)) return;
+    const workout = helpers.workoutLookup?.(session) || null;
+    const zoneTarget = helpers.getSessionZoneTarget?.(session, workout, {
+      maxHr: athlete.maxHr,
+      restingHr: athlete.restingHr,
+    });
+    if (!zoneTarget) return;
+    if (!byWeek.has(weekIndex)) byWeek.set(weekIndex, { scored: 0, onTarget: 0 });
+    const bucket = byWeek.get(weekIndex);
+    bucket.scored += 1;
+    if (helpers.isSessionAvgOnTarget?.(session.avgBpm, zoneTarget)) bucket.onTarget += 1;
+  });
+
+  return [...byWeek.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([weekIndex, stats]) => {
+      const pct = stats.scored > 0 ? Math.round((100 * stats.onTarget) / stats.scored) : null;
+      return {
+        weekIndex,
+        scored: stats.scored,
+        onTarget: stats.onTarget,
+        pct,
+        value: pct,
+      };
+    });
+}
+
+function buildZoneHeatmap(athlete, helpers = {}) {
+  return (athlete?.sessions || [])
+    .filter((session) => session.status === 'logged')
+    .filter((session) => !/sprint|mile/i.test(String(session.type || '')))
+    .map((session) => {
+      const workout = helpers.workoutLookup?.(session) || null;
+      const zoneTarget = helpers.getSessionZoneTarget?.(session, workout, {
+        maxHr: athlete.maxHr,
+        restingHr: athlete.restingHr,
+      });
+      if (!zoneTarget) return null;
+      const onTarget = Boolean(helpers.isSessionAvgOnTarget?.(session.avgBpm, zoneTarget));
+      return {
+        weekIndex: Number(session.weekIndex),
+        workoutIndex: Number(session.workoutIndex),
+        day: session.day || '',
+        type: session.type || '',
+        avgBpm: Number(session.avgBpm) || null,
+        onTarget,
+        status: onTarget ? STATUS_ON_TARGET : STATUS_NEEDS_ATTENTION,
+        label: `W${Number(session.weekIndex) + 1}${session.day ? ` ${session.day}` : ''}`,
+      };
+    })
+    .filter(Boolean);
+}
+
+function buildHrPaceEfficiency(athlete, helpers = {}) {
+  const normalize = helpers.normalizeModality || ((value) => value);
+  const runningId = helpers.runningModalityId;
+  return (athlete?.sessions || [])
+    .filter((session) => session.status === 'logged')
+    .filter((session) => !runningId || normalize(session.modality) === runningId)
+    .map((session) => {
+      const minutes = Number(session.minutes);
+      const distance = Number(session.distance);
+      const avgBpm = Number(session.avgBpm);
+      if (!(minutes > 0) || !(distance > 0) || !(avgBpm > 0)) return null;
+      const paceSec = (minutes * 60) / distance;
+      return {
+        weekIndex: Number(session.weekIndex),
+        workoutIndex: Number(session.workoutIndex),
+        day: session.day || '',
+        type: session.type || '',
+        avgBpm,
+        paceSec,
+        paceLabel: formatClockFromSeconds(paceSec) === '--' ? '--' : `${formatClockFromSeconds(paceSec)}/mi`,
+        efficiency: Number((paceSec / avgBpm).toFixed(3)),
+        label: `W${Number(session.weekIndex) + 1}${session.day ? ` ${session.day}` : ''}`,
+      };
+    })
+    .filter(Boolean);
+}
+
+/**
+ * Single canonical analytics object for one athlete.
+ * Detailed Summary + aggregate pages must consume this — no second interpretation.
+ */
+export function buildCoachAthleteAnalytics(athlete, helpers = {}) {
+  const performanceIndex = Number(athlete?.performance?.index ?? athlete?.scan?.performance?.index);
+  const performanceClassified = classifyPerformanceIndex(performanceIndex);
+  const performanceTrend = (athlete?.scan?.performance?.points || athlete?.performance?.points || [])
+    .map((row) => ({
+      weekIndex: row.weekIndex,
+      value: Number(row.pct ?? row.index),
+    }))
+    .filter((row) => Number.isFinite(row.value));
+
+  const recoveryPoints = (athlete?.scan?.recovery?.points || [])
+    .map((row) => ({
+      weekIndex: row.weekIndex,
+      value: Number(row.first5Avg ?? row.value),
+    }))
+    .filter((row) => Number.isFinite(row.value));
+  const recoveryLatest = Number.isFinite(Number(athlete?.scan?.recovery?.latest))
+    ? Number(athlete.scan.recovery.latest)
+    : (recoveryPoints.length ? recoveryPoints[recoveryPoints.length - 1].value : null);
+  const recoveryBaseline = Number.isFinite(Number(athlete?.scan?.recovery?.first))
+    ? Number(athlete.scan.recovery.first)
+    : (recoveryPoints.length ? recoveryPoints[0].value : null);
+  const recoveryCampAverage = Number.isFinite(Number(athlete?.scan?.recovery?.avg))
+    ? Number(athlete.scan.recovery.avg)
+    : (recoveryPoints.length
+      ? recoveryPoints.reduce((sum, row) => sum + row.value, 0) / recoveryPoints.length
+      : null);
+  const recoveryClassified = classifyRecovery(
+    recoveryLatest,
+    recoveryBaseline,
+    recoveryPoints.length || (Number.isFinite(recoveryLatest) ? 1 : 0)
+  );
+
+  const paceLatestPct = Number(athlete?.scan?.pace?.latestPct);
+  const pacePoints = (athlete?.scan?.pace?.points || [])
+    .map((row) => ({
+      weekIndex: row.weekIndex,
+      value: Number(row.pct ?? row.value),
+    }))
+    .filter((row) => Number.isFinite(row.value));
+  const paceClassified = classifyPace(paceLatestPct, pacePoints.length >= 2 && Number.isFinite(paceLatestPct));
+
+  const zoneSignal = athlete?.scan?.zone || {};
+  let hrOnTarget = Number(zoneSignal.onTarget);
+  let hrScored = Number(zoneSignal.scored);
+  if ((!Number.isFinite(hrScored) || hrScored <= 0) && typeof helpers.scoreZoneAdherence === 'function') {
+    const scored = helpers.scoreZoneAdherence(
+      athlete?.sessions || [],
+      (session) => helpers.workoutLookup?.(session) || null,
+      { maxHr: athlete?.maxHr, restingHr: athlete?.restingHr }
+    );
+    hrOnTarget = Number(scored?.onTarget);
+    hrScored = Number(scored?.scored);
+  }
+  const hrClassified = classifyHrAdherence(hrOnTarget, hrScored);
+  const hrTrend = buildWeeklyHrTrend(athlete, helpers);
+
+  const mileRows = collectMileTestRows(athlete);
+  const mileBaseline = mileRows.length ? mileRows[0].seconds : null;
+  const mileLatest = mileRows.length ? mileRows[mileRows.length - 1].seconds : null;
+  const mileDelta = Number.isFinite(mileLatest) && Number.isFinite(mileBaseline)
+    ? Number((mileLatest - mileBaseline).toFixed(1))
+    : null;
+  const mileStatus = Number.isFinite(mileDelta)
+    ? (mileDelta < -0.4 ? STATUS_IMPROVING : mileDelta > 0.4 ? STATUS_DECLINING : STATUS_BASELINE)
+    : (Number.isFinite(mileLatest) ? STATUS_BASELINE : STATUS_NO_DATA);
+
+  const maxHr = Number(athlete?.maxHr);
+  const zoneHeatmap = buildZoneHeatmap(athlete, helpers);
+  const hrPaceEfficiency = buildHrPaceEfficiency(athlete, helpers);
+
+  return {
+    athleteId: athlete?.id || null,
+    athleteName: athlete?.name || 'Athlete',
+    performance: {
+      value: performanceClassified.hasData ? performanceIndex : null,
+      displayValue: performanceClassified.hasData ? formatPi(performanceIndex) : '--',
+      delta: performanceClassified.delta,
+      detail: performanceClassified.hasData
+        ? `W1 100 → ${formatPi(performanceIndex)}`
+        : (athlete?.scan?.performance?.detail || 'No Performance Index yet'),
+      status: performanceClassified.status,
+      badge: statusBadgeLabel(performanceClassified.status),
+      tone: statusToTone(performanceClassified.status),
+      hasData: performanceClassified.hasData,
+      trendPoints: performanceTrend,
+    },
+    recovery: {
+      latest: recoveryLatest,
+      baseline: recoveryBaseline,
+      campAverage: recoveryCampAverage,
+      value: recoveryClassified.hasData ? recoveryLatest : null,
+      displayValue: recoveryClassified.hasData && Number.isFinite(recoveryLatest)
+        ? String(Math.round(recoveryLatest))
+        : '--',
+      delta: recoveryClassified.delta,
+      detail: recoveryClassified.hasData
+        ? `Latest First-5 Drop: ${Math.round(recoveryLatest)} BPM`
+        : (athlete?.scan?.recovery?.detail || 'No sprint yet'),
+      campAverageLabel: Number.isFinite(recoveryCampAverage)
+        ? `Camp Avg: ${Math.round(recoveryCampAverage)} BPM`
+        : null,
+      status: recoveryClassified.status,
+      badge: statusBadgeLabel(recoveryClassified.status),
+      tone: statusToTone(recoveryClassified.status),
+      hasData: recoveryClassified.hasData,
+      trendPoints: recoveryPoints,
+    },
+    pace: {
+      value: paceClassified.hasData ? paceLatestPct : null,
+      displayValue: paceClassified.hasData ? formatSignedPct(paceLatestPct, 1) : '--',
+      delta: paceClassified.delta,
+      detail: paceClassified.hasData
+        ? (athlete?.scan?.pace?.detail || 'Running pace vs first week')
+        : (athlete?.scan?.pace?.detail || 'Need two running weeks'),
+      status: paceClassified.status,
+      badge: statusBadgeLabel(paceClassified.status),
+      tone: statusToTone(paceClassified.status),
+      hasData: paceClassified.hasData,
+      trendPoints: pacePoints,
+    },
+    hrAdherence: {
+      pct: hrClassified.pct,
+      scored: hrClassified.scored ?? 0,
+      onTarget: hrClassified.onTarget ?? 0,
+      value: hrClassified.hasData ? hrClassified.pct : null,
+      displayValue: hrClassified.hasData ? `${hrClassified.pct}%` : '--',
+      detail: hrClassified.hasData
+        ? `${hrClassified.onTarget}/${hrClassified.scored} within target HR band`
+        : (athlete?.scan?.zone?.detail || 'No HR vs target yet'),
+      status: hrClassified.status,
+      badge: statusBadgeLabel(hrClassified.status),
+      tone: statusToTone(hrClassified.status),
+      hasData: hrClassified.hasData,
+      trendPoints: hrTrend,
+    },
+    mileTest: {
+      baseline: mileBaseline,
+      latest: mileLatest,
+      baselineDisplay: formatClockFromSeconds(mileBaseline),
+      latestDisplay: formatClockFromSeconds(mileLatest),
+      delta: mileDelta,
+      deltaDisplay: formatSignedNumber(mileDelta, 0, 's'),
+      status: mileStatus,
+      badge: statusBadgeLabel(mileStatus),
+      tone: statusToTone(mileStatus),
+      hasData: Number.isFinite(mileLatest),
+      history: mileRows,
+      maxHr: Number.isFinite(maxHr) ? maxHr : null,
+      maxHrDisplay: Number.isFinite(maxHr) ? `${Math.round(maxHr)} BPM` : '--',
+    },
+    zoneHeatmap,
+    hrPaceEfficiency,
+  };
+}
+
+function cardFromAnalyticsMetric(base, metric, {
+  valueLabel,
+  value,
+  deltaLabel,
+  detail,
+  sortValue,
+  trendPoints,
+  extra = {},
+}) {
+  return {
+    ...base,
+    status: metric?.status || STATUS_NO_DATA,
+    hasData: Boolean(metric?.hasData),
+    sortValue: sortValue ?? null,
+    delta: metric?.delta ?? null,
+    value: value ?? '--',
+    valueLabel,
+    deltaLabel: deltaLabel || '',
+    detail: detail || '',
+    trendPoints: Array.isArray(trendPoints) ? trendPoints : [],
+    badge: metric?.badge || statusBadgeLabel(metric?.status || STATUS_NO_DATA),
+    ...extra,
+  };
+}
+
 /**
  * Build one lens card from an athlete that already has scan/performance
- * from buildAthleteRecord (canonical pipeline).
+ * from buildAthleteRecord (canonical pipeline). Prefers athlete.analytics
+ * when present so aggregate pages cannot diverge from Detailed Summary.
  */
 export function buildLensCard(athlete, lens) {
   const userId = String(athlete?.id || '');
@@ -230,8 +588,21 @@ export function buildLensCard(athlete, lens) {
     lens,
     trendPoints: [],
   };
+  const analytics = athlete?.analytics || null;
 
   if (lens === LENS_BENCHMARK) {
+    if (analytics?.performance) {
+      const metric = analytics.performance;
+      return cardFromAnalyticsMetric(base, metric, {
+        valueLabel: 'PERFORMANCE INDEX',
+        value: metric.displayValue,
+        deltaLabel: metric.hasData ? formatSignedPct(metric.delta) : '',
+        detail: metric.detail,
+        sortValue: metric.hasData ? metric.value : null,
+        trendPoints: metric.trendPoints,
+        extra: { delta: metric.delta },
+      });
+    }
     const index = Number(athlete?.scan?.performance?.index ?? athlete?.performance?.index);
     const classified = classifyPerformanceIndex(index);
     const points = (athlete?.scan?.performance?.points || athlete?.performance?.points || [])
@@ -255,6 +626,24 @@ export function buildLensCard(athlete, lens) {
   }
 
   if (lens === LENS_RECOVERY) {
+    if (analytics?.recovery) {
+      const metric = analytics.recovery;
+      return cardFromAnalyticsMetric(base, metric, {
+        valueLabel: 'SPRINT RECOVERY',
+        value: metric.displayValue,
+        deltaLabel: metric.hasData && metric.status !== STATUS_NO_DATA
+          ? `${Number(metric.delta) >= 0 ? '+' : ''}${Math.round(Number(metric.delta))} BPM vs baseline`
+          : '',
+        detail: metric.detail,
+        sortValue: metric.hasData ? metric.delta : null,
+        trendPoints: metric.trendPoints,
+        extra: {
+          latest: metric.latest,
+          baseline: metric.baseline,
+          delta: metric.delta,
+        },
+      });
+    }
     const signal = athlete?.scan?.recovery || {};
     const points = (signal.points || [])
       .map((row) => ({
@@ -282,6 +671,18 @@ export function buildLensCard(athlete, lens) {
   }
 
   if (lens === LENS_PACE) {
+    if (analytics?.pace) {
+      const metric = analytics.pace;
+      return cardFromAnalyticsMetric(base, metric, {
+        valueLabel: 'OVERALL PACE TREND',
+        value: metric.displayValue,
+        deltaLabel: metric.hasData ? formatSignedPct(metric.delta, 1) : '',
+        detail: metric.detail,
+        sortValue: metric.hasData ? metric.value : null,
+        trendPoints: metric.trendPoints,
+        extra: { delta: metric.delta },
+      });
+    }
     const signal = athlete?.scan?.pace || {};
     const hasComparable = Array.isArray(signal.points) && signal.points.length >= 2
       && Number.isFinite(signal.latestPct);
@@ -307,6 +708,24 @@ export function buildLensCard(athlete, lens) {
   }
 
   if (lens === LENS_HR_ADHERENCE) {
+    if (analytics?.hrAdherence) {
+      const metric = analytics.hrAdherence;
+      return cardFromAnalyticsMetric(base, metric, {
+        valueLabel: 'HR ADHERENCE',
+        value: metric.displayValue,
+        deltaLabel: metric.hasData
+          ? `${metric.onTarget} / ${metric.scored} eligible sessions within target range`
+          : '',
+        detail: metric.detail,
+        sortValue: metric.hasData ? metric.pct : null,
+        trendPoints: metric.trendPoints,
+        extra: {
+          pct: metric.pct,
+          onTarget: metric.onTarget,
+          scored: metric.scored,
+        },
+      });
+    }
     const signal = athlete?.scan?.zone || {};
     const classified = classifyHrAdherence(signal.onTarget, signal.scored);
     return {
