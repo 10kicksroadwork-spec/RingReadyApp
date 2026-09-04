@@ -519,9 +519,17 @@ async function ensureWorkoutProofUploadedInner(surface, linkedRecordId = '') {
   if (!state) throw new Error('Workout proof is not ready.');
   if (state.existingAttachment && !state.processed) return state.existingAttachment;
   if (state.legacy && !state.processed) return null;
-  if (!isSupabaseConfigured || !supabase || !getCurrentUser()) {
+  // Intentional local-athlete mode when Supabase is not configured.
+  if (!isSupabaseConfigured || !supabase) {
+    if (!state.processed) throw new Error('Choose a workout screenshot first.');
+    return null;
+  }
+
+  // Configured cloud mode still requires a signed-in user before proof upload.
+  if (!getCurrentUser()) {
     throw new Error('Sign in before submitting workout proof.');
   }
+
   if (!state.processed) throw new Error('Choose a workout screenshot first.');
 
   const attempt = createProofAttempt(state, linkedRecordId);

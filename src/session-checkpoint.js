@@ -1,5 +1,8 @@
 import { ACTIVE_SESSION_KEY_PREFIX, ACTIVE_SESSION_MAX_AGE_MS, LEGACY_ACTIVE_SESSION_STORAGE_KEY } from './constants.js';
 import { getCurrentUser } from './auth.js';
+import { isSupabaseConfigured } from './supabase-client.js';
+
+export const LOCAL_ATHLETE_CHECKPOINT_USER_ID = 'local-athlete';
 import {
   listStorageKeys,
   probeStorageWrite,
@@ -27,7 +30,9 @@ function activeSessionStorageKey(userId) {
 
 function resolveCheckpointUserId(explicitUserId) {
   const userId = String(explicitUserId || getCurrentUser()?.id || '').trim();
-  return userId || '';
+  if (userId) return userId;
+  if (!isSupabaseConfigured) return LOCAL_ATHLETE_CHECKPOINT_USER_ID;
+  return '';
 }
 
 function discardCheckpoint(userId = resolveCheckpointUserId()) {
