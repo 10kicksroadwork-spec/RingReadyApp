@@ -123,6 +123,9 @@ describe('account switch shared state', () => {
     resetVolatileStorageForTest();
     resetStorageAvailabilityCache();
     mockUser.id = 'user-a';
+    cloudHydrationTestHooks.setShellHooksForTest({
+      resetSprintRuntimeForAccountBoundary,
+    });
     cloudHydrationTestHooks.resetAthleteRuntimeState();
     hrServiceTestHooks.setAcceptTransportHRForTest(true);
     setSelectedCoachAthlete.mockClear();
