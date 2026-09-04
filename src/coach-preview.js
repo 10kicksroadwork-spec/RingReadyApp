@@ -1338,20 +1338,24 @@ function matchesQuery(athlete) {
 export function syncCoachPreviewChrome() {
   const enabled = canAccessCoachScreens();
   const liveCoach = isCoachUser();
+  const activeId = document.querySelector('.screen.active')?.id || '';
+  // Live coaches always use the Analysis drawer. Local preview only swaps
+  // Training Weeks → Analysis while a coach screen is active, so athlete IA
+  // on localhost stays unchanged.
+  const coachAnalysisNav = liveCoach || (isLocalCoachPreviewHost() && isCoachScreen(activeId));
   document.querySelectorAll('[data-coach-preview]').forEach((el) => {
     el.hidden = !enabled;
   });
   document.querySelectorAll('[data-coach-hide]').forEach((el) => {
     el.hidden = liveCoach;
   });
-  // Coach drawer: hide Training Weeks; show Analysis. Athlete drawer unchanged.
   document.querySelectorAll('[data-coach-training-weeks]').forEach((el) => {
-    el.hidden = enabled;
+    el.hidden = coachAnalysisNav;
   });
   document.querySelectorAll('[data-coach-analysis]').forEach((el) => {
-    el.hidden = !enabled;
+    el.hidden = !coachAnalysisNav;
   });
-  document.body.classList.toggle('is-coach-preview', enabled && isCoachScreen(document.querySelector('.screen.active')?.id));
+  document.body.classList.toggle('is-coach-preview', enabled && isCoachScreen(activeId));
   document.body.classList.toggle('is-live-coach', liveCoach);
 }
 
