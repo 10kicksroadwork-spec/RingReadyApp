@@ -88,6 +88,7 @@ import {
   closeExportModal,
   vibrate,
   unlockAudio,
+  recoverAudioAfterBackground,
   restCompleteAlert,
   startRestLogAlert,
   stopRestLogAlert,
@@ -342,6 +343,7 @@ function bindSessionPersistence() {
       persistSessionCheckpoint();
       return;
     }
+    recoverAudioAfterBackground();
     reconcileActiveSessionAfterBackground();
   });
 
@@ -351,6 +353,7 @@ function bindSessionPersistence() {
 
   window.addEventListener('pageshow', (event) => {
     if (!event.persisted) return;
+    recoverAudioAfterBackground();
     reconcileActiveSessionAfterBackground();
   });
 }
@@ -565,7 +568,7 @@ export function startFreshSession() {
 }
 export function handleMainBtn() {
   if (state.awaitingModal) return;
-  unlockAudio();
+  void unlockAudio('main-btn', { fromGesture: true });
   if (state.phase === 'idle') beginSprint();
   else if (!AUTO_START_NEXT_SPRINT && state.phase === 'resting') beginSprint();
 }
@@ -573,7 +576,7 @@ export function handleMainBtn() {
 export function beginSprint() {
   clearSessionTimer();
   stopRestLogAlert();
-  unlockAudio();
+  void unlockAudio('begin-sprint', { fromGesture: true });
 
   state.currentRep++;
   state.phase = 'sprinting';
@@ -605,7 +608,7 @@ export function handleSprintDone() {
 
   clearSessionTimer();
   resetChips();
-  unlockAudio();
+  void unlockAudio('sprint-done', { fromGesture: true });
   vibrate([200]);
 
   const sprintHR = getAutoCapturedHR();
