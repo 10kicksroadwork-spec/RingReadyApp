@@ -292,4 +292,40 @@ describe('durable workout finalization postconditions', () => {
     }, { completion_key: '0:4', week_index: 0, workout_index: 4 }))
       .toThrow(/completed_at/i);
   });
+
+  it('rejects proof_pending=null (must be literal false)', () => {
+    expect(() => assertDurableFinalizedWorkoutRow({
+      id: 'x',
+      proof_pending: null,
+      completion_key: '0:4',
+      week_index: 0,
+      workout_index: 4,
+      completed_at: '2026-09-04T13:21:38.505Z',
+    }, { completion_key: '0:4', week_index: 0, workout_index: 4 }))
+      .toThrow(/proof_pending/i);
+  });
+
+  it('rejects week_index=null when expected week is 0 (Number(null) must not pass)', () => {
+    expect(() => assertDurableFinalizedWorkoutRow({
+      id: 'x',
+      proof_pending: false,
+      completion_key: '0:4',
+      week_index: null,
+      workout_index: 4,
+      completed_at: '2026-09-04T13:21:38.505Z',
+    }, { completion_key: '0:4', week_index: 0, workout_index: 4 }))
+      .toThrow(/week_index/i);
+  });
+
+  it('rejects workout_index=null when expected workout is 0 (Number(null) must not pass)', () => {
+    expect(() => assertDurableFinalizedWorkoutRow({
+      id: 'x',
+      proof_pending: false,
+      completion_key: '0:0',
+      week_index: 0,
+      workout_index: null,
+      completed_at: '2026-09-04T13:21:38.505Z',
+    }, { completion_key: '0:0', week_index: 0, workout_index: 0 }))
+      .toThrow(/workout_index/i);
+  });
 });

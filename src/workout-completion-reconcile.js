@@ -52,7 +52,8 @@ export function assertDurableFinalizedWorkoutRow(row, expectedPayload = {}) {
       finalizeReason: 'zero_row',
     });
   }
-  if (row.proof_pending === true) {
+  // Require literal false — null/undefined must not pass as "finalized".
+  if (row.proof_pending !== false) {
     throw createWorkoutFinalizeError('Workout completion remained proof_pending after save.', {
       finalizeReason: 'proof_pending',
       rowId: row.id || null,
@@ -72,22 +73,37 @@ export function assertDurableFinalizedWorkoutRow(row, expectedPayload = {}) {
   if (
     expectedPayload.week_index !== null
     && expectedPayload.week_index !== undefined
-    && Number(row.week_index) !== Number(expectedPayload.week_index)
   ) {
-    throw createWorkoutFinalizeError('Workout week_index mismatch after save.', {
-      finalizeReason: 'week_index',
-      rowId: row.id || null,
-    });
+    // Number(null) === 0 — reject null/undefined/non-integer before comparing.
+    const rowWeek = Number(row.week_index);
+    if (
+      row.week_index === null
+      || row.week_index === undefined
+      || !Number.isInteger(rowWeek)
+      || rowWeek !== Number(expectedPayload.week_index)
+    ) {
+      throw createWorkoutFinalizeError('Workout week_index mismatch after save.', {
+        finalizeReason: 'week_index',
+        rowId: row.id || null,
+      });
+    }
   }
   if (
     expectedPayload.workout_index !== null
     && expectedPayload.workout_index !== undefined
-    && Number(row.workout_index) !== Number(expectedPayload.workout_index)
   ) {
-    throw createWorkoutFinalizeError('Workout workout_index mismatch after save.', {
-      finalizeReason: 'workout_index',
-      rowId: row.id || null,
-    });
+    const rowWorkout = Number(row.workout_index);
+    if (
+      row.workout_index === null
+      || row.workout_index === undefined
+      || !Number.isInteger(rowWorkout)
+      || rowWorkout !== Number(expectedPayload.workout_index)
+    ) {
+      throw createWorkoutFinalizeError('Workout workout_index mismatch after save.', {
+        finalizeReason: 'workout_index',
+        rowId: row.id || null,
+      });
+    }
   }
   if (!row.completed_at) {
     throw createWorkoutFinalizeError('Workout completed_at missing after save.', {
