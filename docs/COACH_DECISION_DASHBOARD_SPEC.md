@@ -1,8 +1,7 @@
 # Coach Decision Dashboard V1
 
-**Status:** Spec only — stop for Daniel review before major implementation.  
+**Status:** Spec approved with corrections — **implementation authorized**.  
 **Branch:** `coach/decision-dashboard-v1`  
-**Production merge:** Blocked until GOLF soak exits (do not merge into production while `release/stability-rc1` / GOLF is soaking).  
 **Athlete systems:** Frozen — do not alter athlete drawer behavior, workout logging, BLE, sprint engine, proof upload, or completion identity for this work.
 
 ---
@@ -24,17 +23,82 @@ Two complementary coaching modes:
 
 1. Replace the coach-side **Training Weeks** drawer section with analytics navigation.
 2. Keep **Camp Roster** as coach home, essentially as-is.
-3. Add **Detailed Summary** with athlete selector and parity to the Google Sheets Coaches Dashboard Individual Detailed Summary.
+3. Add **Detailed Summary** with athlete selector and Sheets **information/field** parity.
 4. Add four team-wide metric pages that share one reusable card/grid architecture.
 5. Preserve `user_id` locker boundaries and roster exclusions (`docs/AUTH_LOCKER_MODEL.md`).
+6. One canonical analytics model — identical metric values/status everywhere in the coach UI.
 
 ## Non-goals (V1)
 
 - Changing the athlete drawer, athlete home, or Training Weeks for athletes.
 - Inventing a new “summary” that drops Sheets dashboard fields.
 - Mixing watts / machine output into Overall Pace Stats (future: separate **Output Stats** page).
-- Merging this branch to production before GOLF exit.
+- Forced numerical parity with obsolete Sheets formulas when RingReady already has a newer canonical builder.
 - Four copy-pasted analytics implementations.
+
+---
+
+## Release / deploy policy
+
+```text
+A–F
+  COMPLETE
+
+COACH UX V1
+  Implement now
+  Adversarial review + exact-head CI + athlete regression gates
+  Merge to main when clean
+
+AFTER PRODUCTION DEPLOYMENT
+  Record the new production main SHA
+  Reset GOLF Day 0 to that deployment date
+  Restart the 7-day final soak
+  Current GOLF soak may be superseded
+```
+
+Implementation may merge to production after adversarial review, exact-head CI green, and athlete regression gates green. There is **no** September 11 (or other calendar) merge prohibition.
+
+Release gate checklist:
+
+```text
+COACH FUNCTIONAL
+Camp Roster home                  PASS
+coach drawer IA                   PASS
+Detailed Summary athlete select   PASS
+Benchmark sort/filter             PASS
+Recovery sort/filter              PASS
+Pace sort/filter                  PASS
+HR adherence sort/filter          PASS
+card → correct athlete detail     PASS
+
+DATA CONSISTENCY
+same metric everywhere            PASS
+one card per user_id              PASS
+excluded accounts absent          PASS
+No Data handled correctly         PASS
+
+ATHLETE REGRESSION
+athlete drawer unchanged          PASS
+workout completion unchanged      PASS
+Sprint unchanged                  PASS
+proof unchanged                   PASS
+auth locker boundaries            PASS
+
+CI
+unit                              PASS
+lint                              PASS
+build                             PASS
+browser-e2e                       PASS
+```
+
+Then after merge:
+
+```text
+main production-contract PASS
+Vercel PASS
+/api/health = new main SHA
+GOLF Day 0 resets
+```
 
 ---
 
@@ -46,9 +110,10 @@ These are the live surfaces this spec replaces or extends — not inventions:
 |---------|----------|------|
 | Drawer still shows **Training Weeks** for everyone | `index.html` (`drawer-section-label` + `#drawer-week-list`), populated by `renderDrawerWeeks()` in `src/shell.js` | Coach still sees dead-weight week list |
 | Coach home = Camp Roster | `#coach-dashboard` in `index.html`, rendered by `src/coach-preview.js` | Keep as command center |
-| Per-athlete coach detail | `#coach-athlete` | Useful signals exist; **not** full Sheets Individual Detailed Summary parity |
-| Benchmark / zone / recovery / pace / Performance Index signals | `src/coach-preview.js` + `src/modality.js` + `src/hr-analytics.js` | Reuse; expose better in aggregate lenses |
+| Per-athlete coach detail | `#coach-athlete` | Useful signals exist; evolve into Detailed Summary |
+| Benchmark / zone / recovery / pace / Performance Index signals | `src/coach-preview.js` + `src/modality.js` + `src/hr-analytics.js` | Canonical builders — reuse everywhere |
 | Zone adherence thresholds | `buildZoneSignal()` — green ≥80%, amber ≥60%, else red | Preserve for HR Adherence Stats |
+| Schedule adherence today | `completionPct = logged / due` in `buildAthleteRecord()` | Canonical RingReady definition (see below) |
 | Roster exclusions / coach hide-self | `src/coach-access.js` + RLS | Must apply on every aggregate page |
 
 ---
@@ -94,7 +159,7 @@ Keep essentially as-is:
 
 **Do not** stuff every new analytics metric onto the roster. Aggregate pages own that job.
 
-Clicking a roster athlete may continue to open the current coach athlete surface during early implementation; once Detailed Summary ships, roster → Detailed Summary for that athlete is the preferred deep link (same destination as metric-card clicks).
+Roster athlete click → **Detailed Summary** for that athlete (same destination as metric-card clicks).
 
 ---
 
@@ -113,30 +178,57 @@ Athlete
 
 Selecting any **active, non-excluded** roster athlete reloads the page for that `user_id`.
 
-### Source of truth
+### Sheets parity policy (required)
 
-Functional parity with the **Google Sheets Coaches Dashboard — Individual Detailed Summary**. Modernize RingReady presentation, but preserve information — do not invent a thinner substitute.
+> **Detailed Summary requires information/field parity with Sheets, not forced numerical parity with legacy formulas. Where RingReady already has a newer canonical metric builder, RingReady's canonical calculation wins and must be used consistently everywhere. Any intentional semantic difference must retain clear labeling.**
 
-Required information areas (Sheets parity checklist):
+Required information areas (Sheets **field** parity checklist):
 
 | Area | Notes |
 |------|--------|
-| Workouts Completed | Camp completion counts |
+| Workouts Completed | Camp completion counts (`logged`) |
 | Total Running Hours | Running modality time only where modality is known |
 | Total Mileage | Running distance |
-| Benchmark Progress | Vs camp baseline / W1 |
+| Benchmark Progress | Prefer Performance Index / HR-adjusted benchmark builders already in RingReady; label clearly if not raw Sheets equiv-mi % |
 | Mile Test time delta | Baseline → latest |
 | Sprint HR Drop — First 5 | Latest + trend |
-| Schedule Adherence | Due vs logged |
+| Schedule Adherence | **Canonical RingReady:** `logged / due` (see below) |
 | Missed Workouts | Explicit list |
-| Coaching Guidance | Coach notes / verdict copy |
-| Benchmark Trend | Chart / weekly series |
+| Coaching Guidance | **Two separate elements** (see below) — never silently substitute one for the other |
+| Benchmark Trend | Chart / weekly series from canonical builders |
 | Mile Test & Max HR | Profile + test context |
 | Sprint HR Recovery | First-5 recovery series |
 | Zone Adherence Heatmap | Eligible sessions in/out of band |
-| HR vs Pace Efficiency | Existing efficiency framing from dashboard |
+| HR vs Pace Efficiency | Existing efficiency framing from dashboard / RingReady pace+HR signals |
 
-Existing `#coach-athlete` metric cards (Performance Index, Benchmark Run, HR Zone Adherence, Recovery Trend, Overall Pace Trend, missed/skipped panels, camp start, clean slate) are implementation raw material — not a free pass to drop Sheets fields.
+Existing `#coach-athlete` metric cards, missed/skipped panels, camp start, and clean slate are implementation raw material — not a free pass to drop Sheets fields.
+
+### Schedule Adherence (canonical)
+
+Sheets legacy: `completed workouts / assigned workouts` (all assigned slots).
+
+**RingReady canonical (wins):**
+
+```text
+scheduleAdherencePct = logged / due * 100
+```
+
+where:
+
+- `due` = sessions whose calendar day has arrived (not future / not before camp start)
+- `logged` = sessions with status `logged` **or** `skipped` (same as today’s `buildAthleteRecord()`)
+- Label in UI as **Schedule Adherence** with supporting copy like `N / M due sessions` so the due-vs-assigned difference is visible
+
+Do not reintroduce Sheets’ all-assigned denominator merely for numerical parity.
+
+### Coaching Guidance (two elements)
+
+| Element | Source | UI |
+|---------|--------|-----|
+| **Generated verdict / guidance** | Algorithmic RingReady headline (`buildHeadline` / scan-driven) | Status chip + verdict copy — not coach-authored |
+| **Coach-authored notes** | `coach_notes` / local preview notes | Separate notes panel with save |
+
+Never present coach notes as if they were the generated guidance block, or vice versa.
 
 ### Identity
 
@@ -149,13 +241,54 @@ All loads keyed by `user_id`. Display name is metadata only (see `docs/AUTH_LOCK
 **Major requirement:** One reusable architecture — not four separate dashboards.
 
 ```text
-CoachMetricPage
-    │
-    ├── benchmark definition
-    ├── recovery definition
-    ├── pace definition
-    └── adherence definition
+buildCoachAthleteAnalytics(athlete)
+        |
+        +-- performanceIndex
+        +-- recovery
+        +-- pace
+        +-- hrAdherence
+        |
+        +--> Detailed Summary
+        +--> Benchmark Stats
+        +--> Recovery Stats
+        +--> Pace Stats
+        +--> HR Adherence Stats
+        +--> existing coach detail surfaces
 ```
+
+The aggregate pages are **different views of one analytics model**, not five opportunities to calculate differently.
+
+### Canonical metric invariant (acceptance)
+
+> **The same athlete and underlying data must produce the same metric value/status everywhere in the coach UI.**
+
+Example:
+
+```text
+Daniel Benchmark PI
+Detailed Summary      108.4
+Benchmark Stats       108.4
+existing coach detail 108.4
+```
+
+Never:
+
+```text
+Detailed Summary      108.4
+Benchmark Stats       106.9
+coach athlete page    +7.2%   // different interpretation of the same data
+```
+
+Applies to:
+
+- Performance Index
+- Sprint First-5 recovery
+- Overall Pace Trend
+- HR Adherence
+
+Centralize builders for those four metrics. Detailed Summary, aggregate pages, and any remaining coach detail chrome must consume them.
+
+### Metric definition shape
 
 Each metric definition supplies:
 
@@ -170,6 +303,7 @@ Each metric definition supplies:
 | `formatters` | Value / delta / graph / badge copy |
 | `userId` | Athlete locker id (required) |
 | `weekLabel` | Current camp week display |
+| `hasData` | False → No Data UI (never invent trends) |
 
 ### Shared page chrome (all four aggregate pages)
 
@@ -204,10 +338,11 @@ Status badge
 
 - Search filters by athlete display name (client-side over already-authorized roster payload).
 - Card click → **Detailed Summary** for that athlete (`user_id`).
-- Empty / insufficient data → explicit **No Data** (or metric-specific empty copy) — never invent trend points.
+- Empty / insufficient data → explicit **No Data** — never invent trend points or classify as Declining/Needs Attention from missing data.
 - One card per `user_id`; no duplicates.
 - Exclude coach accounts and roster exclusions (`buildCoachUserIdSet`, `buildRosterExclusionSet`, seeds).
 - Soft-fail per data source remains acceptable; do not widen RLS or invent parallel auth.
+- Filters change the **visible** card set only; they must not mutate underlying athlete analytics.
 
 ---
 
@@ -230,17 +365,18 @@ Search athlete...
 
 ### Status rules (PI normalized around 100)
 
-| PI | Status |
-|----|--------|
-| `> 100` | Improving |
-| `< 100` | Declining |
-| `= 100` | Baseline / neutral — include with **Improving** (Not Declining) for the two-button Improving filter |
+| PI | Badge | Filter |
+|----|-------|--------|
+| `> 100` | **IMPROVING** | Improving, All |
+| `= 100` | **BASELINE** | **All only** (not Improving, not Declining) |
+| `< 100` | **DECLINING** | Declining, All |
+| no index | **NO DATA** | All only |
 
-Underlying tone in `buildPerformanceSignal()` already treats `index >= 100` as green and `< 95` as red; the **page filters** follow the PI 100 rule above for Improving / Declining.
+Do **not** visually label PI `= 100` as IMPROVING. Including baseline only under **All** is the V1 filter rule.
 
 ### Sort
 
-- Descending → most improved / highest PI first  
+- Descending → highest PI first  
 - Ascending → lowest PI first  
 
 ### Card content
@@ -249,7 +385,7 @@ Underlying tone in `buildPerformanceSignal()` already treats `index >= 100` as g
 - Performance Index (primary)  
 - Delta from 100 baseline (e.g. `+8.4%` / `-7.6%`)  
 - **PI trend graph as visual centerpiece** (`buildContinuousPerformanceIndex` / `formatPerformanceIndex` in `src/modality.js`)  
-- Status badge: IMPROVING / DECLINING / etc.
+- Status badge per table above  
 
 Reuse continuous PI across modalities — Benchmark Stats is about the **index**, not raw miles. Do not fake cross-modality distance conversions (existing modality contract).
 
@@ -282,9 +418,10 @@ Sort by Recovery Improvement
 |-------|--------|
 | Positive (latest > baseline) | Improving |
 | Negative | Declining |
-| Flat / single sample | Neutral / All only until comparable |
+| Flat / single sample | Neutral / BASELINE — All only until comparable |
+| No sprint drops | No Data |
 
-Existing `buildRecoverySignal()` already compares latest vs first First-5 drop — align card math with that model.
+Existing `buildRecoverySignal()` already compares latest vs first First-5 drop — align card math with that model (same numbers everywhere).
 
 ### Sort
 
@@ -295,7 +432,7 @@ Descending = largest positive improvement first.
 - Latest First-5 drop (BPM)  
 - Delta vs baseline  
 - Weekly First-5 series + sparkline  
-- IMPROVING / DECLINING badge  
+- IMPROVING / DECLINING / BASELINE / NO DATA badge  
 
 ---
 
@@ -324,11 +461,11 @@ Overall Pace Stats = running data.
 
 ### Metric
 
-- Prefer overall / collective pace improvement % vs first comparable week (existing `buildPaceSignal()` averages zone-relative bucket trends).  
+- Prefer overall / collective pace improvement % vs first comparable week (canonical `buildPaceSignal()` after running-only filter).  
 - Display human pace when useful (`min/mi` baseline → latest) **only** for running aggregates.  
 - Faster = positive improvement.
 
-Implementation note: today’s `collectPaceBuckets()` does not yet hard-filter modality; V1 must enforce running-only when wiring this page.
+Implementation note: today’s `collectPaceBuckets()` does not yet hard-filter modality; V1 must enforce running-only when wiring this page **inside the canonical builder** so Detailed Summary and Pace Stats agree.
 
 ### Status
 
@@ -336,6 +473,7 @@ Implementation note: today’s `collectPaceBuckets()` does not yet hard-filter m
 |-------|--------|
 | Faster vs baseline (above flat band) | Improving |
 | Slower vs baseline | Declining |
+| Flat within band | Baseline — All only |
 | Insufficient weeks | No Data |
 
 ---
@@ -361,7 +499,7 @@ Default sort Ascending surfaces the athletes who need attention first.
 adherencePct = onTarget / eligibleSessions * 100
 ```
 
-Eligible = sessions with a resolvable zone target and logged avg BPM (`scoreZoneAdherence` / `buildZoneSignal` in `src/hr-analytics.js` + `src/coach-preview.js`).
+Eligible = sessions with a resolvable zone target and logged avg BPM (`scoreZoneAdherence` / canonical zone builder).
 
 Zero eligible sessions → **No Data** (not 0%).
 
@@ -370,8 +508,9 @@ Zero eligible sessions → **No Data** (not 0%).
 | Pct | Status | Filter bucket |
 |-----|--------|----------------|
 | ≥ 80% | On Target | On Target |
-| 60–79% | Watch | *(shown under All; optional mid chip later)* |
+| 60–79% | Watch | All only |
 | < 60% | Needs Attention | Needs Attention |
+| 0 eligible | No Data | All only |
 
 V1 filters are **On Target / Needs Attention / All**. Watch (amber) athletes appear in All; they are not labeled “Declining.”
 
@@ -380,33 +519,24 @@ V1 filters are **On Target / Needs Attention / All**. Watch (amber) athletes app
 - Adherence %  
 - `onTarget / scored` eligible sessions copy  
 - Weekly adherence series when available  
-- ON TARGET / WATCH / NEEDS ATTENTION badge  
+- ON TARGET / WATCH / NEEDS ATTENTION / NO DATA badge  
 
 ---
 
 ## Implementation phases
 
-Conceptual boundaries (not necessarily four giant PRs):
-
 | Phase | Scope |
 |-------|--------|
-| **COACH 1** | Coach drawer IA + shared `CoachMetricPage` / card / sort / search framework (stub metric defs OK) |
-| **COACH 2** | Detailed Summary — athlete selector + Sheets Individual Detailed Summary parity |
-| **COACH 3** | Benchmark Stats (PI cards, Improving/Declining, sort, graph) |
+| **COACH 1** | Coach drawer IA + shared `CoachMetricPage` / card / sort / search framework |
+| **COACH 2** | Detailed Summary — athlete selector + Sheets field parity + guidance split |
+| **COACH 3** | Benchmark Stats (PI cards, Improving/Declining/Baseline, sort, graph) |
 | **COACH 4** | Recovery Stats + Overall Pace Stats (running-only) + HR Adherence Stats |
-
-Suggested commit discipline after this spec:
-
-1. Navigation + shared framework  
-2. Detailed Summary parity  
-3. Benchmark Stats  
-4. Remaining three metric pages + shared tests  
 
 ---
 
 ## Architecture notes for implementers
 
-- Prefer extracting pure metric builders from `src/coach-preview.js` into shared modules (e.g. coach analytics) so roster detail and aggregate pages call the same functions.
+- Extract / centralize pure metric builders so roster detail, Detailed Summary, and aggregate pages call the **same** functions.
 - UI may live as new screens in `index.html` + render functions, consistent with existing coach screens (`coach-dashboard`, `coach-athlete`).
 - Routing: coach-only screen ids; `isCoachScreen` / `canAccessCoachScreens` gates stay mandatory.
 - Do not touch frozen athlete completion, sprint, proof, or iOS audio paths listed as out of scope in `docs/AUTH_LOCKER_MODEL.md`.
@@ -415,15 +545,13 @@ Suggested commit discipline after this spec:
 
 ## Test plan
 
-Beyond normal CI / lint:
-
 ### Unit — metric definitions
 
 ```text
 Benchmark
-  PI 108 → Improving
+  PI 108 → Improving badge + Improving filter
   PI 92  → Declining
-  PI 100 → Improving filter (Not Declining)
+  PI 100 → BASELINE badge; visible under All only (not Improving)
   descending sorts 108 before 92
 
 Recovery
@@ -440,6 +568,39 @@ HR adherence
   6/10 → 60% → Watch (All)
   5/10 → 50% → Needs Attention
   0 eligible → No Data (not 0%)
+
+Consistency
+  same athlete + same sessions → identical PI / recovery / pace / adherence
+  on Detailed Summary, aggregate cards, and coach detail surfaces
+```
+
+### Browser / E2E acceptance
+
+```text
+Coach drawer
+  → Training Weeks absent
+  → all five Analysis destinations visible
+  → Camp Roster / home reachable
+
+Athlete drawer
+  → unchanged (Training Weeks + athlete pages present)
+
+Benchmark Stats (and siblings)
+  → changing sort visibly reorders athlete cards
+  → filters change visible card set only
+  → filters do not mutate underlying data
+  → search finds correct athlete
+
+Metric card click
+  → opens Detailed Summary
+  → correct athlete selected
+
+Direct athlete attempt
+  → cannot reach coach pages
+
+No-data athlete
+  → clear No Data UI
+  → no bogus zero / Declining / Needs Attention classification
 ```
 
 ### Aggregate page invariants
@@ -458,39 +619,24 @@ HR adherence
 
 ---
 
-## Deploy / track separation
-
-```text
-GOLF
-  release/stability-rc1 (and related soak)
-  DO NOT TOUCH
-  soak through Sep 11, 2026
-
-COACH DEVELOPMENT
-  coach/decision-dashboard-v1
-  free to develop / preview / test
-  NO production merge before GOLF exit
-```
-
-Preview and local coach testing are encouraged on this branch. Production promotion waits on explicit post-soak approval.
-
----
-
 ## Review gate
 
-**STOP for Daniel review before major implementation.**
-
-This document is the V1 product contract. Implementation PRs should cite section numbers / phase tags (COACH 1–4) and must not silently change athlete IA or merge ahead of GOLF exit.
+**Implementation authorized** after this corrected contract. Open a draft PR, run the full regression suite, then **STOP for adversarial code review** before merge.
 
 ### Acceptance for “spec done”
 
 - [x] Camp Roster remains home  
 - [x] Coach drawer Analysis IA defined; athlete drawer untouched  
-- [x] Detailed Summary Sheets parity field list captured  
+- [x] Detailed Summary Sheets **information** parity + RingReady canonical win policy  
+- [x] Schedule Adherence = `logged / due` documented  
+- [x] Coaching Guidance split: generated verdict vs coach notes  
+- [x] Canonical metric invariant (same value/status everywhere)  
 - [x] Four aggregate lenses + shared card framework specified  
-- [x] HR Adherence uses On Target / Needs Attention (not Improving/Declining)  
+- [x] PI `= 100` → BASELINE (All only; never IMPROVING badge)  
+- [x] HR Adherence uses On Target / Needs Attention  
 - [x] Pace = running only  
-- [x] Locker / exclusion / test plan / branch / merge policy recorded  
+- [x] Browser/E2E acceptance listed  
+- [x] Merge-when-clean + GOLF Day 0 reset policy recorded  
 
 ---
 
@@ -499,3 +645,4 @@ This document is the V1 product contract. Implementation PRs should cite section
 | Date | Change |
 |------|--------|
 | 2026-09-04 | Initial V1 spec (`docs(coach): define analytics navigation and views`) |
+| 2026-09-04 | Align metric parity and release policy (`docs(coach): align metric parity and release policy`) |
