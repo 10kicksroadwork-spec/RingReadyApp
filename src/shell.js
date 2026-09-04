@@ -685,7 +685,7 @@ function enterSignedInCoachHome() {
   enterAppHome();
 }
 
-async function rehydrateWorkoutCompletionFromCloud(record, owner) {
+async function rehydrateWorkoutCompletionFromCloud(record, owner, completionEpochAtStart = completionMutationEpoch) {
   if (!shouldApplyClientStateMutation(owner)) return false;
   const context = record?.workoutContext || record?.cfg?.workoutContext || {};
   const weekIndex = Number(context.weekIndex);
@@ -693,7 +693,14 @@ async function rehydrateWorkoutCompletionFromCloud(record, owner) {
   if (!Number.isFinite(weekIndex) || !Number.isFinite(workoutIndex)) return false;
 
   const cloudCompletions = await loadCloudWorkoutCompletions();
-  if (!shouldApplyClientStateMutation(owner)) return false;
+  // Fail closed: discard if account/generation changed OR an athlete completion
+  // mutation landed after this targeted read started (same family as full hydration).
+  if (
+    !shouldApplyClientStateMutation(owner)
+    || !shouldApplyCompletionHydration(completionEpochAtStart)
+  ) {
+    return false;
+  }
 
   const key = `${weekIndex}:${workoutIndex}`;
   const cloudRecord = cloudCompletions?.[key];
@@ -702,8 +709,10 @@ async function rehydrateWorkoutCompletionFromCloud(record, owner) {
   const completions = getWorkoutCompletions();
   completions[key] = cloudRecord;
   writeJSON(WORKOUT_COMPLETIONS_STORAGE_KEY, completions);
-  noteCompletionMutation();
-  return shouldApplyClientStateMutation(owner);
+  // Do not bump completionMutationEpoch here — applying a cloud cache refresh is
+  // not an athlete completion mutation.
+  return shouldApplyClientStateMutation(owner)
+    && shouldApplyCompletionHydration(completionEpochAtStart);
 }
 
 async function rehydrateMileTestFromCloud(owner) {
@@ -724,7 +733,11 @@ async function rehydrateMileTestFromCloud(owner) {
 
 function scheduleTargetedWorkoutRehydrate(record) {
   const owner = captureClientStateOwner();
-  void boundedTargetedRehydrate(owner, () => rehydrateWorkoutCompletionFromCloud(record, owner)).catch((error) => {
+  const completionEpochAtStart = completionMutationEpoch;
+  void boundedTargetedRehydrate(
+    owner,
+    () => rehydrateWorkoutCompletionFromCloud(record, owner, completionEpochAtStart),
+  ).catch((error) => {
     console.warn('Background workout rehydrate failed', error);
   });
 }
@@ -770,10 +783,11 @@ async function persistSignedInWorkoutCompletion(record, {
       // Soft-success only for position/completion_key conflicts when rehydrate
       // positively matches the requested logical save (Authority).
       const owner = captureClientStateOwner();
+      const completionEpochAtStart = completionMutationEpoch;
       let rehydrated = false;
       try {
         rehydrated = await withOperationTimeout(
-          rehydrateWorkoutCompletionFromCloud(finalized, owner),
+          rehydrateWorkoutCompletionFromCloud(finalized, owner, completionEpochAtStart),
           { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_HYDRATION, operation: 'identity_conflict_rehydrate' },
         );
       } catch (rehydrateError) {
