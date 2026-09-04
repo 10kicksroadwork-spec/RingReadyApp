@@ -160,6 +160,9 @@ export function athleteFacingWorkoutSaveError(error) {
   if (error?.workoutIdentityConflict) {
     return 'WORKOUT IDENTITY CONFLICT — CONTACT YOUR COACH.';
   }
+  if (error?.workoutFinalizeFailed) {
+    return 'COULD NOT CONFIRM WORKOUT SAVE — TRY AGAIN. IF THIS CONTINUES, CONTACT YOUR COACH.';
+  }
   if (isAuthSessionError(error)) {
     return 'SIGN IN REQUIRED — YOUR SESSION EXPIRED. SIGN IN AGAIN TO FINISH SAVING.';
   }

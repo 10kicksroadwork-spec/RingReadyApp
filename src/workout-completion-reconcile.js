@@ -20,6 +20,9 @@ import {
 
 export const WORKOUT_IDENTITY_COLUMNS = 'id, client_record_id, attachment_id, proof_pending, proof_policy_version, completion_key, week_index, workout_index';
 
+/** Columns required to prove a durable finalized completion after write. */
+export const WORKOUT_FINALIZE_VERIFY_COLUMNS = `${WORKOUT_IDENTITY_COLUMNS}, completed_at`;
+
 function normalizeISODate(value) {
   const date = new Date(value || Date.now());
   return Number.isNaN(date.getTime()) ? new Date().toISOString() : date.toISOString();
@@ -29,6 +32,81 @@ async function selectMaybeSingle(query) {
   const { data, error } = await query.maybeSingle();
   if (error) throw error;
   return data || null;
+}
+
+export function createWorkoutFinalizeError(message, details = {}) {
+  const error = new Error(message || 'WORKOUT FINALIZATION FAILED — TRY AGAIN.');
+  error.workoutFinalizeFailed = true;
+  Object.assign(error, details);
+  return error;
+}
+
+/**
+ * Fail closed: a successful cloud save must leave a durable, visible completion row.
+ * "No PostgREST error" is not enough — zero-row updates and stranded provisional
+ * rows must not report success.
+ */
+export function assertDurableFinalizedWorkoutRow(row, expectedPayload = {}) {
+  if (!row) {
+    throw createWorkoutFinalizeError('Workout completion update affected no row.', {
+      finalizeReason: 'zero_row',
+    });
+  }
+  if (row.proof_pending === true) {
+    throw createWorkoutFinalizeError('Workout completion remained proof_pending after save.', {
+      finalizeReason: 'proof_pending',
+      rowId: row.id || null,
+    });
+  }
+  if (
+    expectedPayload.completion_key
+    && String(row.completion_key || '') !== String(expectedPayload.completion_key)
+  ) {
+    throw createWorkoutFinalizeError('Workout completion_key mismatch after save.', {
+      finalizeReason: 'completion_key',
+      rowId: row.id || null,
+      expected: expectedPayload.completion_key,
+      actual: row.completion_key || null,
+    });
+  }
+  if (
+    expectedPayload.week_index !== null
+    && expectedPayload.week_index !== undefined
+    && Number(row.week_index) !== Number(expectedPayload.week_index)
+  ) {
+    throw createWorkoutFinalizeError('Workout week_index mismatch after save.', {
+      finalizeReason: 'week_index',
+      rowId: row.id || null,
+    });
+  }
+  if (
+    expectedPayload.workout_index !== null
+    && expectedPayload.workout_index !== undefined
+    && Number(row.workout_index) !== Number(expectedPayload.workout_index)
+  ) {
+    throw createWorkoutFinalizeError('Workout workout_index mismatch after save.', {
+      finalizeReason: 'workout_index',
+      rowId: row.id || null,
+    });
+  }
+  if (!row.completed_at) {
+    throw createWorkoutFinalizeError('Workout completed_at missing after save.', {
+      finalizeReason: 'completed_at',
+      rowId: row.id || null,
+    });
+  }
+  if (
+    expectedPayload.attachment_id
+    && String(row.attachment_id || '') !== String(expectedPayload.attachment_id)
+  ) {
+    throw createWorkoutFinalizeError('Workout attachment_id mismatch after save.', {
+      finalizeReason: 'attachment_id',
+      rowId: row.id || null,
+      expected: expectedPayload.attachment_id,
+      actual: row.attachment_id || null,
+    });
+  }
+  return row;
 }
 
 /**
@@ -92,11 +170,14 @@ export async function findWorkoutCompletionIdentity(
 }
 
 async function updateWorkoutCompletionById(client, id, payload) {
-  const { error } = await client
+  const { data, error } = await client
     .from('workout_completions')
     .update(payload)
-    .eq('id', id);
+    .eq('id', id)
+    .select(WORKOUT_FINALIZE_VERIFY_COLUMNS)
+    .maybeSingle();
   if (error) throw error;
+  return assertDurableFinalizedWorkoutRow(data, payload);
 }
 
 function mergePreservedAttachmentFields(payload, existing) {
@@ -236,31 +317,31 @@ export async function saveWorkoutCompletionReconciled(client, userId, record) {
 
   const existing = await findWorkoutCompletionIdentity(client, userId, record);
   if (existing) {
-    await updateWorkoutCompletionById(
-      client,
-      existing.id,
-      mergePreservedAttachmentFields(payload, existing),
-    );
+    const merged = mergePreservedAttachmentFields(payload, existing);
+    const verified = await updateWorkoutCompletionById(client, existing.id, merged);
     return {
       record,
-      rowId: existing.id,
+      rowId: verified.id,
       action: 'update',
-      payload: mergePreservedAttachmentFields(payload, existing),
+      payload: merged,
+      verified,
     };
   }
 
   const { data, error } = await client
     .from('workout_completions')
     .upsert(payload, { onConflict: 'user_id,completion_key' })
-    .select('id')
+    .select(WORKOUT_FINALIZE_VERIFY_COLUMNS)
     .maybeSingle();
 
   if (!error) {
+    const verified = assertDurableFinalizedWorkoutRow(data, payload);
     return {
       record,
-      rowId: data?.id || null,
+      rowId: verified.id,
       action: 'upsert',
       payload,
+      verified,
     };
   }
 
@@ -269,11 +350,12 @@ export async function saveWorkoutCompletionReconciled(client, userId, record) {
   const raced = await findWorkoutCompletionIdentity(client, userId, record);
   if (!raced) throw error;
   const merged = mergePreservedAttachmentFields(payload, raced);
-  await updateWorkoutCompletionById(client, raced.id, merged);
+  const verified = await updateWorkoutCompletionById(client, raced.id, merged);
   return {
     record,
-    rowId: raced.id,
+    rowId: verified.id,
     action: 'race-update',
     payload: merged,
+    verified,
   };
 }
