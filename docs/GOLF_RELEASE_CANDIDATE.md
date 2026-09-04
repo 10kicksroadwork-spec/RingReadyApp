@@ -56,29 +56,73 @@ No cleanup, refactors, or “while we’re here” polish on these paths during 
 | `/api/health` `buildSha` | `4f04928` |
 | Account-boundary smoke | PASS (A → logout → A) |
 | Real iPhone / Golden Athlete Flow | COMPLETE (prior certification) |
-| GOLF branch tip | `0fc5ad3` (docs only) |
+| GOLF branch tip | docs-only (see soak tip on branch) |
 | GOLF branch CI | PASS |
+
+## Defect severity
+
+| Severity | Meaning |
+|----------|---------|
+| **P0** | App unusable, data loss, or security/authorization breach |
+| **P1** | Athlete cannot reliably complete, log, resume, or hydrate a workout / Sprint |
+| **P2** | Degraded or non-blocking UX (including known backlog such as proof-transfer latency/telemetry unless it becomes P1) |
+
+Unresolved **P0** or **P1** defects block GOLF completion. P2 stays backlog unless it elevates.
+
+## Soak exit criteria (objective)
+
+GOLF is **not** complete until **all** of the following are true:
+
+```text
+Minimum soak:
+7 calendar days on the known-good production lineage
+(start counting from day-0: 2026-09-04 → earliest exit 2026-09-11)
+
+AND during that window observe at least:
+- 3 normal workout completions (persist after refresh)
+- 1 Sprint completion / resume lifecycle
+- 1 proof upload / transfer (arrives eventually)
+- 1 logout / re-login
+- 1 coach-side completion / proof check
+
+AND:
+- zero unresolved P0/P1 production defects
+- main CI remains green during the window
+- /api/health remains on the expected known-good lineage
+- Vercel production remains healthy
+- rollback path confirmed available (see Rollback)
+```
+
+Prefer real athlete usage. Do not manufacture volume just to tick boxes. Record each observed item in the soak log.
+
+### Daily (during the 7 days)
+
+- [ ] `/api/health` sane / expected SHA lineage
+- [ ] Vercel healthy
+- [ ] No new unresolved P0/P1 user reports
+- [ ] Main remains green when CI runs
+
+### Over 7 days (minimum observed usage)
+
+- [ ] ≥3 normal completions persist after refresh
+- [ ] ≥1 Sprint lifecycle (complete and/or resume)
+- [ ] ≥1 proof reaches Drive / eventual transfer
+- [ ] ≥1 logout / re-login with correct athlete state
+- [ ] ≥1 coach-side verification of completion/proof
 
 ## Core soak checks
 
 Record date, operator, `buildSha`, surface, and notes. Prefer real athlete usage over inventing new automation.
 
-Over the RC window, observe:
+Observation targets (map into the exit-criteria counts above):
 
 - [ ] Normal workout save → persists after refresh
 - [ ] Sprint session → resumes correctly
-- [ ] Proof → arrives eventually (do not reopen transfer latency unless reproducible user harm)
+- [ ] Proof → arrives eventually (do not reopen transfer latency unless it becomes P0/P1)
 - [ ] Cross-device → same authoritative completion state
 - [ ] Logout / login → correct athlete state
 - [ ] Coach dashboard → sees intended athlete data
 - [ ] No raw SQL / RLS / storage / athlete-visible JS errors in reported sessions
-
-### Continuous monitoring
-
-- [ ] `/api/health` remains on an expected SHA lineage from this baseline
-- [ ] Vercel production remains healthy
-- [ ] Main CI remains green (`quality`, `browser-e2e`, live `production-contract` on main)
-- [ ] No unresolved production incidents on frozen paths
 
 ### Explicit non-goals
 
@@ -89,14 +133,14 @@ Over the RC window, observe:
 
 ## Release gates (before calling GOLF complete)
 
+- [ ] Soak **exit criteria** above are fully met (7 days + minimum usage + zero P0/P1)
 - [ ] Main CI green repeatedly during the soak window
 - [ ] `production-contract` green on main (live, not skipped)
 - [ ] Vercel healthy
 - [ ] `/api/health` reports the expected SHA
 - [ ] Golden Athlete Flow remains green (prior certification stands; re-run only if a defect appears)
-- [ ] Coach visibility spot-check PASS when available
-- [ ] No unresolved production incidents
-- [ ] Rollback procedure documented and path confirmed available
+- [ ] Coach visibility check PASS (≥1 during soak)
+- [ ] Rollback path **confirmed available** on Vercel (do not intentionally roll back healthy production merely to rehearse)
 - [ ] Known-good production SHA recorded (start: `4f04928`)
 
 ## Rollback procedure
@@ -111,6 +155,8 @@ IF NEW RELEASE REGRESSES:
 5. smoke Golden Athlete Flow essentials:
    sign-in → hydrate → one completion or Sprint surface → logout/login clean
 ```
+
+**Confirm** that production rollback is available in Vercel. Do **not** intentionally roll back a healthy production deployment merely to rehearse. Rehearse only in non-production / preview if practical.
 
 Reliability is not only “nothing breaks.” It is also:
 
@@ -129,7 +175,23 @@ Reliability is not only “nothing breaks.” It is also:
 
 ## If a defect appears
 
-1. Reproduce with evidence (`buildSha`, steps, screenshots/logs)
+Record at minimum:
+
+```text
+date/time
+buildSha
+device/browser
+athlete action
+expected
+actual
+screenshots/logs
+whether Supabase data remained correct
+severity (P0/P1/P2)
+```
+
+Then:
+
+1. Reproduce with evidence
 2. Open a **narrow** fix branch
 3. Touch only the failing subsystem
 4. Re-run the smallest gates that prove the defect is gone
@@ -142,6 +204,7 @@ Reliability is not only “nothing breaks.” It is also:
 |------|----------|----------|-------|--------|-------|
 | 2026-09-04 | Carl (day-0) | `4f04928` | `/api/health` | PASS | `environment=production`, refs match |
 | 2026-09-04 | Carl (day-0) | `4f04928` | Vercel / Foxtrot close smoke | PASS | A → logout → A already recorded at Foxtrot close |
+| 2026-09-04 | Carl | docs tip | Exit criteria defined | PASS | 7-day soak + min usage + P0/P1 gate |
 |  |  |  |  |  |  |
 
 ## Status
@@ -155,7 +218,7 @@ ECHO        COMPLETE
 FOXTROT     COMPLETE / FROZEN
 REAL IPHONE COMPLETE
 GOLDEN FLOW COMPLETE
-GOLF        IN PROGRESS — soak / observe / rollback readiness
+GOLF        SOAKING — earliest exit 2026-09-11 if criteria met
 baseline    4f04928
 branch      release/stability-rc1
 PR          #62 (draft, docs-only)
