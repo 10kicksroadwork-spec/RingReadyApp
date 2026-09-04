@@ -22,6 +22,7 @@ const loadCloudProfile = vi.fn();
 const loadCloudHRInfo = vi.fn();
 const loadCloudSprintSessions = vi.fn();
 const loadCloudMileTest = vi.fn();
+const deleteCloudWorkoutCompletion = vi.fn();
 
 vi.mock('../src/auth.js', () => ({
   getCurrentUser: vi.fn(() => mockUser),
@@ -35,7 +36,7 @@ vi.mock('../src/auth.js', () => ({
   loadCloudHRInfo: (...args) => loadCloudHRInfo(...args),
   loadCloudSprintSessions: (...args) => loadCloudSprintSessions(...args),
   loadCloudMileTest: (...args) => loadCloudMileTest(...args),
-  deleteCloudWorkoutCompletion: vi.fn(),
+  deleteCloudWorkoutCompletion: (...args) => deleteCloudWorkoutCompletion(...args),
   clearCloudWorkoutCompletionWithProof: vi.fn(),
   initSupabaseAuth: vi.fn(),
   isCoachUser: vi.fn(() => false),
@@ -83,6 +84,7 @@ describe('Charlie hydration authority', () => {
     loadCloudHRInfo.mockResolvedValue(null);
     loadCloudSprintSessions.mockResolvedValue([]);
     loadCloudMileTest.mockResolvedValue(null);
+    deleteCloudWorkoutCompletion.mockResolvedValue(true);
   });
 
   it('does not backfill completions when the cloud read failed', async () => {
@@ -399,31 +401,37 @@ describe('Charlie clear-marker precedence', () => {
     expect(superseded).toEqual(['0:1']);
   });
 
-  it('hides older cloud completion when the clear marker is newer', () => {
+  it('keeps an accepted fresh cloud completion even when the clear marker is newer', () => {
     writeJSON('ringReadyClearedWorkoutCompletions', { '0:1': '2026-01-01T13:00:00.000Z' });
 
+    const superseded = [];
     const merged = reconcileWorkoutCompletionsFromCloud(
       {
         '0:1': {
-          id: 'cloud-old',
+          id: 'cloud-fresh',
           completedAt: '2026-01-01T11:00:00.000Z',
         },
       },
       isWorkoutCompletionCleared,
+      (key) => superseded.push(key),
     );
 
-    expect(merged['0:1']).toBeUndefined();
+    expect(merged['0:1']?.id).toBe('cloud-fresh');
+    expect(superseded).toEqual(['0:1']);
   });
 
-  it('applies conservative clear behavior when cloud timestamp is missing', () => {
+  it('keeps an accepted cloud completion when cloud timestamp is missing but the key is present', () => {
     writeJSON('ringReadyClearedWorkoutCompletions', { '0:1': '2026-01-01T11:00:00.000Z' });
 
+    const superseded = [];
     const merged = reconcileWorkoutCompletionsFromCloud(
       { '0:1': { id: 'cloud-no-ts' } },
       isWorkoutCompletionCleared,
+      (key) => superseded.push(key),
     );
 
-    expect(merged['0:1']).toBeUndefined();
+    expect(merged['0:1']?.id).toBe('cloud-no-ts');
+    expect(superseded).toEqual(['0:1']);
   });
 
   it('removes stale clear markers during hydration reconcile', async () => {
@@ -450,6 +458,38 @@ describe('Charlie clear-marker precedence', () => {
 
     expect(getWorkoutCompletion(0, 1)?.id).toBe('cloud-recomplete');
     expect(getClearedWorkoutCompletions()['0:1']).toBeUndefined();
+  });
+
+  it('does not delete cloud completions from a newer local clear tombstone during maintenance', async () => {
+    writeJSON('ringReadyClearedWorkoutCompletions', { '0:4': '2026-09-04T14:20:00.000Z' });
+
+    const generation = cloudHydrationTestHooks.getHydrationGeneration();
+    const cloudCompletions = {
+      '0:4': {
+        id: 'cloud-long-run',
+        completionKey: '0:4',
+        completedAt: '2026-09-04T14:05:00.000Z',
+        updatedAt: '2026-09-04T14:05:00.000Z',
+        cfg: { workoutContext: { weekIndex: 0, workoutIndex: 4 } },
+      },
+    };
+
+    await cloudHydrationTestHooks.applyCloudHydrationResults('user-a', generation, {
+      profileResult: { ok: true, value: null },
+      hrResult: { ok: true, value: null },
+      completionsResult: { ok: true, value: cloudCompletions },
+      sessionsResult: { ok: true, value: [] },
+      mileResult: { ok: true, value: null },
+    });
+    await cloudHydrationTestHooks.runCloudHydrationMaintenance('user-a', generation, {
+      profileResult: { ok: true, value: null },
+      hrResult: { ok: true, value: null },
+      completionsResult: { ok: true, value: cloudCompletions },
+    });
+
+    expect(getWorkoutCompletion(0, 4)?.id).toBe('cloud-long-run');
+    expect(getClearedWorkoutCompletions()['0:4']).toBeUndefined();
+    expect(deleteCloudWorkoutCompletion).not.toHaveBeenCalled();
   });
 });
 
