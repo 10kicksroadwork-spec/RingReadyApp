@@ -78,6 +78,7 @@ import {
   resetVolatileStorageForTest,
   resetStorageAvailabilityCache,
 } from '../src/safe-storage.js';
+import { resetSprintRuntimeForAccountBoundary } from '../src/app.js';
 
 function seedAthleteASharedLocker() {
   localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify({ athleteName: 'Athlete A' }));

@@ -304,6 +304,8 @@ function resetAthleteRuntimeState() {
   setSelectedCoachAthlete('');
   // Fire-and-forget: logout / A→B must not hang on a stuck BLE stack.
   void beginAccountBoundaryHRDisconnect();
+  // Sprint engine lives in app.js — reset memory only (never touch stored checkpoints).
+  shellHooks?.resetSprintRuntimeForAccountBoundary?.();
 }
 
 function getAthleteRuntimeSnapshot() {
@@ -2725,4 +2727,7 @@ export const cloudHydrationTestHooks = {
   getAthleteRuntimeSnapshot,
   seedAthleteRuntimeStateForTest,
   shouldApplyAccountIdentityBoundary,
+  setShellHooksForTest(hooks) {
+    shellHooks = hooks;
+  },
 };

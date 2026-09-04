@@ -106,8 +106,9 @@ On explicit logout and on `SIGNED_OUT` auth events, the client must:
 4. Clear legacy unscoped sync queue + quarantine
 5. Reset in-memory week/SC/modality, selected coach athlete, and HR connection state
 6. Initiate physical HR transport disconnect (`disconnectHR`) best-effort; do not hang logout on BLE
+7. Reset in-memory Sprint engine state (`resetSprintRuntimeForAccountBoundary`) without touching any stored checkpoint; Sprint persistence is owner-gated (`activeSessionOwnerId === current user`)
 
-On Athlete A → Athlete B sign-in (including multi-tab `SIGNED_IN(B)` with **no** preceding `SIGNED_OUT(A)`), `prepareAccountSwitchSafety()` applies the same identity boundary when the owner marker differs (or fail-closed when shared data exists with no owner): clear shared locker **and** reset runtime (week/SC/modality/coach selection + initiate `disconnectHR`). Same-user `SIGNED_IN(A)` must not destructively reset. Per-user queues/checkpoints for B are preserved.
+On Athlete A → Athlete B sign-in (including multi-tab `SIGNED_IN(B)` with **no** preceding `SIGNED_OUT(A)`), `prepareAccountSwitchSafety()` applies the same identity boundary when the owner marker differs (or fail-closed when shared data exists with no owner): clear shared locker **and** reset runtime (week/SC/modality/coach selection + initiate `disconnectHR` + Sprint memory). Same-user `SIGNED_IN(A)` must not destructively reset. Per-user queues/checkpoints for B are preserved.
 
 `ringReadyAuthUserId` may remain as the last owner marker for switch detection.
 

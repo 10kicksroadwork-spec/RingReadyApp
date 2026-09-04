@@ -16,7 +16,10 @@ let nativeModule = null;
 let uiHooks = null;
 /** When false, transport HR samples are ignored (account-boundary isolation). */
 let acceptTransportHR = true;
+/** Bumped on each account-boundary disconnect so a late finally cannot clear a newer B connection. */
+let hrBoundaryGeneration = 0;
 const ACCOUNT_BOUNDARY_DISCONNECT_MS = 2500;
+let disconnectOverrideForTest = null;
 
 export function initHRService(hooks) {
   uiHooks = hooks;
@@ -202,6 +205,10 @@ export async function connectHR() {
 }
 
 export async function disconnectHR() {
+  if (disconnectOverrideForTest) {
+    await disconnectOverrideForTest();
+    return;
+  }
   if (transport === 'native' && nativeModule) {
     await nativeModule.disconnectNativeHR();
     return;
@@ -217,6 +224,8 @@ export async function disconnectHR() {
  */
 export function beginAccountBoundaryHRDisconnect() {
   acceptTransportHR = false;
+  hrBoundaryGeneration += 1;
+  const generation = hrBoundaryGeneration;
   setHRDisconnected();
   const disconnectPromise = Promise.resolve()
     .then(() => disconnectHR())
@@ -224,7 +233,10 @@ export function beginAccountBoundaryHRDisconnect() {
       console.warn('HR disconnect on account boundary failed', error);
     })
     .finally(() => {
-      setHRDisconnected();
+      // Do not clear a newly connected B monitor if disconnect from A finishes late.
+      if (generation === hrBoundaryGeneration && !acceptTransportHR) {
+        setHRDisconnected();
+      }
     });
   // Bound wait so callers that await this never hang on a stuck BLE stack.
   return Promise.race([
@@ -240,8 +252,12 @@ export const hrServiceTestHooks = {
   handleTransportHR,
   beginAccountBoundaryHRDisconnect,
   isAcceptingTransportHR: () => acceptTransportHR,
+  getBoundaryGeneration: () => hrBoundaryGeneration,
   setAcceptTransportHRForTest(value) {
     acceptTransportHR = !!value;
+  },
+  setDisconnectOverrideForTest(fn) {
+    disconnectOverrideForTest = typeof fn === 'function' ? fn : null;
   },
 };
 
