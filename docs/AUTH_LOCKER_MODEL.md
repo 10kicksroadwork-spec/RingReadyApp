@@ -9,7 +9,7 @@ This document is the Foxtrot stability-phase contract. Do not invent parallel pe
 | Role | How identified | What they can do |
 |------|----------------|------------------|
 | **Athlete** | Any authenticated user that is not on the coach allowlist | CRUD **only** rows where `user_id = auth.uid()` (subject to table policies) |
-| **Coach** | JWT email in `public.is_coach()` **and** mirrored `COACH_EMAILS` in `src/coach-access.js` | Extra **SELECT** across athlete lockers; write coach-only tables (`coach_notes`, `coach_athlete_meta`, exclusions) |
+| **Coach** | JWT email in `public.is_coach()` **and** mirrored `COACH_EMAILS` in `src/coach-access.js` | Extra **SELECT** across athlete lockers; write coach-only tables (`coach_notes`, `coach_athlete_meta`) |
 
 `athlete_name` is **display metadata**, never an authorization key.
 
@@ -44,7 +44,13 @@ Coach **SELECT** policies use `using (public.is_coach())` on profiles, HR, compl
 
 `coach_roster_identities()` is **SECURITY DEFINER**: returns `auth.users` id/email **only when** `is_coach()` is true, so the dashboard can hide coach logins from the fighter roster.
 
-Coach-only write surfaces: `coach_notes`, later `coach_athlete_meta` / `coach_roster_exclusions` (`005`).
+Coach writable: `coach_notes`, `coach_athlete_meta` (`002` / `005`).
+
+Roster exclusions (`coach_roster_exclusions`, migration `005`):
+
+- **Coach-readable** (`SELECT` via `is_coach()`)
+- **Production/admin seeded** (`scripts/seeds/production-coach-roster-exclusions.sql`)
+- **Not client-writable** — no authenticated INSERT/UPDATE policies (by design)
 
 ### Client
 
@@ -99,8 +105,9 @@ On explicit logout and on `SIGNED_OUT` auth events, the client must:
 3. Clear **all** shared athlete locker keys (`ATHLETE_SHARED_STORAGE_KEYS` in `src/account-switch.js`)
 4. Clear legacy unscoped sync queue + quarantine
 5. Reset in-memory week/SC/modality, selected coach athlete, and HR connection state
+6. Initiate physical HR transport disconnect (`disconnectHR`) best-effort; do not hang logout on BLE
 
-On Athlete A → Athlete B sign-in, `prepareAccountSwitchSafety()` clears the shared locker when the owner marker differs (or fail-closed when shared data exists with no owner). Per-user queues/checkpoints for B are preserved.
+On Athlete A → Athlete B sign-in (including multi-tab `SIGNED_IN(B)` with **no** preceding `SIGNED_OUT(A)`), `prepareAccountSwitchSafety()` applies the same identity boundary when the owner marker differs (or fail-closed when shared data exists with no owner): clear shared locker **and** reset runtime (week/SC/modality/coach selection + initiate `disconnectHR`). Same-user `SIGNED_IN(A)` must not destructively reset. Per-user queues/checkpoints for B are preserved.
 
 `ringReadyAuthUserId` may remain as the last owner marker for switch detection.
 

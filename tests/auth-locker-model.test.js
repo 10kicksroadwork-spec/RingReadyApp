@@ -30,12 +30,17 @@ describe('auth locker model sync contract', () => {
     expect(jsEmails).toEqual(sqlEmails);
   });
 
-  it('keeps roster exclusion constants aligned with the production seed', () => {
-    for (const id of ROSTER_EXCLUDED_USER_IDS) {
-      expect(EXCLUSION_SEED).toContain(id);
-    }
-    for (const email of ROSTER_EXCLUDED_EMAILS) {
-      expect(EXCLUSION_SEED.toLowerCase()).toContain(email.toLowerCase());
-    }
+  it('keeps roster exclusion constants as exact (user_id, email) pairs with the production seed', () => {
+    const seedPairs = [...EXCLUSION_SEED.matchAll(
+      /\('([0-9a-f-]{36})'::uuid,\s*'([^']+@[^']+)'/gi,
+    )].map((m) => `${m[1].toLowerCase()}|${m[2].toLowerCase()}`).sort();
+
+    expect(ROSTER_EXCLUDED_USER_IDS).toHaveLength(ROSTER_EXCLUDED_EMAILS.length);
+    const jsPairs = ROSTER_EXCLUDED_USER_IDS
+      .map((id, index) => `${String(id).toLowerCase()}|${String(ROSTER_EXCLUDED_EMAILS[index]).toLowerCase()}`)
+      .sort();
+
+    expect(jsPairs).toEqual(seedPairs);
+    expect(seedPairs).toEqual(jsPairs);
   });
 });
