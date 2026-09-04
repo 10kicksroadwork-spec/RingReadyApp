@@ -11,6 +11,7 @@ import {
   STATUS_NO_DATA,
   STATUS_ON_TARGET,
   STATUS_WATCH,
+  buildCoachAthleteAnalytics,
   buildLensCard,
   buildLensCards,
   cardMatchesFilter,
@@ -19,6 +20,7 @@ import {
   classifyPerformanceIndex,
   classifyRecovery,
   computeRunningTotals,
+  formatCoachSourceWarnings,
   selectVisibleCards,
   sortMetricCards,
   statusBadgeLabel,
@@ -202,5 +204,151 @@ describe('computeRunningTotals', () => {
     expect(totals.runningMinutes).toBe(90);
     expect(totals.runningMiles).toBeCloseTo(9.5);
     expect(totals.runningHours).toBeCloseTo(1.5);
+  });
+});
+
+describe('canonical analytics consistency', () => {
+  it('keeps PI 97 Declining and one-decimal display on detail + aggregate card', () => {
+    const athlete = {
+      id: 'pi97',
+      name: 'Pat',
+      currentWeekIndex: 1,
+      performance: { index: 97 },
+      scan: {
+        performance: { index: 97, points: [{ weekIndex: 0, pct: 100 }, { weekIndex: 1, pct: 97 }] },
+        recovery: {},
+        pace: {},
+        zone: {},
+      },
+      sessions: [],
+    };
+    athlete.analytics = buildCoachAthleteAnalytics(athlete);
+    const card = buildLensCard(athlete, LENS_BENCHMARK);
+    expect(athlete.analytics.performance.displayValue).toBe('97.0');
+    expect(athlete.analytics.performance.status).toBe(STATUS_DECLINING);
+    expect(card.value).toBe('97.0');
+    expect(card.status).toBe(STATUS_DECLINING);
+    expect(statusBadgeLabel(card.status)).toBe('DECLINING');
+  });
+
+  it('keeps PI 100 as Baseline on both surfaces', () => {
+    const athlete = {
+      id: 'pi100',
+      name: 'Base',
+      currentWeekIndex: 1,
+      performance: { index: 100 },
+      scan: {
+        performance: { index: 100, points: [{ weekIndex: 0, pct: 100 }] },
+        recovery: {},
+        pace: {},
+        zone: {},
+      },
+      sessions: [],
+    };
+    athlete.analytics = buildCoachAthleteAnalytics(athlete);
+    const card = buildLensCard(athlete, LENS_BENCHMARK);
+    expect(athlete.analytics.performance.status).toBe(STATUS_BASELINE);
+    expect(card.status).toBe(STATUS_BASELINE);
+    expect(statusBadgeLabel(card.status)).toBe('BASELINE');
+  });
+
+  it('uses latest First-5 recovery on detail and aggregate, not camp average', () => {
+    const athlete = {
+      id: 'rec',
+      name: 'Ray',
+      currentWeekIndex: 2,
+      performance: { index: 108.4 },
+      scan: {
+        performance: { index: 108.4 },
+        recovery: {
+          latest: 36,
+          first: 29,
+          avg: 33,
+          points: [
+            { weekIndex: 0, first5Avg: 29 },
+            { weekIndex: 1, first5Avg: 33 },
+            { weekIndex: 2, first5Avg: 36 },
+          ],
+        },
+        pace: {},
+        zone: { onTarget: 8, scored: 10 },
+      },
+      sessions: [],
+      mileTests: [
+        { weekIndex: 0, timeSec: 400 },
+        { weekIndex: 5, timeSec: 388 },
+      ],
+    };
+    athlete.analytics = buildCoachAthleteAnalytics(athlete);
+    const card = buildLensCard(athlete, LENS_RECOVERY);
+    expect(athlete.analytics.recovery.displayValue).toBe('36');
+    expect(athlete.analytics.recovery.campAverage).toBeCloseTo(33);
+    expect(card.value).toBe('36');
+    expect(card.status).toBe(STATUS_IMPROVING);
+    expect(athlete.analytics.mileTest.hasData).toBe(true);
+    expect(athlete.analytics.mileTest.deltaDisplay).toBe('-12s');
+  });
+
+  it('builds weekly HR trend points when zone helpers score sessions', () => {
+    const athlete = {
+      id: 'hr',
+      name: 'Harper',
+      currentWeekIndex: 1,
+      maxHr: 180,
+      restingHr: 50,
+      performance: { index: 101 },
+      scan: {
+        performance: { index: 101 },
+        recovery: {},
+        pace: {},
+        zone: { onTarget: 1, scored: 2 },
+      },
+      sessions: [
+        { status: 'logged', weekIndex: 0, workoutIndex: 1, type: 'Zone 2', avgBpm: 130, minutes: 40, distance: 4, modality: 'running' },
+        { status: 'logged', weekIndex: 1, workoutIndex: 1, type: 'Zone 2', avgBpm: 160, minutes: 40, distance: 4.2, modality: 'running' },
+      ],
+    };
+    athlete.analytics = buildCoachAthleteAnalytics(athlete, {
+      getSessionZoneTarget: () => ({ target: 135, tolerance: 5 }),
+      isSessionAvgOnTarget: (avg, target) => Math.abs(Number(avg) - target.target) <= target.tolerance,
+    });
+    expect(athlete.analytics.hrAdherence.trendPoints.length).toBe(2);
+    expect(athlete.analytics.hrAdherence.trendPoints[0].pct).toBe(100);
+    expect(athlete.analytics.hrAdherence.trendPoints[1].pct).toBe(0);
+    expect(athlete.analytics.zoneHeatmap.length).toBe(2);
+    expect(athlete.analytics.hrPaceEfficiency.length).toBe(2);
+    const card = buildLensCard(athlete, LENS_HR_ADHERENCE);
+    expect(card.trendPoints.length).toBe(2);
+  });
+
+  it('surfaces source outage warnings instead of silent no-data copy', () => {
+    const warnings = formatCoachSourceWarnings({
+      sprints: 'timeout',
+      mileTests: 'timeout',
+      hrRows: 'timeout',
+    });
+    expect(warnings.join(' ')).toMatch(/Sprint data/i);
+    expect(warnings.join(' ')).toMatch(/Mile test data/i);
+    expect(warnings.join(' ')).toMatch(/HR data/i);
+  });
+
+  it('flips known benchmark order asc vs desc', () => {
+    const cards = [
+      { athleteName: 'Low', hasData: true, sortValue: 92, status: STATUS_DECLINING },
+      { athleteName: 'High', hasData: true, sortValue: 108, status: STATUS_IMPROVING },
+    ];
+    expect(sortMetricCards(cards, 'desc').map((c) => c.athleteName)).toEqual(['High', 'Low']);
+    expect(sortMetricCards(cards, 'asc').map((c) => c.athleteName)).toEqual(['Low', 'High']);
+  });
+
+  it('keeps only Declining cards when filter is declining', () => {
+    const cards = [
+      { athleteName: 'A', hasData: true, status: STATUS_DECLINING, sortValue: 90 },
+      { athleteName: 'B', hasData: true, status: STATUS_IMPROVING, sortValue: 110 },
+      { athleteName: 'C', hasData: true, status: STATUS_BASELINE, sortValue: 100 },
+    ];
+    const visible = selectVisibleCards(cards, { filter: 'declining', sort: 'desc' });
+    expect(visible).toHaveLength(1);
+    expect(visible.every((card) => card.status === STATUS_DECLINING)).toBe(true);
   });
 });
