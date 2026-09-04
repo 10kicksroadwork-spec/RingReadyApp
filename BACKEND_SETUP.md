@@ -8,6 +8,10 @@ Athlete browser  →  JWT  →  /api/sync  →  shared server secret  →  Apps 
 
 Direct browser → Apps Script (`no-cors`, `VITE_RING_READY_SYNC_URL`, `?syncUrl=`) is **deprecated** for production.
 
+## Auth vs relay
+
+Athletes and coaches talk to Supabase with the **anon key + user JWT**. Row access is enforced by the locker-model RLS policies (see [docs/AUTH_LOCKER_MODEL.md](docs/AUTH_LOCKER_MODEL.md)). The `/api/sync` relay only validates that JWT and forwards export/proof-transfer events to Apps Script with a **server-only** secret — it does not widen Supabase permissions. Apps Script uses privileged credentials solely for Sheets/Drive proof copy, never from the browser bundle.
+
 ## Event types
 
 - `profile_update`
