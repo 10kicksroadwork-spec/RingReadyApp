@@ -2396,7 +2396,11 @@ function setWeekDrawerOpen(isOpen) {
   backdrop?.classList.toggle('open', isOpen);
   drawer?.setAttribute('aria-hidden', String(!isOpen));
 }
-function openWeekDrawer() { renderDrawerWeeks(); setWeekDrawerOpen(true); }
+function openWeekDrawer() {
+  syncCoachPreviewChrome();
+  renderDrawerWeeks();
+  setWeekDrawerOpen(true);
+}
 function closeWeekDrawer() { setWeekDrawerOpen(false); }
 function renderPage(screenId) {
   if (screenId === 'home') renderShell();
@@ -2440,6 +2444,7 @@ function navigateTo(screenId) {
   renderPage(screenId);
   shellHooks?.showScreen(screenId);
   setActiveNavigation(screenId);
+  syncCoachPreviewChrome();
 }
 function openWorkoutDetail(weekIndex, workoutIndex) {
   const safeWeekIndex = Number(weekIndex);

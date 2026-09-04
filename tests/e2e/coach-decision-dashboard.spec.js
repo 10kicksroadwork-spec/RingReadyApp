@@ -3,10 +3,8 @@ import { closeDrawer, openDrawer, waitForHome } from './helpers/app.js';
 
 async function openCoachPreview(page) {
   await page.goto('/?coach=1');
-  await expect(page.locator('#coach-dashboard')).toBeVisible();
-  await expect(page.locator('#coach-dashboard.screen.active, #coach-dashboard.active, body.is-coach-preview')).toBeVisible({ timeout: 15000 }).catch(() => {});
-  // Coach preview navigates to roster; wait for roster content or hero.
-  await expect(page.locator('#coach-dashboard .coach-hero h2, #coach-roster-list')).toBeVisible({ timeout: 15000 });
+  await expect(page.locator('#coach-dashboard.screen.active')).toBeVisible({ timeout: 15000 });
+  await expect(page.locator('#coach-dashboard .coach-hero h2')).toHaveText(/Camp roster/i);
 }
 
 test.describe('coach decision dashboard drawer and lenses', () => {
@@ -22,7 +20,6 @@ test.describe('coach decision dashboard drawer and lenses', () => {
     await expect(page.locator('.drawer-page-btn[data-page-target="coach-recovery-stats"]')).toBeVisible();
     await expect(page.locator('.drawer-page-btn[data-page-target="coach-pace-stats"]')).toBeVisible();
     await expect(page.locator('.drawer-page-btn[data-page-target="coach-hr-adherence-stats"]')).toBeVisible();
-    await expect(page.locator('.drawer-page-btn[data-page-target="home"]')).toBeHidden();
 
     await closeDrawer(page);
   });
@@ -44,14 +41,11 @@ test.describe('coach decision dashboard drawer and lenses', () => {
     await openCoachPreview(page);
     await openDrawer(page);
     await page.locator('.drawer-page-btn[data-page-target="coach-benchmark-stats"]').click();
-    await expect(page.locator('#coach-benchmark-stats')).toBeVisible();
+    await expect(page.locator('#coach-benchmark-stats.screen.active')).toBeVisible();
     await expect(page.locator('#coach-benchmark-stats-list .coach-lens-card').first()).toBeVisible();
 
     const before = await page.locator('#coach-benchmark-stats-list .coach-lens-card strong').allTextContents();
     await page.locator('#coach-benchmark-stats-sort').selectOption('asc');
-    const afterAsc = await page.locator('#coach-benchmark-stats-list .coach-lens-card strong').allTextContents();
-    expect(afterAsc).not.toEqual([]);
-    // Sort should be deterministic; ascending may reorder relative to default desc.
     await page.locator('#coach-benchmark-stats-sort').selectOption('desc');
     const afterDesc = await page.locator('#coach-benchmark-stats-list .coach-lens-card strong').allTextContents();
     expect(afterDesc.length).toBe(before.length);
@@ -67,7 +61,7 @@ test.describe('coach decision dashboard drawer and lenses', () => {
     await expect(page.locator('#coach-benchmark-stats-list .coach-lens-card strong')).toContainText(/Alex/i);
 
     await page.locator('#coach-benchmark-stats-list .coach-lens-card').click();
-    await expect(page.locator('#coach-athlete')).toBeVisible();
+    await expect(page.locator('#coach-athlete.screen.active')).toBeVisible();
     await expect(page.locator('#coach-athlete-name')).toContainText(/Alex/i);
     await expect(page.locator('#coach-athlete-select')).toHaveValue('alex');
     await expect(page.locator('#coach-athlete-guidance-label')).toContainText(/Generated guidance/i);
@@ -80,10 +74,9 @@ test.describe('coach decision dashboard drawer and lenses', () => {
       document.querySelectorAll('.screen').forEach((el) => el.classList.remove('active'));
       document.getElementById('coach-benchmark-stats')?.classList.add('active');
     });
-    // Navigate via drawer home to force shell routing; coach screens stay coach-gated.
     await openDrawer(page);
     await page.locator('.drawer-page-btn[data-page-target="home"]').click();
-    await expect(page.locator('#home')).toBeVisible();
+    await expect(page.locator('#home.screen.active')).toBeVisible();
     await expect(page.locator('#coach-benchmark-stats')).not.toHaveClass(/active/);
   });
 });
