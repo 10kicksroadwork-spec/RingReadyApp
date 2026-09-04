@@ -362,7 +362,7 @@ async function run() {
     const ownedSlot = allocTestSlot(2);
     const workoutClientId = `${testPrefix}:workout-client-id`;
     const workoutProofKey = `${testPrefix}:program:7:${ownedSlot.weekIndex}:${ownedSlot.workoutIndex}`;
-    const workoutRow = await insertWorkoutOrFailClosed(
+    await insertWorkoutOrFailClosed(
       client,
       {
         user_id: user.id,
@@ -798,7 +798,7 @@ async function run() {
     const conflictProofKeyB = `${testPrefix}:program:7:${conflictWeekB}:${conflictWorkoutB}`;
     const sharedValidConflictPath = `${user.id}/${testPrefix}/shared-valid-conflict.webp`;
     storagePaths.push(sharedValidConflictPath);
-    const conflictRowA = await insertWorkoutOrFailClosed(
+    await insertWorkoutOrFailClosed(
       client,
       {
         user_id: user.id,
@@ -810,7 +810,7 @@ async function run() {
       createdWorkoutIds,
       'Valid conflict seed A',
     );
-    const conflictRowB = await insertWorkoutOrFailClosed(
+    await insertWorkoutOrFailClosed(
       client,
       {
         user_id: user.id,
@@ -899,7 +899,7 @@ async function run() {
     const fingerprintKey = fingerprintSlot.completionKey;
     const fingerprintClientA = `${testPrefix}:fingerprint-client-a`;
     const fingerprintClientB = `${testPrefix}:fingerprint-client-b`;
-    const fingerprintRow = await insertWorkoutOrFailClosed(
+    await insertWorkoutOrFailClosed(
       client,
       {
         user_id: user.id,
@@ -1134,7 +1134,7 @@ async function run() {
     const dualWrongSlot = allocTestSlot(0);
     const dualWeek = dualSlot.weekIndex;
     const dualWorkout = dualSlot.workoutIndex;
-    const dualKeyRow = await insertWorkoutOrFailClosed(
+    await insertWorkoutOrFailClosed(
       client,
       {
         user_id: user.id,
@@ -1148,7 +1148,7 @@ async function run() {
       createdWorkoutIds,
       'Dual-key seed',
     );
-    const dualPosRow = await insertWorkoutOrFailClosed(
+    await insertWorkoutOrFailClosed(
       client,
       {
         user_id: user.id,
