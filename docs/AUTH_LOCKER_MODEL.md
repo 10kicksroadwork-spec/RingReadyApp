@@ -90,6 +90,20 @@ Athlete browser  →  JWT  →  /api/sync  →  Apps Script (service)
 
 `/api/sync` validates the athlete JWT with the anon key, then forwards to Apps Script with a **server-only** relay secret. That path exports to Sheets / Drive; it does **not** widen Supabase RLS. Service-role / script credentials must never ship in the Vite bundle.
 
+## Logout and account switch
+
+On explicit logout and on `SIGNED_OUT` auth events, the client must:
+
+1. Capture the leaving `user_id` **before** the session is cleared
+2. Clear that user’s sync queue + sprint checkpoint
+3. Clear **all** shared athlete locker keys (`ATHLETE_SHARED_STORAGE_KEYS` in `src/account-switch.js`)
+4. Clear legacy unscoped sync queue + quarantine
+5. Reset in-memory week/SC/modality, selected coach athlete, and HR connection state
+
+On Athlete A → Athlete B sign-in, `prepareAccountSwitchSafety()` clears the shared locker when the owner marker differs (or fail-closed when shared data exists with no owner). Per-user queues/checkpoints for B are preserved.
+
+`ringReadyAuthUserId` may remain as the last owner marker for switch detection.
+
 ## Adding a coach or exclusion
 
 1. Update `public.is_coach()` in a **new** numbered migration (do not edit history casually on production without a forward migration).
@@ -102,7 +116,7 @@ Athlete browser  →  JWT  →  /api/sync  →  Apps Script (service)
 - Moving coach identity from JWT email to `app_metadata` roles (good long-term; requires coordinated migration)
 - Implementing `coach_roster_snapshot`
 - Promoting legacy denormalized `athlete_name` columns from `scripts/legacy/` into the canonical chain
-- Changing proof upload RPC semantics, SW caching, hydration, or completion identity (frozen post–Golden Athlete Flow)
+- Changing proof upload RPC semantics, SW caching, hydration, completion identity, sprint checkpoint resume rules, or iOS audio recovery (frozen post–Golden Athlete Flow / real-iPhone certification)
 
 ## Migration map (auth-touching)
 

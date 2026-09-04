@@ -594,10 +594,6 @@ export async function loadCloudMileTest(testKey = '') {
   return mapCloudMileTest(data);
 }
 
-export async function loadCloudMileTestByKey(testKey) {
-  return loadCloudMileTest(String(testKey || '').trim());
-}
-
 export async function ensureCloudMileTestIdentity(result, hrInfo, testContext) {
   const user = getCurrentUser();
   if (!isSupabaseConfigured || !supabase || !user || !result?.id) {

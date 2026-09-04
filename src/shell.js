@@ -79,6 +79,7 @@ import {
   setSelectedCoachAthlete,
   syncCoachPreviewChrome,
 } from './coach-preview.js';
+import { setHRDisconnected } from './hr-service.js';
 import {
   archiveAndResetCamp,
   clearAuthRedirectParams,
@@ -287,6 +288,18 @@ function clearAccountLocalData(explicitUserId = '') {
     clearActiveSessionCheckpoint(userId);
   }
   clearSharedLocalState();
+  resetAthleteRuntimeState();
+}
+
+/** Clear in-memory athlete/coach/HR session residue that is not storage-backed. */
+function resetAthleteRuntimeState() {
+  activeWeekIndex = 0;
+  scMode = 'Gym Machines';
+  scWeek = 1;
+  detailModality = MODALITY_RUNNING;
+  detailModalityInitialized = false;
+  setSelectedCoachAthlete('');
+  setHRDisconnected();
 }
 function clearLocalTrainingData({ markResetAt = '' } = {}) {
   const userId = getCurrentUser()?.id;
@@ -1002,9 +1015,20 @@ function handleAuthStateChange(session, event) {
   }
   if (event === 'SIGNED_OUT' && isSupabaseConfigured) {
     invalidateCloudHydration();
+    // Session is already null — clear using the last locker owner marker.
+    const ownerResult = getStorageItem(AUTH_USER_STORAGE_KEY, null);
+    const ownerId = ownerResult.ok ? String(ownerResult.value || '').trim() : '';
+    clearAccountLocalData(ownerId);
     passwordRecoveryPending = false;
     authMode = 'sign-in';
     showAuthScreen();
+    return;
+  }
+  if (event === 'SIGNED_IN' && session?.user && isSupabaseConfigured) {
+    // Multi-tab / external session restore: enforce locker isolation then enter home.
+    if (passwordRecoveryPending) return;
+    if (isCoachUser()) enterSignedInCoachHome();
+    else enterSignedInAthleteHome();
   }
 }
 function formatDistance(value) { const num = Number(value); if (!Number.isFinite(num) || num <= 0) return '--'; return num >= 10 ? num.toFixed(1) : num.toFixed(2); }
@@ -2658,4 +2682,6 @@ export const cloudHydrationTestHooks = {
   rehydrateWorkoutCompletionFromCloud,
   scheduleTargetedWorkoutRehydrate,
   prepareAccountSwitchSafety,
+  clearAccountLocalData,
+  resetAthleteRuntimeState,
 };
