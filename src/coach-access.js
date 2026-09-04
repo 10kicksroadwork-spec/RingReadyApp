@@ -1,9 +1,18 @@
+/**
+ * Coach allowlist — MUST stay identical to public.is_coach() emails in
+ * scripts/migrations/002_coach_access.sql. Enforced by tests/auth-locker-model.test.js.
+ * See docs/AUTH_LOCKER_MODEL.md.
+ */
 export const COACH_EMAILS = [
   'gene.byard@gmail.com',
   '10kicksroadwork@gmail.com',
 ];
 
-/** Hidden from the live coach roster even when they have athlete profiles. */
+/**
+ * Hidden from the live coach roster even when they have athlete profiles.
+ * Keep in sync with scripts/seeds/production-coach-roster-exclusions.sql
+ * (and DB table coach_roster_exclusions after the seed is applied).
+ */
 export const ROSTER_EXCLUDED_USER_IDS = [
   '81c1f795-cd72-416d-b56d-4c3578a7c7f9',
   '0c4d24e9-9778-456f-b046-970f32235fff',

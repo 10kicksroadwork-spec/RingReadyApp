@@ -35,6 +35,7 @@ import {
   loadActiveSessionCheckpoint,
   saveActiveSessionCheckpoint,
   resolveRestCaptureAttempted,
+  LOCAL_ATHLETE_CHECKPOINT_USER_ID,
 } from './session-checkpoint.js';
 import {
   buildSessionRecord,
@@ -114,6 +115,8 @@ export const state = {
 
 let activeResultRecord = null;
 let activeSessionId = '';
+/** Athlete id that owns the in-memory Sprint runtime. Persistence is gated on this. */
+let activeSessionOwnerId = '';
 const STRIDES_VIDEO_URL = 'https://www.youtube.com/watch?v=YA_u3F5aCdU';
 const SKIPS_VIDEO_URL = 'https://www.youtube.com/watch?v=A7r6yCpmSrA';
 
@@ -128,6 +131,23 @@ const timerCheckpoint = {
 
 let sessionPersistenceBound = false;
 
+function resolveCurrentSessionOwnerCandidate() {
+  const userId = String(getCurrentUser()?.id || '').trim();
+  if (userId) return userId;
+  if (!isSupabaseConfigured) return LOCAL_ATHLETE_CHECKPOINT_USER_ID;
+  return '';
+}
+
+function bindActiveSessionOwner(explicitUserId = '') {
+  activeSessionOwnerId = String(explicitUserId || resolveCurrentSessionOwnerCandidate()).trim();
+}
+
+function canMutateCheckpointForCurrentUser() {
+  const owner = String(activeSessionOwnerId || '').trim();
+  const current = resolveCurrentSessionOwnerCandidate();
+  return !!(owner && current && owner === current);
+}
+
 function clearTimerCheckpoint() {
   timerCheckpoint.kind = null;
   timerCheckpoint.startedAt = 0;
@@ -138,11 +158,40 @@ function clearTimerCheckpoint() {
 }
 
 function persistSessionCheckpoint() {
+  // Stale Athlete A runtime must never write or clear Athlete B's checkpoint.
+  if (!canMutateCheckpointForCurrentUser()) return;
   if (state.phase === 'done') {
     clearActiveSessionCheckpoint();
     return;
   }
   saveActiveSessionCheckpoint(cfg, state, timerCheckpoint.kind ? { ...timerCheckpoint } : null, activeSessionId);
+}
+
+/**
+ * Account-boundary Sprint reset: stop timers and clear in-memory Sprint state only.
+ * Must NOT touch any user's stored checkpoint (avoids deleting B after A→B).
+ */
+export function resetSprintRuntimeForAccountBoundary() {
+  clearSessionTimer();
+  stopRestLogAlert();
+  clearTimerCheckpoint();
+  activeResultRecord = null;
+  activeSessionId = '';
+  activeSessionOwnerId = '';
+  Object.assign(state, {
+    phase: 'idle',
+    currentRep: 0,
+    timer: null,
+    seconds: 0,
+    data: [],
+    pendingRep: null,
+    awaitingModal: false,
+    capturedSprintHR: null,
+    capturedRestHR: null,
+  });
+  cfg.workoutContext = null;
+  cfg.reps = null;
+  cfg.rest = null;
 }
 
 function rebuildSessionDots() {
@@ -198,6 +247,7 @@ function restoreSessionUI() {
 function applyCheckpoint(checkpoint) {
   activeSessionId = String(checkpoint.sessionId || '').trim();
   if (!activeSessionId) activeSessionId = createSessionId();
+  bindActiveSessionOwner(checkpoint.userId);
 
   const savedCfg = checkpoint.cfg || {};
   const savedReps = Number(savedCfg.reps);
@@ -513,6 +563,7 @@ function runStartSession({ forceFresh = false } = {}) {
   saveAthleteProfile({ athleteName });
   activeResultRecord = null;
   activeSessionId = createSessionId();
+  bindActiveSessionOwner();
   clearSessionTimer();
   clearTimerCheckpoint();
 
@@ -1022,9 +1073,10 @@ export function sessionCancelRequiresHold() {
 export function cancelSession() {
   if (state.phase === 'idle' || state.phase === 'done') return;
 
+  const canClearCheckpoint = canMutateCheckpointForCurrentUser();
   resetSessionUI();
   clearTimerCheckpoint();
-  clearActiveSessionCheckpoint();
+  if (canClearCheckpoint) clearActiveSessionCheckpoint();
 
   Object.assign(state, {
     phase: 'idle',
@@ -1039,6 +1091,7 @@ export function cancelSession() {
   });
 
   activeSessionId = '';
+  activeSessionOwnerId = '';
   showScreen('home');
   showToast('SESSION CANCELLED');
 }
@@ -1072,7 +1125,7 @@ export async function finishSession() {
   const sessionPersist = persistSessionRecord(activeResultRecord, { cloudPending: !!needsCloudPending });
   const pendingIntentDurable = !needsCloudPending || (sessionPersist.persisted && !!sessionPersist.record?.cloudPending);
   if (cloudSessionSaved || (sessionPersist.localCacheOk && pendingIntentDurable)) {
-    clearActiveSessionCheckpoint();
+    if (canMutateCheckpointForCurrentUser()) clearActiveSessionCheckpoint();
   } else {
     console.warn('Sprint session could not be saved to cloud or local history');
     showToast('SESSION NOT SAVED — RETRY FROM RESULTS');
@@ -1428,11 +1481,13 @@ export function resetSessionUI() {
 }
 
 export function newSession() {
+  const canClearCheckpoint = canMutateCheckpointForCurrentUser();
   resetSessionUI();
   activeResultRecord = null;
   activeSessionId = '';
+  activeSessionOwnerId = '';
   clearTimerCheckpoint();
-  clearActiveSessionCheckpoint();
+  if (canClearCheckpoint) clearActiveSessionCheckpoint();
 
   Object.assign(state, {
     phase: 'idle',
@@ -1451,5 +1506,14 @@ export function newSession() {
 
 export const sprintLifecycleTestHooks = {
   getActiveSessionId: () => activeSessionId,
+  getActiveSessionOwnerId: () => activeSessionOwnerId,
   applyCheckpoint,
+  persistSessionCheckpoint,
+  resetSprintRuntimeForAccountBoundary,
+  canMutateCheckpointForCurrentUser,
+  bindActiveSessionOwner,
+  getTimerCheckpoint: () => ({ ...timerCheckpoint }),
+  seedTimerCheckpointForTest(partial = {}) {
+    Object.assign(timerCheckpoint, partial);
+  },
 };

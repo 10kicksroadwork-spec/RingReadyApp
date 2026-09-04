@@ -32,6 +32,7 @@ import {
   newSession,
   showSavedWorkoutResult,
   initSessionPersistence,
+  resetSprintRuntimeForAccountBoundary,
 } from './app.js';
 
 const READABILITY_STYLES = `
@@ -296,7 +297,13 @@ async function init() {
   scheduleStartupContractHealthCheck();
   initSyncControls({ showToast });
   installSignupNameCapture();
-  await initAthleteShell({ showToast, showScreen, setWorkoutContext, showSavedWorkoutResult });
+  await initAthleteShell({
+    showToast,
+    showScreen,
+    setWorkoutContext,
+    showSavedWorkoutResult,
+    resetSprintRuntimeForAccountBoundary,
+  });
 
   initReadabilityEnhancements();
   const openedCoachPreview = openCoachPreviewIfRequested();

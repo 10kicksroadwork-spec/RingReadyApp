@@ -87,6 +87,27 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+function isAuthorizationDenied(error) {
+  if (!error) return false;
+  const code = String(error.code || error.error_code || '').toUpperCase();
+  const message = String(error.message || error.details || '').toLowerCase();
+  // Foreign-key failures are not authorization proof.
+  if (code === '23503') return false;
+  if (code === '42501' || code === 'PGRST301') return true;
+  if (/row-level security|permission denied|not allowed|forbidden|unauthorized|is_coach|only coaches|coach required/i.test(message)) {
+    return true;
+  }
+  return false;
+}
+
+function assertAuthorizationDenied(error, label) {
+  assert(!!error, `${label}: expected authorization/RLS denial`);
+  assert(
+    isAuthorizationDenied(error),
+    `${label}: expected RLS/authorization failure (not FK), got code=${error.code || error.error_code || 'none'} message=${error.message || 'unknown'}`,
+  );
+}
+
 function assertUniqueViolation(error, expectedKind, label) {
   assert(!!error, `${label}: expected a database error`);
   const code = String(error.code || error.error_code || '').toUpperCase();
@@ -229,7 +250,7 @@ async function run() {
       file_size: 1024,
       mime_type: 'image/webp',
     });
-    assert(!!directInsertError, 'Direct INSERT must be rejected');
+    assertAuthorizationDenied(directInsertError, 'Direct INSERT must be rejected');
 
     const { error: proofClearRpcError } = await client.rpc('set_workout_proof_cleared', {
       attachment_id: '00000000-0000-0000-0000-000000000099',
@@ -1219,6 +1240,67 @@ async function run() {
     assert(nextTestSlotOffset > 0, 'Layer C must allocate isolated workout positions');
     assert(ownedSlot.completionKey === `${ownedSlot.weekIndex}:${ownedSlot.workoutIndex}`, 'Generated completion key must match generated position');
     assert(Number(ownedSlot.weekIndex) > MAX_REAL_PROGRAM_WEEK_INDEX, 'Owned workout seed must stay outside real program domain');
+
+    // --- Foxtrot Layer C: live athlete-side locker denial matrix (no coach CI creds) ---
+    {
+      const FOREIGN_USER_ID = '00000000-0000-4000-8000-000000000099';
+      const denialSlot = allocTestSlot(0);
+
+      const { data: isCoach, error: isCoachError } = await client.rpc('is_coach');
+      assert(!isCoachError, `is_coach() must be callable: ${isCoachError?.message || 'unknown'}`);
+      assert(isCoach === false, 'Disposable test athlete must not be a coach');
+
+      const { data: coachIdentities, error: coachIdentitiesError } = await client.rpc('coach_roster_identities');
+      assert(!coachIdentitiesError, `coach_roster_identities must be callable: ${coachIdentitiesError?.message || 'unknown'}`);
+      assert(
+        !coachIdentities || coachIdentities.length === 0,
+        'Non-coach must not receive coach identity rows',
+      );
+
+      const { error: coachNotesError } = await client.from('coach_notes').insert({
+        athlete_user_id: user.id,
+        note: `${testPrefix}: athlete must not write coach_notes`,
+      });
+      assertAuthorizationDenied(coachNotesError, 'Athlete coach_notes INSERT');
+
+      const { error: foreignWorkoutError } = await client.from('workout_completions').insert({
+        user_id: FOREIGN_USER_ID,
+        completion_key: denialSlot.completionKey,
+        client_record_id: `${testPrefix}:foreign-user-write`,
+        week_index: denialSlot.weekIndex,
+        workout_index: denialSlot.workoutIndex,
+        workout_type: 'Easy Run',
+        record_json: {},
+      });
+      assertAuthorizationDenied(foreignWorkoutError, 'Foreign user_id workout_completions INSERT');
+
+      const { error: foreignArchiveError } = await client.rpc('archive_and_reset_camp', {
+        target_user_id: FOREIGN_USER_ID,
+        p_label: `${testPrefix}:foreign-archive`,
+      });
+      assertAuthorizationDenied(foreignArchiveError, 'Foreign archive_and_reset_camp');
+
+      const denialProofKey = `${testPrefix}:direct-attach-denial`;
+      const denialPath = `${user.id}/${denialProofKey}/denied.webp`;
+      storagePaths.push(denialPath);
+      const { error: directAttachError } = await client.from('workout_attachments').insert({
+        user_id: user.id,
+        proof_key: denialProofKey,
+        storage_path: denialPath,
+        file_size: 1024,
+        mime_type: 'image/webp',
+      });
+      assertAuthorizationDenied(directAttachError, 'Direct workout_attachments INSERT');
+
+      // Ensure denial attempts left no foreign-owned residue under this athlete.
+      const { count: foreignResidue } = await client
+        .from('workout_completions')
+        .select('id', { count: 'exact', head: true })
+        .eq('client_record_id', `${testPrefix}:foreign-user-write`);
+      assert((foreignResidue || 0) === 0, 'Foreign user_id write must leave no workout row');
+
+      console.log('PASS: athlete locker denial matrix');
+    }
 
     if (canarySnapshot?.id) {
       assert(!createdWorkoutIds.includes(canarySnapshot.id), 'Read-only 1:2 canary must never enter createdWorkoutIds');

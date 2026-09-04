@@ -236,6 +236,8 @@ const COACH_ATTACHMENT_COLUMNS = 'id,user_id,proof_key,linked_record_id,week_ind
 
 // coach_roster_snapshot RPC is explicitly deferred. loadCoachRosterPayload() loads
 // tables directly until a consolidated snapshot RPC ships.
+// Auth contract: docs/AUTH_LOCKER_MODEL.md — coach SELECTs rely on RLS is_coach(),
+// not on this fan-out. Soft-fail per source is resilience, not a permission bypass.
 
 export async function loadCoachRosterPayload() {
   if (!isSupabaseConfigured || !supabase || !isCoachUser()) return null;
@@ -590,10 +592,6 @@ export async function loadCloudMileTest(testKey = '') {
   if (error) throw error;
   if (!isVisibleCompletionRow(data)) return null;
   return mapCloudMileTest(data);
-}
-
-export async function loadCloudMileTestByKey(testKey) {
-  return loadCloudMileTest(String(testKey || '').trim());
 }
 
 export async function ensureCloudMileTestIdentity(result, hrInfo, testContext) {

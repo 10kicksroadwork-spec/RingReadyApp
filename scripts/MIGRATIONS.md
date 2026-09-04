@@ -2,6 +2,14 @@
 
 Run these **in order** on a fresh or partially migrated project. Do not run files under `scripts/legacy/` or root `scripts/supabase-*.sql` (deprecated copies live in `scripts/legacy/`).
 
+## Authorization model
+
+RingReady uses a **per-athlete locker** (`user_id` + RLS). Coaches get extra SELECT via `is_coach()`. Workout proof rows are written only through SECURITY DEFINER RPCs — never direct authenticated INSERT/UPDATE on `workout_attachments`.
+
+Full contract: [docs/AUTH_LOCKER_MODEL.md](../docs/AUTH_LOCKER_MODEL.md).
+
+Auth-touching migrations: `000`–`006`, `009`, `012`–`013`, `015`–`016`.
+
 | Order | File | Purpose |
 |------:|------|---------|
 | 1 | [000_core_schema.sql](./migrations/000_core_schema.sql) | CREATE TABLE + athlete RLS on profiles and HR |

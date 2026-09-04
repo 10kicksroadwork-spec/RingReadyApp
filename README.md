@@ -13,11 +13,13 @@ Athlete PWA  →  Supabase (authoritative)  →  Coach dashboard
 | Layer | Role |
 |-------|------|
 | **Athlete app** | Vite PWA — local-first storage, BLE HR, session checkpoint/resume, proof upload |
-| **Supabase** | Auth, RLS-scoped athlete data, private proof staging, clean-slate RPC |
-| **Coach app** | In-app roster dashboard for coach accounts (live Supabase reads) |
+| **Supabase** | Auth, **locker-model RLS** (athlete owns `user_id` rows), private proof staging, clean-slate RPC |
+| **Coach app** | In-app roster dashboard for coach accounts (live Supabase reads via `is_coach()`) |
 | **Sync relay** | Authenticated Vercel `/api/sync` — server-only Apps Script URL and relay secret |
 
 Production does **not** expose the Apps Script `/exec` URL to the browser. Athlete sync goes through the authenticated relay.
+
+**Auth / RLS:** each athlete has a private data locker keyed by `user_id`. Coaches read across lockers; proof attachments are created only through SECURITY DEFINER RPCs. See [docs/AUTH_LOCKER_MODEL.md](docs/AUTH_LOCKER_MODEL.md).
 
 ## Project layout
 

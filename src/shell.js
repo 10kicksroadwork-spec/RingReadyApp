@@ -79,6 +79,7 @@ import {
   setSelectedCoachAthlete,
   syncCoachPreviewChrome,
 } from './coach-preview.js';
+import { beginAccountBoundaryHRDisconnect, hrState } from './hr-service.js';
 import {
   archiveAndResetCamp,
   clearAuthRedirectParams,
@@ -287,6 +288,60 @@ function clearAccountLocalData(explicitUserId = '') {
     clearActiveSessionCheckpoint(userId);
   }
   clearSharedLocalState();
+  resetAthleteRuntimeState();
+}
+
+/**
+ * Clear in-memory athlete/coach/HR session residue that is not storage-backed.
+ * Also initiates physical HR transport disconnect (best-effort, non-blocking).
+ */
+function resetAthleteRuntimeState() {
+  activeWeekIndex = 0;
+  scMode = 'Gym Machines';
+  scWeek = 1;
+  detailModality = MODALITY_RUNNING;
+  detailModalityInitialized = false;
+  setSelectedCoachAthlete('');
+  // Fire-and-forget: logout / A→B must not hang on a stuck BLE stack.
+  void beginAccountBoundaryHRDisconnect();
+  // Sprint engine lives in app.js — reset memory only (never touch stored checkpoints).
+  shellHooks?.resetSprintRuntimeForAccountBoundary?.();
+}
+
+function getAthleteRuntimeSnapshot() {
+  return {
+    activeWeekIndex,
+    scMode,
+    scWeek,
+    detailModality,
+    detailModalityInitialized,
+    hrConnected: !!hrState.connected,
+    hrSource: hrState.source,
+    hrDeviceName: hrState.deviceName,
+  };
+}
+
+function seedAthleteRuntimeStateForTest(partial = {}) {
+  if (partial.activeWeekIndex != null) activeWeekIndex = Number(partial.activeWeekIndex);
+  if (partial.scMode != null) scMode = String(partial.scMode);
+  if (partial.scWeek != null) scWeek = Number(partial.scWeek);
+  if (partial.detailModality != null) detailModality = normalizeModality(partial.detailModality);
+  if (partial.detailModalityInitialized != null) {
+    detailModalityInitialized = !!partial.detailModalityInitialized;
+  }
+}
+
+/** True when shared locker and runtime must be wiped for the incoming identity. */
+function shouldApplyAccountIdentityBoundary(lastUserId, newUserId) {
+  return (
+    shouldClearSharedStateOnSwitch(lastUserId, newUserId)
+    || shouldFailClosedClearSharedCache(lastUserId, newUserId)
+  );
+}
+
+function applyAccountIdentityBoundary() {
+  clearSharedLocalState();
+  resetAthleteRuntimeState();
 }
 function clearLocalTrainingData({ markResetAt = '' } = {}) {
   const userId = getCurrentUser()?.id;
@@ -441,14 +496,12 @@ function prepareAccountSwitchSafety() {
   const user = getCurrentUser();
   const ownerResult = getStorageItem(AUTH_USER_STORAGE_KEY, null);
   if (!ownerResult.ok) {
-    clearSharedLocalState();
+    // Unreadable owner marker: fail closed on both storage and runtime.
+    applyAccountIdentityBoundary();
   } else {
     const lastUserId = ownerResult.value;
-    if (
-      shouldClearSharedStateOnSwitch(lastUserId, user.id)
-      || shouldFailClosedClearSharedCache(lastUserId, user.id)
-    ) {
-      clearSharedLocalState();
+    if (shouldApplyAccountIdentityBoundary(lastUserId, user.id)) {
+      applyAccountIdentityBoundary();
     }
   }
   setStorageItem(AUTH_USER_STORAGE_KEY, user.id);
@@ -1002,9 +1055,20 @@ function handleAuthStateChange(session, event) {
   }
   if (event === 'SIGNED_OUT' && isSupabaseConfigured) {
     invalidateCloudHydration();
+    // Session is already null — clear using the last locker owner marker.
+    const ownerResult = getStorageItem(AUTH_USER_STORAGE_KEY, null);
+    const ownerId = ownerResult.ok ? String(ownerResult.value || '').trim() : '';
+    clearAccountLocalData(ownerId);
     passwordRecoveryPending = false;
     authMode = 'sign-in';
     showAuthScreen();
+    return;
+  }
+  if (event === 'SIGNED_IN' && session?.user && isSupabaseConfigured) {
+    // Multi-tab / external session restore: enforce locker isolation then enter home.
+    if (passwordRecoveryPending) return;
+    if (isCoachUser()) enterSignedInCoachHome();
+    else enterSignedInAthleteHome();
   }
 }
 function formatDistance(value) { const num = Number(value); if (!Number.isFinite(num) || num <= 0) return '--'; return num >= 10 ? num.toFixed(1) : num.toFixed(2); }
@@ -2658,4 +2722,12 @@ export const cloudHydrationTestHooks = {
   rehydrateWorkoutCompletionFromCloud,
   scheduleTargetedWorkoutRehydrate,
   prepareAccountSwitchSafety,
+  clearAccountLocalData,
+  resetAthleteRuntimeState,
+  getAthleteRuntimeSnapshot,
+  seedAthleteRuntimeStateForTest,
+  shouldApplyAccountIdentityBoundary,
+  setShellHooksForTest(hooks) {
+    shellHooks = hooks;
+  },
 };

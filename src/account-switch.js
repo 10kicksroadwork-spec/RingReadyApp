@@ -2,14 +2,23 @@ import {
   PROFILE_STORAGE_KEY,
   STORAGE_KEY,
   WORKOUT_COMPLETIONS_STORAGE_KEY,
+  LEGACY_SYNC_QUEUE_KEY,
+  LEGACY_SYNC_QUEUE_QUARANTINE_KEY,
 } from './constants.js';
 import {
   HR_INFO_STORAGE_KEY,
   MILE_TEST_STORAGE_KEY,
+  SC_MODE_STORAGE_KEY,
+  SC_WEEK_STORAGE_KEY,
 } from './app-content.js';
 import { readJSONValue, removeStorageKey } from './safe-storage.js';
 
-const SHARED_LOCAL_STATE_KEYS = [
+/**
+ * Shared (non-user-prefixed) athlete locker keys cleared on logout / account switch.
+ * Per-user sync queues and sprint checkpoints are NOT listed here — those clear by user id.
+ * Keep in sync with docs/AUTH_LOCKER_MODEL.md.
+ */
+export const ATHLETE_SHARED_STORAGE_KEYS = [
   PROFILE_STORAGE_KEY,
   STORAGE_KEY,
   WORKOUT_COMPLETIONS_STORAGE_KEY,
@@ -20,7 +29,16 @@ const SHARED_LOCAL_STATE_KEYS = [
   'ringReadyWorkoutNotes',
   'ringReadyCampResetAtSeen',
   'ringReadyClearedWorkoutCompletions',
+  'ringReadyActiveWeekIndex',
+  SC_MODE_STORAGE_KEY,
+  SC_WEEK_STORAGE_KEY,
+  'ringReadyOnboardingDismissed',
+  'ringReadyModalitySwitchNoteSeen',
+  'ringReadyCoachPreviewNotes',
 ];
+
+/** @deprecated Use ATHLETE_SHARED_STORAGE_KEYS */
+const SHARED_LOCAL_STATE_KEYS = ATHLETE_SHARED_STORAGE_KEYS;
 
 export function hasSharedAthleteCacheData() {
   return SHARED_LOCAL_STATE_KEYS.some((key) => {
@@ -48,4 +66,7 @@ export function clearSharedLocalState() {
   SHARED_LOCAL_STATE_KEYS.forEach((key) => {
     removeStorageKey(key);
   });
+  // Legacy unscoped sync payloads can contain Athlete A profile/workout data.
+  removeStorageKey(LEGACY_SYNC_QUEUE_KEY);
+  removeStorageKey(LEGACY_SYNC_QUEUE_QUARANTINE_KEY);
 }

@@ -9,7 +9,6 @@ export const LEGACY_SYNC_QUEUE_QUARANTINE_KEY = 'ringReadySyncQueue:legacy-quara
 export const STORAGE_KEY = 'sprintTrainerHistory';
 export const WORKOUT_COMPLETIONS_STORAGE_KEY = 'ringReadyWorkoutCompletions';
 export const PROFILE_STORAGE_KEY = 'ringReadyAthleteProfile';
-export const SYNC_QUEUE_KEY = 'ringReadySyncQueue';
 export const SYNC_ENDPOINT_KEY = 'ringReadySheetsEndpoint';
 export const HR_STALE_MS = 10000;
 export const AUTO_START_NEXT_SPRINT = true;

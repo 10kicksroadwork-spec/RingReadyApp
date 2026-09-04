@@ -236,11 +236,6 @@ export function clearSyncQueueForUser(userId = resolveQueueUserId()) {
   removeStorageKey(syncQueueStorageKey(userId));
 }
 
-export function clearAllSyncQueues() {
-  clearSyncQueueForUser(resolveQueueUserId());
-  removeStorageKey(LEGACY_SYNC_QUEUE_KEY);
-}
-
 export function getAthleteProfile() {
   const saved = readJSON(PROFILE_STORAGE_KEY, {});
   return cleanProfile({ ...PROFILE_DEFAULTS, ...saved });
