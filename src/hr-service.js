@@ -14,6 +14,9 @@ let transport = null;
 let webModule = null;
 let nativeModule = null;
 let uiHooks = null;
+/** When false, transport HR samples are ignored (account-boundary isolation). */
+let acceptTransportHR = true;
+const ACCOUNT_BOUNDARY_DISCONNECT_MS = 2500;
 
 export function initHRService(hooks) {
   uiHooks = hooks;
@@ -39,9 +42,12 @@ export async function initHRTransport() {
 function handleTransportHR(payload) {
   if (payload.disconnected) {
     setHRDisconnected();
-    if (uiHooks?.onDisconnect) uiHooks.onDisconnect();
+    if (acceptTransportHR && uiHooks?.onDisconnect) uiHooks.onDisconnect();
     return;
   }
+
+  // Account-boundary guard: Athlete A's late BLE samples must not resurrect HR for B.
+  if (!acceptTransportHR) return;
 
   if (payload.hr == null) return;
 
@@ -173,6 +179,9 @@ export async function connectHR() {
     return;
   }
 
+  // Intentional user connect re-opens transport ingress after an account boundary.
+  acceptTransportHR = true;
+
   const info = getPlatformInfo();
 
   if (info.supportsNativeBLE && nativeModule) {
@@ -201,6 +210,40 @@ export async function disconnectHR() {
     await webModule.disconnectWebHR();
   }
 }
+
+/**
+ * Account A→B / logout boundary: stop accepting transport samples, initiate BLE
+ * disconnect without hanging the auth path, then force disconnected runtime state.
+ */
+export function beginAccountBoundaryHRDisconnect() {
+  acceptTransportHR = false;
+  setHRDisconnected();
+  const disconnectPromise = Promise.resolve()
+    .then(() => disconnectHR())
+    .catch((error) => {
+      console.warn('HR disconnect on account boundary failed', error);
+    })
+    .finally(() => {
+      setHRDisconnected();
+    });
+  // Bound wait so callers that await this never hang on a stuck BLE stack.
+  return Promise.race([
+    disconnectPromise,
+    new Promise((resolve) => {
+      setTimeout(resolve, ACCOUNT_BOUNDARY_DISCONNECT_MS);
+    }),
+  ]);
+}
+
+/** Test/debug access for account-boundary HR isolation. */
+export const hrServiceTestHooks = {
+  handleTransportHR,
+  beginAccountBoundaryHRDisconnect,
+  isAcceptingTransportHR: () => acceptTransportHR,
+  setAcceptTransportHRForTest(value) {
+    acceptTransportHR = !!value;
+  },
+};
 
 function handleConnectError(err) {
   const msg = String(err && err.message ? err.message : err);

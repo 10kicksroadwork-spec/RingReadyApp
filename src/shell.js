@@ -79,7 +79,7 @@ import {
   setSelectedCoachAthlete,
   syncCoachPreviewChrome,
 } from './coach-preview.js';
-import { setHRDisconnected } from './hr-service.js';
+import { beginAccountBoundaryHRDisconnect, hrState } from './hr-service.js';
 import {
   archiveAndResetCamp,
   clearAuthRedirectParams,
@@ -291,7 +291,10 @@ function clearAccountLocalData(explicitUserId = '') {
   resetAthleteRuntimeState();
 }
 
-/** Clear in-memory athlete/coach/HR session residue that is not storage-backed. */
+/**
+ * Clear in-memory athlete/coach/HR session residue that is not storage-backed.
+ * Also initiates physical HR transport disconnect (best-effort, non-blocking).
+ */
 function resetAthleteRuntimeState() {
   activeWeekIndex = 0;
   scMode = 'Gym Machines';
@@ -299,7 +302,44 @@ function resetAthleteRuntimeState() {
   detailModality = MODALITY_RUNNING;
   detailModalityInitialized = false;
   setSelectedCoachAthlete('');
-  setHRDisconnected();
+  // Fire-and-forget: logout / A→B must not hang on a stuck BLE stack.
+  void beginAccountBoundaryHRDisconnect();
+}
+
+function getAthleteRuntimeSnapshot() {
+  return {
+    activeWeekIndex,
+    scMode,
+    scWeek,
+    detailModality,
+    detailModalityInitialized,
+    hrConnected: !!hrState.connected,
+    hrSource: hrState.source,
+    hrDeviceName: hrState.deviceName,
+  };
+}
+
+function seedAthleteRuntimeStateForTest(partial = {}) {
+  if (partial.activeWeekIndex != null) activeWeekIndex = Number(partial.activeWeekIndex);
+  if (partial.scMode != null) scMode = String(partial.scMode);
+  if (partial.scWeek != null) scWeek = Number(partial.scWeek);
+  if (partial.detailModality != null) detailModality = normalizeModality(partial.detailModality);
+  if (partial.detailModalityInitialized != null) {
+    detailModalityInitialized = !!partial.detailModalityInitialized;
+  }
+}
+
+/** True when shared locker and runtime must be wiped for the incoming identity. */
+function shouldApplyAccountIdentityBoundary(lastUserId, newUserId) {
+  return (
+    shouldClearSharedStateOnSwitch(lastUserId, newUserId)
+    || shouldFailClosedClearSharedCache(lastUserId, newUserId)
+  );
+}
+
+function applyAccountIdentityBoundary() {
+  clearSharedLocalState();
+  resetAthleteRuntimeState();
 }
 function clearLocalTrainingData({ markResetAt = '' } = {}) {
   const userId = getCurrentUser()?.id;
@@ -454,14 +494,12 @@ function prepareAccountSwitchSafety() {
   const user = getCurrentUser();
   const ownerResult = getStorageItem(AUTH_USER_STORAGE_KEY, null);
   if (!ownerResult.ok) {
-    clearSharedLocalState();
+    // Unreadable owner marker: fail closed on both storage and runtime.
+    applyAccountIdentityBoundary();
   } else {
     const lastUserId = ownerResult.value;
-    if (
-      shouldClearSharedStateOnSwitch(lastUserId, user.id)
-      || shouldFailClosedClearSharedCache(lastUserId, user.id)
-    ) {
-      clearSharedLocalState();
+    if (shouldApplyAccountIdentityBoundary(lastUserId, user.id)) {
+      applyAccountIdentityBoundary();
     }
   }
   setStorageItem(AUTH_USER_STORAGE_KEY, user.id);
@@ -2684,4 +2722,7 @@ export const cloudHydrationTestHooks = {
   prepareAccountSwitchSafety,
   clearAccountLocalData,
   resetAthleteRuntimeState,
+  getAthleteRuntimeSnapshot,
+  seedAthleteRuntimeStateForTest,
+  shouldApplyAccountIdentityBoundary,
 };
