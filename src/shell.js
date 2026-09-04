@@ -615,13 +615,10 @@ async function runCloudHydrationMaintenance(userId, generation, {
   }
 
   if (completionsResult?.ok && shouldApplyCompletionHydration(completionEpochAtStart)) {
-    const cloudCompletions = completionsResult.value || {};
-    Object.keys(cloudCompletions).forEach((key) => {
-      const cloudStamp = cloudCompletions[key]?.updatedAt || cloudCompletions[key]?.completedAt || '';
-      if (!isWorkoutCompletionCleared(key, null, cloudStamp)) return;
-      const [weekIndex, workoutIndex] = key.split(':').map(Number);
-      maintenanceTasks.push(() => boundedCloudWrite(`stale_clear_${key}`, () => deleteCloudWorkoutCompletion(weekIndex, workoutIndex)));
-    });
+    // Intentionally do NOT delete cloud completions from generic local clear
+    // tombstones. A page refresh must never turn device-local display metadata
+    // into a destructive Supabase DELETE. Cloud deletes happen only from an
+    // explicit athlete Clear action (or a future durable pendingCloudDelete).
   }
 
   getCloudPendingSprintSessions().forEach((session) => {

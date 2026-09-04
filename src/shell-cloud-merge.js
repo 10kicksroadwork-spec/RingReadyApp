@@ -33,21 +33,27 @@ export function mergeHRByTimestamp(localHR = {}, cloudHR = {}, defaults = {}) {
 export function mergeWorkoutCompletions(localCompletions = {}, cloudCompletions = {}, isClearedFn) {
   const merged = { ...localCompletions };
   Object.entries(cloudCompletions || {}).forEach(([key, cloudRecord]) => {
-    const cloudStamp = cloudRecord?.updatedAt || cloudRecord?.completedAt || cloudRecord?.updated_at || cloudRecord?.date || '';
-    if (isClearedFn?.(key, null, cloudStamp)) {
-      delete merged[key];
-      return;
+    // Cloud presence wins over any local display tombstone.
+    if (isClearedFn?.(key)) {
+      // Caller may retire markers separately; never skip applying cloud keys here.
     }
     const localRecord = merged[key];
     if (!localRecord || getCloudTimestamp(cloudRecord) >= getCloudTimestamp(localRecord)) merged[key] = cloudRecord;
   });
   Object.keys(merged).forEach((key) => {
+    // Only suppress keys that are NOT present in the successful cloud snapshot.
+    if (cloudCompletions && Object.prototype.hasOwnProperty.call(cloudCompletions, key)) return;
     if (isClearedFn?.(key)) delete merged[key];
   });
   return merged;
 }
 
-/** Cloud read succeeded — cloud keys win; orphan local cache entries are dropped. */
+/**
+ * Cloud read succeeded — cloud keys win; orphan local cache entries are dropped.
+ * Local clear tombstones must NOT suppress keys present in an accepted fresh snapshot.
+ * Epoch guards (caller) protect in-flight clear races; this path assumes the snapshot
+ * was accepted after those checks.
+ */
 export function reconcileWorkoutCompletionsFromCloud(
   cloudCompletions = {},
   isClearedFn,
@@ -55,24 +61,8 @@ export function reconcileWorkoutCompletionsFromCloud(
 ) {
   const merged = { ...(cloudCompletions || {}) };
   Object.keys(merged).forEach((key) => {
-    const cloudRecord = merged[key];
-    const cloudStamp = cloudRecord?.updatedAt || cloudRecord?.completedAt || cloudRecord?.updated_at || cloudRecord?.date || '';
-    const compareTime = new Date(cloudStamp).getTime();
-    const hasValidCloudStamp = Number.isFinite(compareTime);
-
-    if (hasValidCloudStamp) {
-      if (isClearedFn?.(key, null, cloudStamp)) {
-        delete merged[key];
-        return;
-      }
-      if (isClearedFn?.(key)) {
-        onSupersededClearMarker?.(key);
-      }
-      return;
-    }
-
     if (isClearedFn?.(key)) {
-      delete merged[key];
+      onSupersededClearMarker?.(key);
     }
   });
   return merged;
