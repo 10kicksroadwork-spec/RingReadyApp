@@ -190,9 +190,6 @@ async function run() {
   const createdMileTestIds = [];
   const createdWorkoutIds = [];
   const storagePaths = [];
-  const canaryCleanupIds = [];
-  let canaryCreatedByThisRun = false;
-  let canaryId = null;
   let cleanupErrors = [];
 
   try {
@@ -307,7 +304,7 @@ async function run() {
     });
     assert(!!wrongContextError, 'Owned record with wrong test_key must be rejected');
 
-    // Isolation canary: a legitimate real-program slot (1:2) must remain untouched by Layer C.
+    // Isolation canary: real-program slot 1:2 is READ-ONLY. Never insert into week 0..6.
     const REAL_CANARY_KEY = '1:2';
     const REAL_CANARY_WEEK = 1;
     const REAL_CANARY_WORKOUT = 2;
@@ -323,40 +320,8 @@ async function run() {
       assert(!canaryLookupError, `Isolation canary lookup failed: ${canaryLookupError?.message || 'unknown'}`);
       if (existingCanary?.id) {
         canarySnapshot = existingCanary;
-        canaryId = existingCanary.id;
-      } else {
-        const canaryClientId = `${testPrefix}:isolation-canary`;
-        const { data: seededCanary, error: canarySeedError } = await client
-          .from('workout_completions')
-          .insert({
-            user_id: user.id,
-            completion_key: REAL_CANARY_KEY,
-            client_record_id: canaryClientId,
-            week_index: REAL_CANARY_WEEK,
-            workout_index: REAL_CANARY_WORKOUT,
-            workout_type: 'Threshold Run',
-            proof_pending: false,
-            total_minutes: 33,
-            record_json: { id: canaryClientId, isolationCanary: true },
-          })
-          .select('id, completion_key, week_index, workout_index, client_record_id, attachment_id, total_minutes, proof_pending, updated_at')
-          .single();
-        if (canarySeedError) {
-          const code = String(canarySeedError.code || canarySeedError.error_code || '').toUpperCase();
-          if (code === '23505') {
-            throw new Error(
-              'Isolation canary: unique collision seeding 1:2. FAIL CLOSED — did not delete the existing row.',
-            );
-          }
-          throw new Error(`Isolation canary seed failed: ${canarySeedError.message || 'unknown'}`);
-        }
-        assert(seededCanary?.id, 'Isolation canary seed returned no id');
-        canaryCreatedByThisRun = true;
-        canarySnapshot = seededCanary;
-        canaryId = seededCanary.id;
-        // Do NOT push into createdWorkoutIds: cleanup must never delete a pre-existing athlete row,
-        // and the canary is verified before any optional canary-only cleanup.
       }
+      // If absent: do nothing. Production-contract must never write real program slots.
     }
 
     const ownedSlot = allocTestSlot(2);
@@ -1255,45 +1220,58 @@ async function run() {
     assert(ownedSlot.completionKey === `${ownedSlot.weekIndex}:${ownedSlot.workoutIndex}`, 'Generated completion key must match generated position');
     assert(Number(ownedSlot.weekIndex) > MAX_REAL_PROGRAM_WEEK_INDEX, 'Owned workout seed must stay outside real program domain');
 
-    assert(canaryId && canarySnapshot, 'Isolation canary must be present for Layer C regression');
-    assert(!createdWorkoutIds.includes(canaryId), 'Isolation canary must never enter createdWorkoutIds cleanup list');
-    const { data: canaryAfter, error: canaryAfterError } = await client
-      .from('workout_completions')
-      .select('id, completion_key, week_index, workout_index, client_record_id, attachment_id, total_minutes, proof_pending, updated_at')
-      .eq('id', canaryId)
-      .maybeSingle();
-    assert(!canaryAfterError, `Isolation canary post-check failed: ${canaryAfterError?.message || 'unknown'}`);
-    assert(canaryAfter?.id === canarySnapshot.id, 'Real 1:2 canary row ID must remain unchanged');
-    assert(canaryAfter.completion_key === REAL_CANARY_KEY, 'Real 1:2 completion_key must remain unchanged');
-    assert(Number(canaryAfter.week_index) === REAL_CANARY_WEEK, 'Real 1:2 week_index must remain unchanged');
-    assert(Number(canaryAfter.workout_index) === REAL_CANARY_WORKOUT, 'Real 1:2 workout_index must remain unchanged');
-    assert(canaryAfter.client_record_id === canarySnapshot.client_record_id, 'Real 1:2 client_record_id must remain unchanged');
-    assert(
-      String(canaryAfter.attachment_id || '') === String(canarySnapshot.attachment_id || ''),
-      'Real 1:2 attachment_id must remain unchanged',
-    );
-    assert(
-      Number(canaryAfter.total_minutes ?? NaN) === Number(canarySnapshot.total_minutes ?? NaN)
-        || (canaryAfter.total_minutes == null && canarySnapshot.total_minutes == null),
-      'Real 1:2 total_minutes must remain unchanged',
-    );
-    if (canaryCreatedByThisRun) {
-      canaryCleanupIds.push(canaryId);
+    if (canarySnapshot?.id) {
+      assert(!createdWorkoutIds.includes(canarySnapshot.id), 'Read-only 1:2 canary must never enter createdWorkoutIds');
+      const { data: canaryAfter, error: canaryAfterError } = await client
+        .from('workout_completions')
+        .select('id, completion_key, week_index, workout_index, client_record_id, attachment_id, total_minutes, proof_pending, updated_at')
+        .eq('id', canarySnapshot.id)
+        .maybeSingle();
+      assert(!canaryAfterError, `Isolation canary post-check failed: ${canaryAfterError?.message || 'unknown'}`);
+      assert(canaryAfter?.id === canarySnapshot.id, 'Real 1:2 canary row ID must remain unchanged');
+      assert(canaryAfter.completion_key === REAL_CANARY_KEY, 'Real 1:2 completion_key must remain unchanged');
+      assert(Number(canaryAfter.week_index) === REAL_CANARY_WEEK, 'Real 1:2 week_index must remain unchanged');
+      assert(Number(canaryAfter.workout_index) === REAL_CANARY_WORKOUT, 'Real 1:2 workout_index must remain unchanged');
+      assert(canaryAfter.client_record_id === canarySnapshot.client_record_id, 'Real 1:2 client_record_id must remain unchanged');
+      assert(
+        String(canaryAfter.attachment_id || '') === String(canarySnapshot.attachment_id || ''),
+        'Real 1:2 attachment_id must remain unchanged',
+      );
+      assert(
+        Number(canaryAfter.total_minutes ?? NaN) === Number(canarySnapshot.total_minutes ?? NaN)
+          || (canaryAfter.total_minutes == null && canarySnapshot.total_minutes == null),
+        'Real 1:2 total_minutes must remain unchanged',
+      );
+      assert(
+        canaryAfter.proof_pending === canarySnapshot.proof_pending,
+        'Real 1:2 proof_pending must remain unchanged',
+      );
+    } else {
+      const { data: canaryAfterAbsent, error: canaryAbsentError } = await client
+        .from('workout_completions')
+        .select('id')
+        .eq('user_id', user.id)
+        .eq('completion_key', REAL_CANARY_KEY)
+        .maybeSingle();
+      assert(!canaryAbsentError, `Isolation canary absence check failed: ${canaryAbsentError?.message || 'unknown'}`);
+      assert(!canaryAfterAbsent?.id, 'Real 1:2 must remain absent when it was absent before Layer C');
+      const { count: realSlotCount, error: realSlotCountError } = await client
+        .from('workout_completions')
+        .select('id', { count: 'exact', head: true })
+        .eq('user_id', user.id)
+        .eq('week_index', REAL_CANARY_WEEK)
+        .eq('workout_index', REAL_CANARY_WORKOUT);
+      assert(!realSlotCountError, `Real-slot position check failed: ${realSlotCountError?.message || 'unknown'}`);
+      assert(realSlotCount === 0, 'Layer C must not create any row at real program position 1:2');
     }
 
     console.log('PASS: proof authorization matrix');
   } finally {
-    // Cleanup only IDs created by this run. Never delete a pre-existing real-slot row.
-    const safeWorkoutCleanupIds = createdWorkoutIds.filter(
-      (id) => !(canaryId && id === canaryId && !canaryCreatedByThisRun),
-    );
-    if (canaryCreatedByThisRun && canaryId && !canaryCleanupIds.includes(canaryId)) {
-      canaryCleanupIds.push(canaryId);
-    }
+    // Cleanup only IDs created by this run. Never delete real-program rows.
     cleanupErrors = await runCleanup(client, {
       attachmentIds: createdAttachmentIds,
       mileTestIds: createdMileTestIds,
-      workoutIds: [...safeWorkoutCleanupIds, ...canaryCleanupIds],
+      workoutIds: createdWorkoutIds,
       storagePaths,
     });
   }
