@@ -32,6 +32,57 @@ const password = process.env.RING_READY_TEST_PASSWORD || '';
 const requireTests = process.env.RING_READY_REQUIRE_PROOF_TESTS === '1';
 const testPrefix = `auth-test:${Date.now()}`;
 
+/** Real RingReady camps use week indices 0..6. Layer C must never seed those slots. */
+const MAX_REAL_PROGRAM_WEEK_INDEX = 6;
+const testSlotBase = 100000 + (Date.now() % 100000000);
+let nextTestSlotOffset = 0;
+
+function allocTestSlot(workoutIndex = 0) {
+  const weekIndex = testSlotBase + nextTestSlotOffset;
+  nextTestSlotOffset += 1;
+  assert(
+    weekIndex > MAX_REAL_PROGRAM_WEEK_INDEX,
+    `Layer C test week ${weekIndex} must be outside real program domain 0..${MAX_REAL_PROGRAM_WEEK_INDEX}`,
+  );
+  return {
+    weekIndex,
+    workoutIndex: Number(workoutIndex),
+    completionKey: `${weekIndex}:${Number(workoutIndex)}`,
+  };
+}
+
+function assertOutsideRealProgram(weekIndex, label) {
+  assert(
+    Number(weekIndex) > MAX_REAL_PROGRAM_WEEK_INDEX,
+    `${label}: week_index ${weekIndex} must be outside real program domain 0..${MAX_REAL_PROGRAM_WEEK_INDEX}`,
+  );
+}
+
+/**
+ * Insert a Layer C workout row. On unique collision with a pre-existing row:
+ * FAIL CLOSED — never delete the existing athlete/test row to unblock CI.
+ */
+async function insertWorkoutOrFailClosed(client, row, createdWorkoutIds, label, select = 'id') {
+  assertOutsideRealProgram(row.week_index, label);
+  const { data, error } = await client
+    .from('workout_completions')
+    .insert(row)
+    .select(select)
+    .single();
+  if (error) {
+    const code = String(error.code || error.error_code || '').toUpperCase();
+    if (code === '23505') {
+      throw new Error(
+        `${label}: unique collision with a pre-existing row. FAIL CLOSED — did not delete the existing row. ${error.message}`,
+      );
+    }
+    throw new Error(`${label}: ${error.message || 'insert failed'}`);
+  }
+  assert(data?.id, `${label}: insert returned no id`);
+  createdWorkoutIds.push(data.id);
+  return data;
+}
+
 function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
@@ -139,6 +190,9 @@ async function run() {
   const createdMileTestIds = [];
   const createdWorkoutIds = [];
   const storagePaths = [];
+  const canaryCleanupIds = [];
+  let canaryCreatedByThisRun = false;
+  let canaryId = null;
   let cleanupErrors = [];
 
   try {
@@ -253,17 +307,73 @@ async function run() {
     });
     assert(!!wrongContextError, 'Owned record with wrong test_key must be rejected');
 
+    // Isolation canary: a legitimate real-program slot (1:2) must remain untouched by Layer C.
+    const REAL_CANARY_KEY = '1:2';
+    const REAL_CANARY_WEEK = 1;
+    const REAL_CANARY_WORKOUT = 2;
+    let canarySnapshot = null;
+
+    {
+      const { data: existingCanary, error: canaryLookupError } = await client
+        .from('workout_completions')
+        .select('id, completion_key, week_index, workout_index, client_record_id, attachment_id, total_minutes, proof_pending, updated_at')
+        .eq('user_id', user.id)
+        .eq('completion_key', REAL_CANARY_KEY)
+        .maybeSingle();
+      assert(!canaryLookupError, `Isolation canary lookup failed: ${canaryLookupError?.message || 'unknown'}`);
+      if (existingCanary?.id) {
+        canarySnapshot = existingCanary;
+        canaryId = existingCanary.id;
+      } else {
+        const canaryClientId = `${testPrefix}:isolation-canary`;
+        const { data: seededCanary, error: canarySeedError } = await client
+          .from('workout_completions')
+          .insert({
+            user_id: user.id,
+            completion_key: REAL_CANARY_KEY,
+            client_record_id: canaryClientId,
+            week_index: REAL_CANARY_WEEK,
+            workout_index: REAL_CANARY_WORKOUT,
+            workout_type: 'Threshold Run',
+            proof_pending: false,
+            total_minutes: 33,
+            record_json: { id: canaryClientId, isolationCanary: true },
+          })
+          .select('id, completion_key, week_index, workout_index, client_record_id, attachment_id, total_minutes, proof_pending, updated_at')
+          .single();
+        if (canarySeedError) {
+          const code = String(canarySeedError.code || canarySeedError.error_code || '').toUpperCase();
+          if (code === '23505') {
+            throw new Error(
+              'Isolation canary: unique collision seeding 1:2. FAIL CLOSED — did not delete the existing row.',
+            );
+          }
+          throw new Error(`Isolation canary seed failed: ${canarySeedError.message || 'unknown'}`);
+        }
+        assert(seededCanary?.id, 'Isolation canary seed returned no id');
+        canaryCreatedByThisRun = true;
+        canarySnapshot = seededCanary;
+        canaryId = seededCanary.id;
+        // Do NOT push into createdWorkoutIds: cleanup must never delete a pre-existing athlete row,
+        // and the canary is verified before any optional canary-only cleanup.
+      }
+    }
+
+    const ownedSlot = allocTestSlot(2);
     const workoutClientId = `${testPrefix}:workout-client-id`;
-    const workoutProofKey = `${testPrefix}:program:7:1:2`;
-    const { data: workoutRow, error: workoutInsertError } = await client.from('workout_completions').insert({
-      user_id: user.id,
-      completion_key: '1:2',
-      client_record_id: workoutClientId,
-      week_index: 1,
-      workout_index: 2,
-    }).select('id').single();
-    assert(!workoutInsertError && workoutRow?.id, `Could not seed owned workout: ${workoutInsertError?.message || 'unknown'}`);
-    createdWorkoutIds.push(workoutRow.id);
+    const workoutProofKey = `${testPrefix}:program:7:${ownedSlot.weekIndex}:${ownedSlot.workoutIndex}`;
+    const workoutRow = await insertWorkoutOrFailClosed(
+      client,
+      {
+        user_id: user.id,
+        completion_key: ownedSlot.completionKey,
+        client_record_id: workoutClientId,
+        week_index: ownedSlot.weekIndex,
+        workout_index: ownedSlot.workoutIndex,
+      },
+      createdWorkoutIds,
+      'Owned workout seed',
+    );
 
     const workoutPath = `${user.id}/${workoutProofKey}/workout.webp`;
     storagePaths.push(workoutPath);
@@ -272,8 +382,8 @@ async function run() {
       p_proof_key: workoutProofKey,
       p_linked_record_id: workoutClientId,
       p_storage_path: workoutPath,
-      p_week_index: 0,
-      p_workout_index: 2,
+      p_week_index: ownedSlot.weekIndex - 1,
+      p_workout_index: ownedSlot.workoutIndex,
     });
     assert(!!wrongWorkoutContextError, 'Owned workout with wrong week_index must be rejected');
 
@@ -281,8 +391,8 @@ async function run() {
       p_proof_key: workoutProofKey,
       p_linked_record_id: workoutClientId,
       p_storage_path: workoutPath,
-      p_week_index: 1,
-      p_workout_index: 2,
+      p_week_index: ownedSlot.weekIndex,
+      p_workout_index: ownedSlot.workoutIndex,
     });
     assert(!workoutProofError && workoutProof?.id, `Owned workout with matching context must be accepted: ${workoutProofError?.message || 'unknown'}`);
     createdAttachmentIds.push(workoutProof.id);
@@ -339,9 +449,10 @@ async function run() {
     if (first.data?.id) createdAttachmentIds.push(first.data.id);
     if (second.data?.id) createdAttachmentIds.push(second.data.id);
 
+    const machineSlot = allocTestSlot(8);
     const machineRecord = {
       id: `${testPrefix}:machine-client`,
-      workoutContext: { weekIndex: 9, workoutIndex: 8, workoutType: 'Benchmark Run' },
+      workoutContext: { weekIndex: machineSlot.weekIndex, workoutIndex: machineSlot.workoutIndex, workoutType: 'Benchmark Run' },
       workoutLog: {
         modality: 'assault_bike',
         outputType: 'watts',
@@ -355,40 +466,43 @@ async function run() {
       completedAt: new Date().toISOString(),
     };
     const machinePayload = buildWorkoutCloudPayload(machineRecord, user.id);
-    const { data: machineRow, error: machineUpsertError } = await client
-      .from('workout_completions')
-      .upsert(machinePayload, { onConflict: 'user_id,completion_key' })
-      .select('id, modality, output_type, output_value, avg_watts, distance')
-      .single();
-    assert(
-      !machineUpsertError && machineRow?.id,
-      `Migration 014 machine upsert must succeed: ${machineUpsertError?.message || 'unknown'}`,
+    assertOutsideRealProgram(machinePayload.week_index, 'Machine payload');
+    const machineRow = await insertWorkoutOrFailClosed(
+      client,
+      machinePayload,
+      createdWorkoutIds,
+      'Migration 014 machine insert',
+      'id, modality, output_type, output_value, avg_watts, distance',
     );
     assert(machineRow.modality === 'assault_bike', 'Migration 014 must persist modality');
     assert(machineRow.output_type === 'watts', 'Migration 014 must persist output_type');
     assert(Number(machineRow.output_value) === 184, 'Migration 014 must persist output_value');
     assert(Number(machineRow.avg_watts) === 184, 'Migration 014 must persist avg_watts');
     assert(machineRow.distance === null, 'Migration 014 machine rows must keep distance null');
-    createdWorkoutIds.push(machineRow.id);
 
+    const legacySlot = allocTestSlot(4);
     const legacyClientId = `${testPrefix}:legacy-distance`;
-    const legacyWeek = 9;
-    const legacyWorkout = 4;
-    const { data: legacyRow, error: legacyInsertError } = await client.from('workout_completions').insert({
-      user_id: user.id,
-      completion_key: `${legacyWeek}:${legacyWorkout}`,
-      client_record_id: legacyClientId,
-      week_index: legacyWeek,
-      workout_index: legacyWorkout,
-      distance: 3.2,
-      record_json: {
-        id: legacyClientId,
-        workoutContext: { weekIndex: legacyWeek, workoutIndex: legacyWorkout, workoutType: 'Benchmark Run' },
+    const legacyWeek = legacySlot.weekIndex;
+    const legacyWorkout = legacySlot.workoutIndex;
+    const legacyRow = await insertWorkoutOrFailClosed(
+      client,
+      {
+        user_id: user.id,
+        completion_key: legacySlot.completionKey,
+        client_record_id: legacyClientId,
+        week_index: legacyWeek,
+        workout_index: legacyWorkout,
+        distance: 3.2,
+        record_json: {
+          id: legacyClientId,
+          workoutContext: { weekIndex: legacyWeek, workoutIndex: legacyWorkout, workoutType: 'Benchmark Run' },
+        },
       },
-    }).select('id, distance, modality, output_type, output_value').single();
-    assert(!legacyInsertError && legacyRow?.id, `Could not seed legacy distance row: ${legacyInsertError?.message || 'unknown'}`);
+      createdWorkoutIds,
+      'Legacy distance seed',
+      'id, distance, modality, output_type, output_value',
+    );
     assert(Number(legacyRow.distance) === 3.2, 'Legacy SQL distance must remain intact on insert');
-    createdWorkoutIds.push(legacyRow.id);
     const { data: legacyReadback, error: legacyReadbackError } = await client
       .from('workout_completions')
       .select('distance, modality, output_type, output_value')
@@ -400,21 +514,25 @@ async function run() {
       assert(Number(legacyReadback.output_value) === 3.2, 'Migration 014 must backfill output_value from SQL distance');
     }
 
+    const clearSlot = allocTestSlot(7);
     const clearClientId = `${testPrefix}:clear-client`;
-    const clearWeek = 9;
-    const clearWorkout = 7;
+    const clearWeek = clearSlot.weekIndex;
+    const clearWorkout = clearSlot.workoutIndex;
     const clearProofKey = `${testPrefix}:program:7:${clearWeek}:${clearWorkout}`;
     const clearPath = `${user.id}/${clearProofKey}/clear.webp`;
     storagePaths.push(clearPath);
-    const { data: clearCompletionRow, error: clearCompletionError } = await client.from('workout_completions').insert({
-      user_id: user.id,
-      completion_key: `${clearWeek}:${clearWorkout}`,
-      client_record_id: clearClientId,
-      week_index: clearWeek,
-      workout_index: clearWorkout,
-    }).select('id').single();
-    assert(!clearCompletionError && clearCompletionRow?.id, `Could not seed clear-test completion: ${clearCompletionError?.message || 'unknown'}`);
-    createdWorkoutIds.push(clearCompletionRow.id);
+    const clearCompletionRow = await insertWorkoutOrFailClosed(
+      client,
+      {
+        user_id: user.id,
+        completion_key: clearSlot.completionKey,
+        client_record_id: clearClientId,
+        week_index: clearWeek,
+        workout_index: clearWorkout,
+      },
+      createdWorkoutIds,
+      'Clear-test completion seed',
+    );
     await uploadProofBlob(client, clearPath);
     const { data: clearProof, error: seedClearProofError } = await createProof(client, {
       p_proof_key: clearProofKey,
@@ -452,22 +570,26 @@ async function run() {
     const clearedIndex = createdWorkoutIds.indexOf(clearCompletionRow.id);
     if (clearedIndex >= 0) createdWorkoutIds.splice(clearedIndex, 1);
 
+    const strandedSlot = allocTestSlot(3);
     const strandedClientId = `${testPrefix}:stranded-client`;
-    const strandedWeek = 9;
-    const strandedWorkout = 3;
+    const strandedWeek = strandedSlot.weekIndex;
+    const strandedWorkout = strandedSlot.workoutIndex;
     const strandedProofKey = `${testPrefix}:program:7:${strandedWeek}:${strandedWorkout}`;
     const strandedPath = `${user.id}/${strandedProofKey}/stranded.webp`;
     storagePaths.push(strandedPath);
-    const { data: strandedCompletionRow, error: strandedCompletionError } = await client.from('workout_completions').insert({
-      user_id: user.id,
-      completion_key: `${strandedWeek}:${strandedWorkout}`,
-      client_record_id: strandedClientId,
-      week_index: strandedWeek,
-      workout_index: strandedWorkout,
-      attachment_id: null,
-    }).select('id').single();
-    assert(!strandedCompletionError && strandedCompletionRow?.id, `Could not seed stranded completion: ${strandedCompletionError?.message || 'unknown'}`);
-    createdWorkoutIds.push(strandedCompletionRow.id);
+    const strandedCompletionRow = await insertWorkoutOrFailClosed(
+      client,
+      {
+        user_id: user.id,
+        completion_key: strandedSlot.completionKey,
+        client_record_id: strandedClientId,
+        week_index: strandedWeek,
+        workout_index: strandedWorkout,
+        attachment_id: null,
+      },
+      createdWorkoutIds,
+      'Stranded completion seed',
+    );
     await uploadProofBlob(client, strandedPath);
     const { data: strandedProof, error: strandedProofError } = await createProof(client, {
       p_proof_key: strandedProofKey,
@@ -503,32 +625,43 @@ async function run() {
     const strandedIndex = createdWorkoutIds.indexOf(strandedCompletionRow.id);
     if (strandedIndex >= 0) createdWorkoutIds.splice(strandedIndex, 1);
 
+    const mismatchSlotA = allocTestSlot(5);
+    const mismatchSlotB = allocTestSlot(6);
     const mismatchClientA = `${testPrefix}:mismatch-a`;
     const mismatchClientB = `${testPrefix}:mismatch-b`;
-    const mismatchWeekA = 9;
-    const mismatchWorkoutA = 5;
-    const mismatchWeekB = 9;
-    const mismatchWorkoutB = 6;
+    const mismatchWeekA = mismatchSlotA.weekIndex;
+    const mismatchWorkoutA = mismatchSlotA.workoutIndex;
+    const mismatchWeekB = mismatchSlotB.weekIndex;
+    const mismatchWorkoutB = mismatchSlotB.workoutIndex;
     const mismatchProofKeyA = `${testPrefix}:program:7:${mismatchWeekA}:${mismatchWorkoutA}`;
     const mismatchProofKeyB = `${testPrefix}:program:7:${mismatchWeekB}:${mismatchWorkoutB}`;
     const mismatchPathA = `${user.id}/${mismatchProofKeyA}/a.webp`;
     const mismatchPathB = `${user.id}/${mismatchProofKeyB}/b.webp`;
     storagePaths.push(mismatchPathA, mismatchPathB);
-    const { data: mismatchRowA } = await client.from('workout_completions').insert({
-      user_id: user.id,
-      completion_key: `${mismatchWeekA}:${mismatchWorkoutA}`,
-      client_record_id: mismatchClientA,
-      week_index: mismatchWeekA,
-      workout_index: mismatchWorkoutA,
-    }).select('id').single();
-    const { data: mismatchRowB } = await client.from('workout_completions').insert({
-      user_id: user.id,
-      completion_key: `${mismatchWeekB}:${mismatchWorkoutB}`,
-      client_record_id: mismatchClientB,
-      week_index: mismatchWeekB,
-      workout_index: mismatchWorkoutB,
-    }).select('id').single();
-    createdWorkoutIds.push(mismatchRowA.id, mismatchRowB.id);
+    const mismatchRowA = await insertWorkoutOrFailClosed(
+      client,
+      {
+        user_id: user.id,
+        completion_key: mismatchSlotA.completionKey,
+        client_record_id: mismatchClientA,
+        week_index: mismatchWeekA,
+        workout_index: mismatchWorkoutA,
+      },
+      createdWorkoutIds,
+      'Mismatch clear seed A',
+    );
+    const mismatchRowB = await insertWorkoutOrFailClosed(
+      client,
+      {
+        user_id: user.id,
+        completion_key: mismatchSlotB.completionKey,
+        client_record_id: mismatchClientB,
+        week_index: mismatchWeekB,
+        workout_index: mismatchWorkoutB,
+      },
+      createdWorkoutIds,
+      'Mismatch clear seed B',
+    );
     await uploadProofBlob(client, mismatchPathA);
     await uploadProofBlob(client, mismatchPathB);
     const { data: mismatchProofA } = await createProof(client, {
@@ -653,31 +786,42 @@ async function run() {
     assert(!replayStale.error && replayStale.data?.id === replayProofB.data.id, 'Stale replay of superseded path must return the current replacement attachment');
     assert(replayStale.data.id !== replayProofA.data.id, 'Stale replay must not return the superseded non-current attachment');
 
+    const conflictSlotA = allocTestSlot(0);
+    const conflictSlotB = allocTestSlot(1);
     const conflictClientA = `${testPrefix}:valid-conflict-a`;
     const conflictClientB = `${testPrefix}:valid-conflict-b`;
-    const conflictWeekA = 12;
-    const conflictWorkoutA = 0;
-    const conflictWeekB = 12;
-    const conflictWorkoutB = 1;
+    const conflictWeekA = conflictSlotA.weekIndex;
+    const conflictWorkoutA = conflictSlotA.workoutIndex;
+    const conflictWeekB = conflictSlotB.weekIndex;
+    const conflictWorkoutB = conflictSlotB.workoutIndex;
     const conflictProofKeyA = `${testPrefix}:program:7:${conflictWeekA}:${conflictWorkoutA}`;
     const conflictProofKeyB = `${testPrefix}:program:7:${conflictWeekB}:${conflictWorkoutB}`;
     const sharedValidConflictPath = `${user.id}/${testPrefix}/shared-valid-conflict.webp`;
     storagePaths.push(sharedValidConflictPath);
-    const { data: conflictRowA } = await client.from('workout_completions').insert({
-      user_id: user.id,
-      completion_key: `${conflictWeekA}:${conflictWorkoutA}`,
-      client_record_id: conflictClientA,
-      week_index: conflictWeekA,
-      workout_index: conflictWorkoutA,
-    }).select('id').single();
-    const { data: conflictRowB } = await client.from('workout_completions').insert({
-      user_id: user.id,
-      completion_key: `${conflictWeekB}:${conflictWorkoutB}`,
-      client_record_id: conflictClientB,
-      week_index: conflictWeekB,
-      workout_index: conflictWorkoutB,
-    }).select('id').single();
-    createdWorkoutIds.push(conflictRowA.id, conflictRowB.id);
+    const conflictRowA = await insertWorkoutOrFailClosed(
+      client,
+      {
+        user_id: user.id,
+        completion_key: conflictSlotA.completionKey,
+        client_record_id: conflictClientA,
+        week_index: conflictWeekA,
+        workout_index: conflictWorkoutA,
+      },
+      createdWorkoutIds,
+      'Valid conflict seed A',
+    );
+    const conflictRowB = await insertWorkoutOrFailClosed(
+      client,
+      {
+        user_id: user.id,
+        completion_key: conflictSlotB.completionKey,
+        client_record_id: conflictClientB,
+        week_index: conflictWeekB,
+        workout_index: conflictWorkoutB,
+      },
+      createdWorkoutIds,
+      'Valid conflict seed B',
+    );
     await uploadProofBlob(client, sharedValidConflictPath);
     const conflictProofA = await createProof(client, {
       p_proof_key: conflictProofKeyA,
@@ -749,23 +893,27 @@ async function run() {
     assert(replaceNewCount === 1, `Replacement path must create exactly one row, got ${replaceNewCount}`);
 
     // ── Layer C schema fingerprint: workout_completions uniqueness contract ──
-    const fingerprintWeek = 15;
-    const fingerprintWorkout = 0;
-    const fingerprintKey = `${fingerprintWeek}:${fingerprintWorkout}`;
+    const fingerprintSlot = allocTestSlot(0);
+    const fingerprintWeek = fingerprintSlot.weekIndex;
+    const fingerprintWorkout = fingerprintSlot.workoutIndex;
+    const fingerprintKey = fingerprintSlot.completionKey;
     const fingerprintClientA = `${testPrefix}:fingerprint-client-a`;
     const fingerprintClientB = `${testPrefix}:fingerprint-client-b`;
-    const { data: fingerprintRow, error: fingerprintInsertError } = await client.from('workout_completions').insert({
-      user_id: user.id,
-      completion_key: fingerprintKey,
-      client_record_id: fingerprintClientA,
-      week_index: fingerprintWeek,
-      workout_index: fingerprintWorkout,
-      workout_type: 'Easy Run',
-      proof_pending: false,
-      record_json: { id: fingerprintClientA },
-    }).select('id').single();
-    assert(!fingerprintInsertError && fingerprintRow?.id, `Schema fingerprint seed failed: ${fingerprintInsertError?.message || 'unknown'}`);
-    createdWorkoutIds.push(fingerprintRow.id);
+    const fingerprintRow = await insertWorkoutOrFailClosed(
+      client,
+      {
+        user_id: user.id,
+        completion_key: fingerprintKey,
+        client_record_id: fingerprintClientA,
+        week_index: fingerprintWeek,
+        workout_index: fingerprintWorkout,
+        workout_type: 'Easy Run',
+        proof_pending: false,
+        record_json: { id: fingerprintClientA },
+      },
+      createdWorkoutIds,
+      'Schema fingerprint seed',
+    );
 
     const { error: fingerprintKeyConflict } = await client.from('workout_completions').insert({
       user_id: user.id,
@@ -801,27 +949,32 @@ async function run() {
     assertUniqueViolation(fingerprintClientConflict, UNIQUE_CONFLICT.CLIENT_RECORD_ID, 'Schema fingerprint client_record_id');
 
     // ── Shared-algorithm next-day chaos (SoT §9) — uses production reconcile path ──
-    const identityWeek = 14;
-    const identityWorkout = 2;
+    const identitySlot = allocTestSlot(2);
+    const identityWeek = identitySlot.weekIndex;
+    const identityWorkout = identitySlot.workoutIndex;
     const legacyIdentityKey = `${testPrefix}:stale-completion-key`;
     const identityClientId = `${testPrefix}:identity-client`;
-    const { data: stagedIdentityRow, error: stagedIdentityError } = await client.from('workout_completions').insert({
-      user_id: user.id,
-      completion_key: legacyIdentityKey,
-      client_record_id: identityClientId,
-      week_index: identityWeek,
-      workout_index: identityWorkout,
-      workout_type: 'Threshold Run',
-      proof_pending: true,
-      completed_at: null,
-      record_json: {
-        id: identityClientId,
-        status: 'pending_proof',
-        workoutContext: { weekIndex: identityWeek, workoutIndex: identityWorkout, workoutType: 'Threshold Run' },
+    const stagedIdentityRow = await insertWorkoutOrFailClosed(
+      client,
+      {
+        user_id: user.id,
+        completion_key: legacyIdentityKey,
+        client_record_id: identityClientId,
+        week_index: identityWeek,
+        workout_index: identityWorkout,
+        workout_type: 'Threshold Run',
+        proof_pending: true,
+        completed_at: null,
+        record_json: {
+          id: identityClientId,
+          status: 'pending_proof',
+          workoutContext: { weekIndex: identityWeek, workoutIndex: identityWorkout, workoutType: 'Threshold Run' },
+        },
       },
-    }).select('id, completion_key, proof_pending, client_record_id').single();
-    assert(!stagedIdentityError && stagedIdentityRow?.id, `Could not seed legacy identity row: ${stagedIdentityError?.message || 'unknown'}`);
-    createdWorkoutIds.push(stagedIdentityRow.id);
+      createdWorkoutIds,
+      'Legacy identity seed',
+      'id, completion_key, proof_pending, client_record_id',
+    );
     assert(!isVisibleCompletionRow(stagedIdentityRow), 'proof_pending rows must stay hidden');
 
     const retryIdentityRecord = {
@@ -895,28 +1048,33 @@ async function run() {
     assert(identityCount === 1, `Retry must converge on one row, got ${identityCount}`);
 
     // ── Golden finalize lifecycle: provisional → proof RPC → finalize → fresh visible SELECT ──
-    const goldenWeek = 21;
-    const goldenWorkout = 4;
+    const goldenSlot = allocTestSlot(4);
+    const goldenWeek = goldenSlot.weekIndex;
+    const goldenWorkout = goldenSlot.workoutIndex;
     const goldenClientId = `${testPrefix}:golden-long-run`;
     const goldenProofKey = `${testPrefix}:golden-long-run-proof`;
     const goldenPath = `${user.id}/${goldenProofKey}/finalize.webp`;
-    const { data: goldenProvisional, error: goldenProvisionalError } = await client.from('workout_completions').insert({
-      user_id: user.id,
-      completion_key: `${goldenWeek}:${goldenWorkout}`,
-      client_record_id: goldenClientId,
-      week_index: goldenWeek,
-      workout_index: goldenWorkout,
-      workout_type: 'Long Run + S&C',
-      proof_pending: true,
-      completed_at: null,
-      record_json: {
-        id: goldenClientId,
-        status: 'pending_proof',
-        workoutContext: { weekIndex: goldenWeek, workoutIndex: goldenWorkout, workoutType: 'Long Run + S&C' },
+    const goldenProvisional = await insertWorkoutOrFailClosed(
+      client,
+      {
+        user_id: user.id,
+        completion_key: goldenSlot.completionKey,
+        client_record_id: goldenClientId,
+        week_index: goldenWeek,
+        workout_index: goldenWorkout,
+        workout_type: 'Long Run + S&C',
+        proof_pending: true,
+        completed_at: null,
+        record_json: {
+          id: goldenClientId,
+          status: 'pending_proof',
+          workoutContext: { weekIndex: goldenWeek, workoutIndex: goldenWorkout, workoutType: 'Long Run + S&C' },
+        },
       },
-    }).select('id, completion_key, proof_pending, week_index, workout_index').single();
-    assert(!goldenProvisionalError && goldenProvisional?.id, `Golden provisional seed failed: ${goldenProvisionalError?.message || 'unknown'}`);
-    createdWorkoutIds.push(goldenProvisional.id);
+      createdWorkoutIds,
+      'Golden provisional seed',
+      'id, completion_key, proof_pending, week_index, workout_index',
+    );
     assert(!isVisibleCompletionRow(goldenProvisional), 'Golden provisional must stay hidden from cloud hydration');
 
     await uploadProofBlob(client, goldenPath);
@@ -972,30 +1130,38 @@ async function run() {
     assert(Number(goldenVisible[0].total_minutes) === 45, 'Fresh visible row must keep finalized metrics');
 
     // Dual mismatched rows: position must win / explicit conflict when keys disagree.
-    const dualWeek = 17;
-    const dualWorkout = 1;
-    const { data: dualKeyRow, error: dualKeyError } = await client.from('workout_completions').insert({
-      user_id: user.id,
-      completion_key: `${dualWeek}:${dualWorkout}`,
-      client_record_id: `${testPrefix}:dual-key-row`,
-      week_index: 18,
-      workout_index: 0,
-      workout_type: 'Easy Run',
-      record_json: {},
-    }).select('id').single();
-    assert(!dualKeyError && dualKeyRow?.id, `Dual-key seed failed: ${dualKeyError?.message || 'unknown'}`);
-    createdWorkoutIds.push(dualKeyRow.id);
-    const { data: dualPosRow, error: dualPosError } = await client.from('workout_completions').insert({
-      user_id: user.id,
-      completion_key: `${testPrefix}:dual-legacy-pos`,
-      client_record_id: `${testPrefix}:dual-pos-row`,
-      week_index: dualWeek,
-      workout_index: dualWorkout,
-      workout_type: 'Threshold Run',
-      record_json: {},
-    }).select('id').single();
-    assert(!dualPosError && dualPosRow?.id, `Dual-position seed failed: ${dualPosError?.message || 'unknown'}`);
-    createdWorkoutIds.push(dualPosRow.id);
+    const dualSlot = allocTestSlot(1);
+    const dualWrongSlot = allocTestSlot(0);
+    const dualWeek = dualSlot.weekIndex;
+    const dualWorkout = dualSlot.workoutIndex;
+    const dualKeyRow = await insertWorkoutOrFailClosed(
+      client,
+      {
+        user_id: user.id,
+        completion_key: dualSlot.completionKey,
+        client_record_id: `${testPrefix}:dual-key-row`,
+        week_index: dualWrongSlot.weekIndex,
+        workout_index: dualWrongSlot.workoutIndex,
+        workout_type: 'Easy Run',
+        record_json: {},
+      },
+      createdWorkoutIds,
+      'Dual-key seed',
+    );
+    const dualPosRow = await insertWorkoutOrFailClosed(
+      client,
+      {
+        user_id: user.id,
+        completion_key: `${testPrefix}:dual-legacy-pos`,
+        client_record_id: `${testPrefix}:dual-pos-row`,
+        week_index: dualWeek,
+        workout_index: dualWorkout,
+        workout_type: 'Threshold Run',
+        record_json: {},
+      },
+      createdWorkoutIds,
+      'Dual-position seed',
+    );
 
     let dualError = null;
     try {
@@ -1009,22 +1175,28 @@ async function run() {
     assert(dualError?.workoutIdentityConflict === 'dual_row', 'Mismatched key/position rows must raise explicit dual-row conflict');
 
     // Key-only wrong-position disagreement: key exists, correct position absent.
-    const mismatchWeek = 19;
-    const mismatchWorkout = 1;
-    const { data: wrongPosKeyRow, error: wrongPosKeyError } = await client.from('workout_completions').insert({
-      user_id: user.id,
-      completion_key: `${mismatchWeek}:${mismatchWorkout}`,
-      client_record_id: `${testPrefix}:wrong-pos-key`,
-      week_index: 1,
-      workout_index: 0,
-      workout_type: 'Easy Run',
-      total_minutes: 30,
-      avg_bpm: 140,
-      proof_pending: false,
-      record_json: { id: `${testPrefix}:wrong-pos-key` },
-    }).select('id, completion_key, week_index, workout_index, total_minutes').single();
-    assert(!wrongPosKeyError && wrongPosKeyRow?.id, `Wrong-position key seed failed: ${wrongPosKeyError?.message || 'unknown'}`);
-    createdWorkoutIds.push(wrongPosKeyRow.id);
+    const keyMismatchSlot = allocTestSlot(1);
+    const wrongStoredSlot = allocTestSlot(0);
+    const mismatchWeek = keyMismatchSlot.weekIndex;
+    const mismatchWorkout = keyMismatchSlot.workoutIndex;
+    const wrongPosKeyRow = await insertWorkoutOrFailClosed(
+      client,
+      {
+        user_id: user.id,
+        completion_key: keyMismatchSlot.completionKey,
+        client_record_id: `${testPrefix}:wrong-pos-key`,
+        week_index: wrongStoredSlot.weekIndex,
+        workout_index: wrongStoredSlot.workoutIndex,
+        workout_type: 'Easy Run',
+        total_minutes: 30,
+        avg_bpm: 140,
+        proof_pending: false,
+        record_json: { id: `${testPrefix}:wrong-pos-key` },
+      },
+      createdWorkoutIds,
+      'Wrong-position key seed',
+      'id, completion_key, week_index, workout_index, total_minutes',
+    );
 
     let keyMismatchError = null;
     try {
@@ -1062,10 +1234,10 @@ async function run() {
       .select('id, week_index, workout_index, total_minutes, completion_key')
       .eq('id', wrongPosKeyRow.id)
       .single();
-    assert(Number(unchangedWrongPos.week_index) === 1, 'Wrong-position key row week must remain unchanged');
-    assert(Number(unchangedWrongPos.workout_index) === 0, 'Wrong-position key row workout must remain unchanged');
+    assert(Number(unchangedWrongPos.week_index) === wrongStoredSlot.weekIndex, 'Wrong-position key row week must remain unchanged');
+    assert(Number(unchangedWrongPos.workout_index) === wrongStoredSlot.workoutIndex, 'Wrong-position key row workout must remain unchanged');
     assert(Number(unchangedWrongPos.total_minutes) === 30, 'Wrong-position key row metrics must remain unchanged');
-    assert(unchangedWrongPos.completion_key === `${mismatchWeek}:${mismatchWorkout}`, 'Wrong-position key must remain unchanged');
+    assert(unchangedWrongPos.completion_key === keyMismatchSlot.completionKey, 'Wrong-position key must remain unchanged');
 
     const { count: mismatchPosCount } = await client
       .from('workout_completions')
@@ -1075,12 +1247,53 @@ async function run() {
       .eq('workout_index', mismatchWorkout);
     assert(mismatchPosCount === 0, 'No new row may be created at the requested position after key-position conflict');
 
+    assert(
+      testSlotBase > MAX_REAL_PROGRAM_WEEK_INDEX,
+      `Layer C test namespace ${testSlotBase} must be outside real program domain 0..${MAX_REAL_PROGRAM_WEEK_INDEX}`,
+    );
+    assert(nextTestSlotOffset > 0, 'Layer C must allocate isolated workout positions');
+    assert(ownedSlot.completionKey === `${ownedSlot.weekIndex}:${ownedSlot.workoutIndex}`, 'Generated completion key must match generated position');
+    assert(Number(ownedSlot.weekIndex) > MAX_REAL_PROGRAM_WEEK_INDEX, 'Owned workout seed must stay outside real program domain');
+
+    assert(canaryId && canarySnapshot, 'Isolation canary must be present for Layer C regression');
+    assert(!createdWorkoutIds.includes(canaryId), 'Isolation canary must never enter createdWorkoutIds cleanup list');
+    const { data: canaryAfter, error: canaryAfterError } = await client
+      .from('workout_completions')
+      .select('id, completion_key, week_index, workout_index, client_record_id, attachment_id, total_minutes, proof_pending, updated_at')
+      .eq('id', canaryId)
+      .maybeSingle();
+    assert(!canaryAfterError, `Isolation canary post-check failed: ${canaryAfterError?.message || 'unknown'}`);
+    assert(canaryAfter?.id === canarySnapshot.id, 'Real 1:2 canary row ID must remain unchanged');
+    assert(canaryAfter.completion_key === REAL_CANARY_KEY, 'Real 1:2 completion_key must remain unchanged');
+    assert(Number(canaryAfter.week_index) === REAL_CANARY_WEEK, 'Real 1:2 week_index must remain unchanged');
+    assert(Number(canaryAfter.workout_index) === REAL_CANARY_WORKOUT, 'Real 1:2 workout_index must remain unchanged');
+    assert(canaryAfter.client_record_id === canarySnapshot.client_record_id, 'Real 1:2 client_record_id must remain unchanged');
+    assert(
+      String(canaryAfter.attachment_id || '') === String(canarySnapshot.attachment_id || ''),
+      'Real 1:2 attachment_id must remain unchanged',
+    );
+    assert(
+      Number(canaryAfter.total_minutes ?? NaN) === Number(canarySnapshot.total_minutes ?? NaN)
+        || (canaryAfter.total_minutes == null && canarySnapshot.total_minutes == null),
+      'Real 1:2 total_minutes must remain unchanged',
+    );
+    if (canaryCreatedByThisRun) {
+      canaryCleanupIds.push(canaryId);
+    }
+
     console.log('PASS: proof authorization matrix');
   } finally {
+    // Cleanup only IDs created by this run. Never delete a pre-existing real-slot row.
+    const safeWorkoutCleanupIds = createdWorkoutIds.filter(
+      (id) => !(canaryId && id === canaryId && !canaryCreatedByThisRun),
+    );
+    if (canaryCreatedByThisRun && canaryId && !canaryCleanupIds.includes(canaryId)) {
+      canaryCleanupIds.push(canaryId);
+    }
     cleanupErrors = await runCleanup(client, {
       attachmentIds: createdAttachmentIds,
       mileTestIds: createdMileTestIds,
-      workoutIds: createdWorkoutIds,
+      workoutIds: [...safeWorkoutCleanupIds, ...canaryCleanupIds],
       storagePaths,
     });
   }
