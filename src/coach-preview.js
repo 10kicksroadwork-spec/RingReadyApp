@@ -24,9 +24,27 @@ import {
 import { scoreZoneAdherence } from './hr-analytics.js';
 import { sessionHasProof } from './coach-proof.js';
 import { readJSONValue, writeJSON } from './safe-storage.js';
+import {
+  LENS_BENCHMARK,
+  LENS_HR_ADHERENCE,
+  LENS_PACE,
+  LENS_RECOVERY,
+  METRIC_PAGE_DEFS,
+  buildLensCards,
+  computeRunningTotals,
+  lensForScreenId,
+  selectVisibleCards,
+} from './coach-metrics.js';
 
 const NOTES_KEY = 'ringReadyCoachPreviewNotes';
-const COACH_SCREENS = new Set(['coach-dashboard', 'coach-athlete']);
+const COACH_SCREENS = new Set([
+  'coach-dashboard',
+  'coach-athlete',
+  'coach-benchmark-stats',
+  'coach-recovery-stats',
+  'coach-pace-stats',
+  'coach-hr-adherence-stats',
+]);
 const SPRINT_TARGET_DROP = 30;
 const EQUIV_RATIO_MIN = 0.85;
 const EQUIV_RATIO_MAX = 1.15;
@@ -46,6 +64,12 @@ let athleteDrill = '';
 let rosterFilter = 'all';
 let rosterQuery = '';
 let bound = false;
+const metricPageState = {
+  [LENS_BENCHMARK]: { filter: 'all', sort: 'desc', query: '' },
+  [LENS_RECOVERY]: { filter: 'all', sort: 'desc', query: '' },
+  [LENS_PACE]: { filter: 'all', sort: 'desc', query: '' },
+  [LENS_HR_ADHERENCE]: { filter: 'all', sort: 'asc', query: '' },
+};
 
 let liveAthletes = null;
 let liveLoadError = '';
@@ -329,6 +353,8 @@ function collectPaceBuckets(sessions) {
   const buckets = { zone2: {}, tempo: {}, threshold: {}, fightPace: {} };
   sessions.forEach((session) => {
     if (session.status !== 'logged') return;
+    // Overall Pace Stats = running only — never mix machine watts into pace.
+    if (normalizeModality(session.modality) !== MODALITY_RUNNING) return;
     const bucket = paceBucket(session.type);
     if (!bucket) return;
     const minutes = Number(session.minutes);
@@ -1318,6 +1344,13 @@ export function syncCoachPreviewChrome() {
   document.querySelectorAll('[data-coach-hide]').forEach((el) => {
     el.hidden = liveCoach;
   });
+  // Coach drawer: hide Training Weeks; show Analysis. Athlete drawer unchanged.
+  document.querySelectorAll('[data-coach-training-weeks]').forEach((el) => {
+    el.hidden = enabled;
+  });
+  document.querySelectorAll('[data-coach-analysis]').forEach((el) => {
+    el.hidden = !enabled;
+  });
   document.body.classList.toggle('is-coach-preview', enabled && isCoachScreen(document.querySelector('.screen.active')?.id));
   document.body.classList.toggle('is-live-coach', liveCoach);
 }
@@ -1568,12 +1601,29 @@ function renderDrill(athlete) {
 }
 
 function renderAthlete() {
+  const athletes = rosterAthletes();
   const athlete = getAthlete(selectedAthleteId);
   if (!athlete) return;
   selectedAthleteId = athlete.id;
   const note = athleteNote(athlete);
   const missed = athlete.sessions.filter((session) => session.status === 'missing');
   const skipped = athlete.sessions.filter((session) => session.status === 'skipped');
+  const running = computeRunningTotals(athlete.sessions, normalizeModality, MODALITY_RUNNING);
+  const scheduleLabel = athlete.due
+    ? `${athlete.logged} / ${athlete.due} due sessions (${athlete.completionPct}%)`
+    : 'No due sessions yet';
+
+  const pageTitle = document.querySelector('#coach-athlete .page-title');
+  if (pageTitle) pageTitle.textContent = 'Detailed Summary';
+  const heroLabel = document.querySelector('#coach-athlete .coach-hero .field-label');
+  if (heroLabel) heroLabel.textContent = 'Detailed Summary';
+
+  const selector = document.getElementById('coach-athlete-select');
+  if (selector) {
+    selector.innerHTML = athletes.map((row) =>
+      `<option value="${escapeHTML(row.id)}"${row.id === athlete.id ? ' selected' : ''}>${escapeHTML(row.name)}</option>`
+    ).join('') || `<option value="${escapeHTML(athlete.id)}">${escapeHTML(athlete.name)}</option>`;
+  }
 
   setText('coach-athlete-kicker', `Week ${athlete.currentWeekIndex + 1} · ${athlete.campLength} week camp`);
   setText('coach-athlete-name', athlete.name);
@@ -1585,12 +1635,24 @@ function renderAthlete() {
     athlete.tenure,
   ].filter(Boolean).join(' · '));
   setText('coach-athlete-verdict', athlete.headline);
+  const guidanceLabel = document.getElementById('coach-athlete-guidance-label');
+  if (guidanceLabel) guidanceLabel.textContent = 'Generated guidance';
   const hrRoot = document.getElementById('coach-athlete-hr');
   if (hrRoot) hrRoot.innerHTML = renderAthleteHrProfile(athlete);
   const chip = document.getElementById('coach-athlete-status');
   if (chip) {
     chip.textContent = toneCopy(athlete.tone);
     chip.className = `coach-status-chip is-${athlete.tone}`;
+  }
+
+  const summaryRoot = document.getElementById('coach-athlete-summary-stats');
+  if (summaryRoot) {
+    summaryRoot.innerHTML = `
+      <article class="dash-card dash-stat-card"><span>Workouts Completed</span><strong>${athlete.logged}</strong><em>${athlete.due} due</em></article>
+      <article class="dash-card dash-stat-card"><span>Running Hours</span><strong>${formatDecimal(running.runningHours)}</strong><em>running only</em></article>
+      <article class="dash-card dash-stat-card"><span>Mileage</span><strong>${formatDecimal(running.runningMiles)}</strong><em>running miles</em></article>
+      <article class="dash-card dash-stat-card"><span>Schedule Adherence</span><strong>${athlete.completionPct}%</strong><em>${escapeHTML(scheduleLabel)}</em></article>
+    `;
   }
 
   const cards = document.getElementById('coach-athlete-cards');
@@ -1627,18 +1689,74 @@ function renderAthlete() {
       : '';
   }
 
-  const noteCopy = document.querySelector('#coach-athlete .coach-note-copy');
+  const notesKicker = document.getElementById('coach-athlete-notes-kicker');
+  if (notesKicker) notesKicker.textContent = 'Coach-authored notes';
+  const noteCopy = document.getElementById('coach-athlete-notes-copy');
   if (noteCopy) {
     noteCopy.textContent = rosterSource === 'live'
-      ? 'Shared with Gene and Daniel. Fighters do not see this note.'
-      : 'Stays on this device for the preview. Later this becomes a cloud note on the athlete record.';
+      ? 'Shared with Gene and Daniel. Fighters do not see this note. Separate from generated guidance above.'
+      : 'Stays on this device for the preview. Separate from generated guidance above.';
   }
 
   const noteInput = document.getElementById('coach-athlete-note');
-  if (noteInput) noteInput.value = note;
+  if (noteInput && document.activeElement !== noteInput) noteInput.value = note;
 
   const startInput = document.getElementById('coach-athlete-start-date');
-  if (startInput) startInput.value = athlete.campStartDate || '';
+  if (startInput && document.activeElement !== startInput) startInput.value = athlete.campStartDate || '';
+}
+
+function renderLensSpark(points) {
+  if (!points?.length) return '<p class="coach-trend-empty">No trend yet.</p>';
+  return renderSpark(
+    points.map((row) => ({ weekIndex: row.weekIndex, pct: row.value, first5Avg: row.value })),
+    'pct',
+    (row) => `W${row.weekIndex + 1}`
+  );
+}
+
+function renderMetricStatsPage(lens) {
+  const def = METRIC_PAGE_DEFS[lens];
+  if (!def) return;
+  const state = metricPageState[lens] || { filter: 'all', sort: def.defaultSort, query: '' };
+  const root = document.getElementById(`${def.screenId}-list`);
+  const empty = document.getElementById(`${def.screenId}-empty`);
+  const search = document.getElementById(`${def.screenId}-search`);
+  const sortSelect = document.getElementById(`${def.screenId}-sort`);
+
+  document.querySelectorAll(`[data-coach-metric-filter][data-coach-lens="${lens}"]`).forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.coachMetricFilter === state.filter);
+  });
+  if (search && search.value !== state.query) search.value = state.query;
+  if (sortSelect && sortSelect.value !== state.sort) sortSelect.value = state.sort;
+
+  const allCards = buildLensCards(rosterAthletes(), lens);
+  const visible = selectVisibleCards(allCards, state);
+
+  if (empty) {
+    empty.hidden = visible.length > 0;
+    empty.textContent = allCards.length
+      ? 'No fighters match that filter.'
+      : 'No fighters on the roster yet.';
+  }
+  if (!root) return;
+  root.innerHTML = visible.map((card) => `
+    <button type="button" class="coach-lens-card is-${escapeHTML(card.status)}" data-page-target="coach-athlete" data-coach-athlete="${escapeHTML(card.userId)}">
+      <div class="coach-lens-card-top">
+        <div>
+          <div class="info-kicker">${escapeHTML(card.weekLabel)}</div>
+          <strong>${escapeHTML(card.athleteName)}</strong>
+        </div>
+        <span class="coach-status-chip is-${escapeHTML(card.status)}">${escapeHTML(card.badge)}</span>
+      </div>
+      <div class="coach-lens-metric">
+        <span>${escapeHTML(card.valueLabel)}</span>
+        <em>${escapeHTML(card.value)}</em>
+      </div>
+      ${card.deltaLabel ? `<p class="coach-lens-delta">${escapeHTML(card.deltaLabel)}</p>` : ''}
+      <p class="coach-lens-detail">${escapeHTML(card.detail)}</p>
+      ${card.trendPoints.length ? renderLensSpark(card.trendPoints) : ''}
+    </button>
+  `).join('');
 }
 
 function setText(id, value) {
@@ -1772,6 +1890,8 @@ export function renderCoachPage(screenId) {
   }
   if (screenId === 'coach-dashboard') renderRoster();
   if (screenId === 'coach-athlete') renderAthlete();
+  const lens = lensForScreenId(screenId);
+  if (lens) renderMetricStatsPage(lens);
 }
 
 export function openCoachPreviewIfRequested() {
@@ -1838,17 +1958,47 @@ export function initCoachPreview(hooks) {
       return;
     }
 
+    const metricFilterBtn = event.target.closest('[data-coach-metric-filter]');
+    if (metricFilterBtn && canAccessCoachScreens()) {
+      event.preventDefault();
+      const lens = metricFilterBtn.dataset.coachLens || '';
+      if (metricPageState[lens]) {
+        metricPageState[lens].filter = metricFilterBtn.dataset.coachMetricFilter || 'all';
+        renderMetricStatsPage(lens);
+      }
+      return;
+    }
+
     const filterBtn = event.target.closest('[data-coach-filter]');
-    if (!filterBtn || !canAccessCoachScreens()) return;
-    event.preventDefault();
-    rosterFilter = filterBtn.dataset.coachFilter || 'all';
-    renderRoster();
+    if (filterBtn && canAccessCoachScreens()) {
+      event.preventDefault();
+      rosterFilter = filterBtn.dataset.coachFilter || 'all';
+      renderRoster();
+    }
   }, true);
 
   document.getElementById('coach-roster-search')?.addEventListener('input', (event) => {
     rosterQuery = event.currentTarget.value || '';
     renderRoster();
   });
+
+  Object.keys(METRIC_PAGE_DEFS).forEach((lens) => {
+    const def = METRIC_PAGE_DEFS[lens];
+    document.getElementById(`${def.screenId}-search`)?.addEventListener('input', (event) => {
+      metricPageState[lens].query = event.currentTarget.value || '';
+      renderMetricStatsPage(lens);
+    });
+    document.getElementById(`${def.screenId}-sort`)?.addEventListener('change', (event) => {
+      metricPageState[lens].sort = event.currentTarget.value === 'asc' ? 'asc' : 'desc';
+      renderMetricStatsPage(lens);
+    });
+  });
+
+  document.getElementById('coach-athlete-select')?.addEventListener('change', (event) => {
+    setSelectedCoachAthlete(event.currentTarget.value);
+    renderAthlete();
+  });
+
   document.getElementById('coach-note-save-btn')?.addEventListener('click', saveOpenNote);
   document.getElementById('coach-start-save-btn')?.addEventListener('click', saveOpenStartDate);
   document.getElementById('coach-clean-slate-btn')?.addEventListener('click', cleanSlateOpenAthlete);

@@ -453,7 +453,7 @@
     </div>
   </div>
 
-  <!-- COACH ATHLETE DETAIL -->
+  <!-- COACH ATHLETE DETAIL / DETAILED SUMMARY -->
   <div id="coach-athlete" class="screen app-page">
     <div class="page-header">
       <div class="page-actions">
@@ -462,10 +462,17 @@
       </div>
       <div>
         <div class="logo-text">10 Kicks</div>
-        <div class="page-title">Athlete</div>
+        <div class="page-title">Detailed Summary</div>
       </div>
     </div>
     <div class="page-body">
+      <section class="page-panel coach-athlete-select-panel">
+        <div class="info-kicker">Athlete</div>
+        <label class="app-input-wrap" for="coach-athlete-select">
+          <span>Select athlete</span>
+          <select id="coach-athlete-select" aria-label="Select athlete for detailed summary"></select>
+        </label>
+      </section>
       <section class="page-hero coach-hero">
         <div class="coach-athlete-head">
           <div>
@@ -475,9 +482,11 @@
           </div>
           <span class="coach-status-chip" id="coach-athlete-status">On track</span>
         </div>
+        <div class="info-kicker" id="coach-athlete-guidance-label">Generated guidance</div>
         <p class="coach-athlete-verdict" id="coach-athlete-verdict"></p>
         <div class="coach-athlete-hr" id="coach-athlete-hr"></div>
       </section>
+      <section class="dash-stat-grid coach-summary-grid" id="coach-athlete-summary-stats" aria-label="Summary stats"></section>
       <section class="coach-metric-stack" id="coach-athlete-cards"></section>
       <section class="page-panel coach-drill-panel" id="coach-athlete-drill" hidden></section>
       <section class="page-panel coach-attention-panel" id="coach-athlete-attention" hidden></section>
@@ -498,8 +507,8 @@
         <button type="button" class="secondary-danger-btn" id="coach-clean-slate-btn">ARCHIVE CAMP &amp; CLEAN SLATE</button>
       </section>
       <section class="page-panel">
-        <div class="info-kicker">Coach Note</div>
-        <p class="coach-note-copy">Shared with Gene and Daniel. Fighters do not see this note.</p>
+        <div class="info-kicker" id="coach-athlete-notes-kicker">Coach-authored notes</div>
+        <p class="coach-note-copy" id="coach-athlete-notes-copy">Shared with Gene and Daniel. Fighters do not see this note. Separate from generated guidance above.</p>
         <label class="app-input-wrap" for="coach-athlete-note">
           <span>Note</span>
           <textarea id="coach-athlete-note" rows="4" maxlength="400" placeholder="What should the next session look like?"></textarea>
@@ -508,6 +517,175 @@
       </section>
     </div>
   </div>
+
+  <!-- COACH BENCHMARK STATS -->
+  <div id="coach-benchmark-stats" class="screen app-page">
+    <div class="page-header">
+      <div class="page-actions">
+        <button type="button" class="header-action" data-page-target="coach-dashboard" aria-label="Back to coach roster">ROSTER</button>
+        <button type="button" class="header-action" data-open-menu aria-label="Open app menu">MENU</button>
+      </div>
+      <div>
+        <div class="logo-text">10 Kicks</div>
+        <div class="page-title">Benchmark Stats</div>
+      </div>
+    </div>
+    <div class="page-body">
+      <section class="page-hero coach-hero">
+        <div class="field-label">Analysis</div>
+        <h2>Benchmark Stats</h2>
+        <p>Performance Index across the camp. Improving is above 100.</p>
+      </section>
+      <section class="page-panel">
+        <div class="info-kicker">Filter</div>
+        <div class="segmented-row" aria-label="Benchmark filter">
+          <button type="button" class="segmented-btn" data-coach-metric-filter="improving" data-coach-lens="benchmark">IMPROVING</button>
+          <button type="button" class="segmented-btn" data-coach-metric-filter="declining" data-coach-lens="benchmark">DECLINING</button>
+          <button type="button" class="segmented-btn active" data-coach-metric-filter="all" data-coach-lens="benchmark">ALL</button>
+        </div>
+        <label class="app-input-wrap" for="coach-benchmark-stats-sort">
+          <span>Sort by Performance Index</span>
+          <select id="coach-benchmark-stats-sort">
+            <option value="desc" selected>Descending</option>
+            <option value="asc">Ascending</option>
+          </select>
+        </label>
+        <label class="app-input-wrap coach-search-wrap" for="coach-benchmark-stats-search">
+          <span>Search</span>
+          <input type="search" id="coach-benchmark-stats-search" placeholder="Athlete name">
+        </label>
+      </section>
+      <section class="coach-lens-list" id="coach-benchmark-stats-list" aria-label="Benchmark athlete cards"></section>
+      <p class="empty-state" id="coach-benchmark-stats-empty" hidden>No fighters match that filter.</p>
+    </div>
+  </div>
+
+  <!-- COACH RECOVERY STATS -->
+  <div id="coach-recovery-stats" class="screen app-page">
+    <div class="page-header">
+      <div class="page-actions">
+        <button type="button" class="header-action" data-page-target="coach-dashboard" aria-label="Back to coach roster">ROSTER</button>
+        <button type="button" class="header-action" data-open-menu aria-label="Open app menu">MENU</button>
+      </div>
+      <div>
+        <div class="logo-text">10 Kicks</div>
+        <div class="page-title">Recovery Stats</div>
+      </div>
+    </div>
+    <div class="page-body">
+      <section class="page-hero coach-hero">
+        <div class="field-label">Analysis</div>
+        <h2>Recovery Stats</h2>
+        <p>Sprint First-5 BPM drop. Higher drop is better recovery.</p>
+      </section>
+      <section class="page-panel">
+        <div class="info-kicker">Filter</div>
+        <div class="segmented-row" aria-label="Recovery filter">
+          <button type="button" class="segmented-btn" data-coach-metric-filter="improving" data-coach-lens="recovery">IMPROVING</button>
+          <button type="button" class="segmented-btn" data-coach-metric-filter="declining" data-coach-lens="recovery">DECLINING</button>
+          <button type="button" class="segmented-btn active" data-coach-metric-filter="all" data-coach-lens="recovery">ALL</button>
+        </div>
+        <label class="app-input-wrap" for="coach-recovery-stats-sort">
+          <span>Sort by Recovery Improvement</span>
+          <select id="coach-recovery-stats-sort">
+            <option value="desc" selected>Descending</option>
+            <option value="asc">Ascending</option>
+          </select>
+        </label>
+        <label class="app-input-wrap coach-search-wrap" for="coach-recovery-stats-search">
+          <span>Search</span>
+          <input type="search" id="coach-recovery-stats-search" placeholder="Athlete name">
+        </label>
+      </section>
+      <section class="coach-lens-list" id="coach-recovery-stats-list" aria-label="Recovery athlete cards"></section>
+      <p class="empty-state" id="coach-recovery-stats-empty" hidden>No fighters match that filter.</p>
+    </div>
+  </div>
+
+  <!-- COACH PACE STATS -->
+  <div id="coach-pace-stats" class="screen app-page">
+    <div class="page-header">
+      <div class="page-actions">
+        <button type="button" class="header-action" data-page-target="coach-dashboard" aria-label="Back to coach roster">ROSTER</button>
+        <button type="button" class="header-action" data-open-menu aria-label="Open app menu">MENU</button>
+      </div>
+      <div>
+        <div class="logo-text">10 Kicks</div>
+        <div class="page-title">Overall Pace Stats</div>
+      </div>
+    </div>
+    <div class="page-body">
+      <section class="page-hero coach-hero">
+        <div class="field-label">Analysis</div>
+        <h2>Overall Pace Stats</h2>
+        <p>Running pace only. Machine watts stay out of this lens.</p>
+      </section>
+      <section class="page-panel">
+        <div class="info-kicker">Filter</div>
+        <div class="segmented-row" aria-label="Pace filter">
+          <button type="button" class="segmented-btn" data-coach-metric-filter="improving" data-coach-lens="pace">IMPROVING</button>
+          <button type="button" class="segmented-btn" data-coach-metric-filter="declining" data-coach-lens="pace">DECLINING</button>
+          <button type="button" class="segmented-btn active" data-coach-metric-filter="all" data-coach-lens="pace">ALL</button>
+        </div>
+        <label class="app-input-wrap" for="coach-pace-stats-sort">
+          <span>Sort by Pace Improvement</span>
+          <select id="coach-pace-stats-sort">
+            <option value="desc" selected>Descending</option>
+            <option value="asc">Ascending</option>
+          </select>
+        </label>
+        <label class="app-input-wrap coach-search-wrap" for="coach-pace-stats-search">
+          <span>Search</span>
+          <input type="search" id="coach-pace-stats-search" placeholder="Athlete name">
+        </label>
+      </section>
+      <section class="coach-lens-list" id="coach-pace-stats-list" aria-label="Pace athlete cards"></section>
+      <p class="empty-state" id="coach-pace-stats-empty" hidden>No fighters match that filter.</p>
+    </div>
+  </div>
+
+  <!-- COACH HR ADHERENCE STATS -->
+  <div id="coach-hr-adherence-stats" class="screen app-page">
+    <div class="page-header">
+      <div class="page-actions">
+        <button type="button" class="header-action" data-page-target="coach-dashboard" aria-label="Back to coach roster">ROSTER</button>
+        <button type="button" class="header-action" data-open-menu aria-label="Open app menu">MENU</button>
+      </div>
+      <div>
+        <div class="logo-text">10 Kicks</div>
+        <div class="page-title">HR Adherence Stats</div>
+      </div>
+    </div>
+    <div class="page-body">
+      <section class="page-hero coach-hero">
+        <div class="field-label">Analysis</div>
+        <h2>HR Adherence Stats</h2>
+        <p>Eligible sessions within the prescribed HR band. Not a fitness score.</p>
+      </section>
+      <section class="page-panel">
+        <div class="info-kicker">Filter</div>
+        <div class="segmented-row" aria-label="HR adherence filter">
+          <button type="button" class="segmented-btn" data-coach-metric-filter="on-target" data-coach-lens="hrAdherence">ON TARGET</button>
+          <button type="button" class="segmented-btn" data-coach-metric-filter="needs-attention" data-coach-lens="hrAdherence">NEEDS ATTENTION</button>
+          <button type="button" class="segmented-btn active" data-coach-metric-filter="all" data-coach-lens="hrAdherence">ALL</button>
+        </div>
+        <label class="app-input-wrap" for="coach-hr-adherence-stats-sort">
+          <span>Sort by Adherence</span>
+          <select id="coach-hr-adherence-stats-sort">
+            <option value="asc" selected>Ascending</option>
+            <option value="desc">Descending</option>
+          </select>
+        </label>
+        <label class="app-input-wrap coach-search-wrap" for="coach-hr-adherence-stats-search">
+          <span>Search</span>
+          <input type="search" id="coach-hr-adherence-stats-search" placeholder="Athlete name">
+        </label>
+      </section>
+      <section class="coach-lens-list" id="coach-hr-adherence-stats-list" aria-label="HR adherence athlete cards"></section>
+      <p class="empty-state" id="coach-hr-adherence-stats-empty" hidden>No fighters match that filter.</p>
+    </div>
+  </div>
+
   <!-- SETUP -->
   <div id="setup" class="screen">
     <div class="setup-header with-action">
@@ -771,10 +949,22 @@
       <button type="button" class="drawer-page-btn" data-coach-hide data-page-target="hr-info">HR Info</button>
       <button type="button" class="drawer-page-btn" data-coach-hide data-page-target="sc-page">S&amp;C</button>
       <button type="button" class="drawer-page-btn" data-coach-hide data-page-target="mile-test-page">Mile Test</button>
-      <button type="button" class="drawer-page-btn" data-coach-preview data-page-target="coach-dashboard" hidden>Coach dashboard</button>
+      <button type="button" class="drawer-page-btn" data-coach-preview data-page-target="coach-dashboard" hidden>Camp Roster</button>
     </div>
-    <div class="drawer-section-label">Training Weeks</div>
-    <div class="drawer-week-list" id="drawer-week-list"></div>
+    <div data-coach-analysis hidden>
+      <div class="drawer-section-label">Analysis</div>
+      <div class="drawer-page-list">
+        <button type="button" class="drawer-page-btn" data-coach-preview data-page-target="coach-athlete" hidden>Detailed Summary</button>
+        <button type="button" class="drawer-page-btn" data-coach-preview data-page-target="coach-benchmark-stats" hidden>Benchmark Stats</button>
+        <button type="button" class="drawer-page-btn" data-coach-preview data-page-target="coach-recovery-stats" hidden>Recovery Stats</button>
+        <button type="button" class="drawer-page-btn" data-coach-preview data-page-target="coach-pace-stats" hidden>Overall Pace Stats</button>
+        <button type="button" class="drawer-page-btn" data-coach-preview data-page-target="coach-hr-adherence-stats" hidden>HR Adherence Stats</button>
+      </div>
+    </div>
+    <div data-coach-training-weeks>
+      <div class="drawer-section-label">Training Weeks</div>
+      <div class="drawer-week-list" id="drawer-week-list"></div>
+    </div>
     <div class="drawer-account" id="drawer-account" hidden>
       <div class="drawer-section-label">Account</div>
       <button type="button" class="drawer-logout-btn logout-btn" data-logout>Sign Out</button>
