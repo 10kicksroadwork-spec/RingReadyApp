@@ -52,6 +52,12 @@ describe('iOS sprint audio recovery', () => {
     window.AudioContext = MockAudioContext;
     window.webkitAudioContext = MockAudioContext;
 
+    // Mirror [ringready:audio] diag payloads into the agent NDJSON sink.
+    const fs = await import('node:fs');
+    globalThis.__ringreadyAudioLogSink = (payload) => {
+      fs.appendFileSync('/opt/cursor/logs/debug.log', JSON.stringify(payload) + '\n');
+    };
+
     const ui = await import('../src/ui.js');
     unlockAudio = ui.unlockAudio;
     beep = ui.beep;
@@ -62,6 +68,7 @@ describe('iOS sprint audio recovery', () => {
   afterEach(() => {
     delete window.AudioContext;
     delete window.webkitAudioContext;
+    delete globalThis.__ringreadyAudioLogSink;
     vi.restoreAllMocks();
   });
 

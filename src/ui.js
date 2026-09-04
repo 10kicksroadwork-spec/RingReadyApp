@@ -23,8 +23,46 @@ export function getAudioContextState() {
   return audioCtx ? audioCtx.state : 'none';
 }
 
-function logAudioState(reason) {
-  console.info('[ringready:audio]', reason, getAudioContextState());
+function getAudioSessionInfo() {
+  try {
+    const session = navigator.audioSession;
+    if (!session) return { available: false, type: null };
+    return { available: true, type: session.type || null };
+  } catch {
+    return { available: false, type: null };
+  }
+}
+
+// #region agent log
+function logAudioDiag(hypothesisId, location, message, data = {}) {
+  const payload = {
+    hypothesisId,
+    location,
+    message,
+    data: {
+      ...data,
+      ctxState: getAudioContextState(),
+      visibility: typeof document !== 'undefined' ? document.visibilityState : null,
+      reprimeBound: gestureReprimeBound,
+      audioSession: getAudioSessionInfo(),
+      hasHtmlAudioFallback: false,
+    },
+    timestamp: Date.now(),
+  };
+  console.info('[ringready:audio]', message, payload.data);
+  try {
+    const sink = typeof globalThis !== 'undefined' ? globalThis.__ringreadyAudioLogSink : null;
+    if (typeof sink === 'function') sink(payload);
+  } catch {
+    /* ignore diag sink errors */
+  }
+}
+// #endregion
+
+function logAudioState(reason, hypothesisId = 'A', extra = {}) {
+  // #region agent log
+  logAudioDiag(hypothesisId, 'ui.js:unlockAudio', reason, extra);
+  // #endregion
 }
 
 function getAudioContextCtor() {
@@ -56,22 +94,49 @@ export async function unlockAudio(reason = 'unlock') {
     const AudioContext = getAudioContextCtor();
     if (!AudioContext) return false;
 
+    const priorState = getAudioContextState();
+    // #region agent log
+    logAudioDiag('A', 'ui.js:unlockAudio:entry', `${reason}:entry`, {
+      reason,
+      priorState,
+      willRecreateOnlyOnThrow: true,
+    });
+    // #endregion
+
     if (!audioCtx || audioCtx.state === 'closed') {
       audioCtx = new AudioContext();
-      logAudioState(`${reason}:created`);
+      logAudioState(`${reason}:created`, 'F', { reason, priorState });
     }
 
     if (audioCtx.state !== 'running') {
-      logAudioState(`${reason}:before-resume`);
+      const stateBeforeResume = audioCtx.state;
+      logAudioState(`${reason}:before-resume`, 'A', { reason, stateBeforeResume });
+      let resumeThrew = false;
       try {
         await audioCtx.resume();
       } catch (err) {
+        resumeThrew = true;
         console.warn('Audio resume failed', err);
         audioCtx = new AudioContext();
-        logAudioState(`${reason}:recreated`);
+        logAudioState(`${reason}:recreated`, 'F', { reason, resumeThrew: true, err: String(err && err.message || err) });
         await audioCtx.resume();
       }
-      logAudioState(`${reason}:after-resume`);
+      const stateAfterResume = audioCtx.state;
+      // #region agent log
+      logAudioDiag(
+        stateAfterResume === 'running' ? 'A' : 'F',
+        'ui.js:unlockAudio:after-resume',
+        `${reason}:after-resume`,
+        {
+          reason,
+          stateBeforeResume,
+          stateAfterResume,
+          resumeThrew,
+          resumeResolvedButNotRunning: !resumeThrew && stateAfterResume !== 'running',
+          interruptedNeedsFreshCtx: stateAfterResume === 'interrupted' || stateBeforeResume === 'interrupted',
+        },
+      );
+      // #endregion
     }
 
     if (audioCtx.state === 'running') {
@@ -79,7 +144,7 @@ export async function unlockAudio(reason = 'unlock') {
       return true;
     }
 
-    logAudioState(`${reason}:not-running`);
+    logAudioState(`${reason}:not-running`, 'A', { reason });
     return false;
   } catch (err) {
     console.warn('Audio unlock failed', err);
@@ -100,13 +165,24 @@ function disarmGestureReprime(reprime) {
  * iOS often needs an explicit gesture before alerts are audible again.
  */
 export function recoverAudioAfterBackground() {
-  logAudioState('foreground');
+  // #region agent log
+  logAudioDiag('B', 'ui.js:recoverAudioAfterBackground', 'foreground', {
+    alreadyBound: gestureReprimeBound,
+    oneShot: true,
+  });
+  // #endregion
   void unlockAudio('foreground');
 
   if (gestureReprimeBound || typeof document === 'undefined') return;
   gestureReprimeBound = true;
 
   const reprime = () => {
+    // #region agent log
+    logAudioDiag('B', 'ui.js:gesture-reprime', 'gesture-reprime:fire', {
+      oneShotDisarm: true,
+      ctxBefore: getAudioContextState(),
+    });
+    // #endregion
     disarmGestureReprime(reprime);
     void unlockAudio('gesture-reprime');
   };
@@ -114,6 +190,11 @@ export function recoverAudioAfterBackground() {
   document.addEventListener('pointerdown', reprime, true);
   document.addEventListener('touchstart', reprime, true);
   document.addEventListener('keydown', reprime, true);
+  // #region agent log
+  logAudioDiag('B', 'ui.js:recoverAudioAfterBackground', 'gesture-reprime:armed', {
+    oneShot: true,
+  });
+  // #endregion
 }
 
 export function beep(freq = REST_COMPLETE_BEEP_HZ, duration = REST_COMPLETE_BEEP_MS, volume = 0.2) {
@@ -125,7 +206,13 @@ async function playBeep(freq, duration, volume) {
     const ready = await unlockAudio('beep');
     const ctx = audioCtx;
     if (!ready || !ctx || ctx.state !== 'running') {
-      logAudioState('beep:skipped');
+      // #region agent log
+      logAudioDiag('A', 'ui.js:playBeep', 'beep:skipped', {
+        ready,
+        hasCtx: !!ctx,
+        noHtmlFallback: true,
+      });
+      // #endregion
       return;
     }
 
@@ -136,16 +223,43 @@ async function playBeep(freq, duration, volume) {
     oscillator.type = 'sine';
     oscillator.frequency.value = freq;
 
-    gain.gain.setValueAtTime(0.001, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(peak, ctx.currentTime + 0.02);
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration / 1000);
+    try {
+      gain.gain.setValueAtTime(0.001, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(peak, ctx.currentTime + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration / 1000);
+    } catch (rampErr) {
+      // #region agent log
+      logAudioDiag('C', 'ui.js:playBeep', 'beep:exp-ramp-failed', {
+        err: String(rampErr && rampErr.message || rampErr),
+        peak,
+        duration,
+      });
+      // #endregion
+      throw rampErr;
+    }
 
     oscillator.connect(gain);
     gain.connect(ctx.destination);
 
     oscillator.start();
     oscillator.stop(ctx.currentTime + duration / 1000);
+    // #region agent log
+    logAudioDiag('D', 'ui.js:playBeep', 'beep:oscillator-started', {
+      freq,
+      duration,
+      peak,
+      webAudioOnly: true,
+      audioSessionMissingPlayback: getAudioSessionInfo().available
+        ? getAudioSessionInfo().type !== 'playback'
+        : true,
+    });
+    // #endregion
   } catch (err) {
+    // #region agent log
+    logAudioDiag('C', 'ui.js:playBeep', 'beep:failed', {
+      err: String(err && err.message || err),
+    });
+    // #endregion
     console.warn('Beep failed', err);
   }
 }
@@ -157,12 +271,24 @@ export function restCompleteAlert() {
 
 function pulseRestLogAlert() {
   vibrate([160]);
+  // #region agent log
+  logAudioDiag('B', 'ui.js:pulseRestLogAlert', 'rest-log-pulse', {
+    timerActive: !!restLogAlertTimer,
+    reprimeBound: gestureReprimeBound,
+    likelyNoUserGesture: true,
+  });
+  // #endregion
   beep(REST_LOG_ALERT_HZ, REST_LOG_ALERT_MS, 0.28);
 }
 
 /** Repeat until rest HR is logged. BLE capture stops it quickly; manual entry keeps it going. */
 export function startRestLogAlert() {
   if (restLogAlertTimer) return;
+  // #region agent log
+  logAudioDiag('B', 'ui.js:startRestLogAlert', 'rest-log-alert:start', {
+    reprimeBound: gestureReprimeBound,
+  });
+  // #endregion
   void unlockAudio('rest-log-alert');
   pulseRestLogAlert();
   restLogAlertTimer = setInterval(pulseRestLogAlert, REST_LOG_ALERT_INTERVAL_MS);

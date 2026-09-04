@@ -343,6 +343,12 @@ function bindSessionPersistence() {
       persistSessionCheckpoint();
       return;
     }
+    // #region agent log
+    console.info('[ringready:audio]', 'visibility:visible', {
+      phase: state.phase,
+      hypothesisId: 'B',
+    });
+    // #endregion
     recoverAudioAfterBackground();
     reconcileActiveSessionAfterBackground();
   });
