@@ -147,6 +147,16 @@ const WORKOUT_NOTE_MAX_LENGTH = 200;
 const DETAIL_MODALITY_NOTE_KEY = 'ringReadyModalitySwitchNoteSeen';
 
 let hydrationGeneration = 0;
+/** Bumped on athlete completion save/clear/recomplete so in-flight cloud reads cannot erase newer local state. */
+let completionMutationEpoch = 0;
+
+function noteCompletionMutation() {
+  completionMutationEpoch += 1;
+}
+
+function shouldApplyCompletionHydration(completionEpochAtStart) {
+  return Number(completionEpochAtStart) === completionMutationEpoch;
+}
 
 let activeWeekIndex = Number(getStorageItem(WEEK_INDEX_KEY).value || 0);
 let scMode = getStorageItem(SC_MODE_STORAGE_KEY).value || 'Gym Machines';
@@ -493,7 +503,7 @@ async function applyCloudHydrationResults(userId, generation, {
   completionsResult,
   sessionsResult,
   mileResult,
-} = {}) {
+} = {}, completionEpochAtStart = completionMutationEpoch) {
   if (!shouldApplyCloudHydration(userId, generation)) return;
 
   if (profileResult?.ok) {
@@ -524,16 +534,20 @@ async function applyCloudHydrationResults(userId, generation, {
   const pendingSessions = getCloudPendingSprintSessions();
 
   if (completionsResult?.ok) {
-    const cloudCompletions = completionsResult.value || {};
-    const mergedCompletions = reconcileWorkoutCompletionsFromCloud(
-      cloudCompletions,
-      isWorkoutCompletionCleared,
-      (key) => {
-        const [weekIndex, workoutIndex] = key.split(':').map(Number);
-        clearWorkoutCompletionClearedMarker(weekIndex, workoutIndex);
-      },
-    );
-    writeJSON(WORKOUT_COMPLETIONS_STORAGE_KEY, mergedCompletions);
+    if (!shouldApplyCompletionHydration(completionEpochAtStart)) {
+      // Athlete mutated completions while this cloud read was in flight — keep local authority.
+    } else {
+      const cloudCompletions = completionsResult.value || {};
+      const mergedCompletions = reconcileWorkoutCompletionsFromCloud(
+        cloudCompletions,
+        isWorkoutCompletionCleared,
+        (key) => {
+          const [weekIndex, workoutIndex] = key.split(':').map(Number);
+          clearWorkoutCompletionClearedMarker(weekIndex, workoutIndex);
+        },
+      );
+      writeJSON(WORKOUT_COMPLETIONS_STORAGE_KEY, mergedCompletions);
+    }
   }
 
   if (!shouldApplyCloudHydration(userId, generation)) return;
@@ -562,7 +576,7 @@ async function applyCloudHydrationResults(userId, generation, {
     completionsResult,
     sessionsResult,
     mileResult,
-  }).catch((error) => {
+  }, completionEpochAtStart).catch((error) => {
     console.warn('Background cloud hydration maintenance failed', error);
   });
 }
@@ -571,7 +585,7 @@ async function runCloudHydrationMaintenance(userId, generation, {
   profileResult,
   hrResult,
   completionsResult,
-} = {}) {
+} = {}, completionEpochAtStart = completionMutationEpoch) {
   if (!shouldApplyCloudHydration(userId, generation)) return;
 
   const maintenanceTasks = [];
@@ -600,7 +614,7 @@ async function runCloudHydrationMaintenance(userId, generation, {
     }
   }
 
-  if (completionsResult?.ok) {
+  if (completionsResult?.ok && shouldApplyCompletionHydration(completionEpochAtStart)) {
     const cloudCompletions = completionsResult.value || {};
     Object.keys(cloudCompletions).forEach((key) => {
       const cloudStamp = cloudCompletions[key]?.updatedAt || cloudCompletions[key]?.completedAt || '';
@@ -633,6 +647,7 @@ async function hydrateCloudDataInBackground() {
   if (!isSupabaseConfigured || !getCurrentUser()) return;
   const userId = getCurrentUser().id;
   const generation = hydrationGeneration;
+  const completionEpochAtStart = completionMutationEpoch;
 
   const [
     profileResult,
@@ -654,7 +669,7 @@ async function hydrateCloudDataInBackground() {
     completionsResult,
     sessionsResult,
     mileResult,
-  });
+  }, completionEpochAtStart);
 }
 
 function enterSignedInAthleteHome() {
@@ -670,7 +685,7 @@ function enterSignedInCoachHome() {
   enterAppHome();
 }
 
-async function rehydrateWorkoutCompletionFromCloud(record, owner) {
+async function rehydrateWorkoutCompletionFromCloud(record, owner, completionEpochAtStart = completionMutationEpoch) {
   if (!shouldApplyClientStateMutation(owner)) return false;
   const context = record?.workoutContext || record?.cfg?.workoutContext || {};
   const weekIndex = Number(context.weekIndex);
@@ -678,7 +693,14 @@ async function rehydrateWorkoutCompletionFromCloud(record, owner) {
   if (!Number.isFinite(weekIndex) || !Number.isFinite(workoutIndex)) return false;
 
   const cloudCompletions = await loadCloudWorkoutCompletions();
-  if (!shouldApplyClientStateMutation(owner)) return false;
+  // Fail closed: discard if account/generation changed OR an athlete completion
+  // mutation landed after this targeted read started (same family as full hydration).
+  if (
+    !shouldApplyClientStateMutation(owner)
+    || !shouldApplyCompletionHydration(completionEpochAtStart)
+  ) {
+    return false;
+  }
 
   const key = `${weekIndex}:${workoutIndex}`;
   const cloudRecord = cloudCompletions?.[key];
@@ -687,7 +709,10 @@ async function rehydrateWorkoutCompletionFromCloud(record, owner) {
   const completions = getWorkoutCompletions();
   completions[key] = cloudRecord;
   writeJSON(WORKOUT_COMPLETIONS_STORAGE_KEY, completions);
-  return shouldApplyClientStateMutation(owner);
+  // Do not bump completionMutationEpoch here — applying a cloud cache refresh is
+  // not an athlete completion mutation.
+  return shouldApplyClientStateMutation(owner)
+    && shouldApplyCompletionHydration(completionEpochAtStart);
 }
 
 async function rehydrateMileTestFromCloud(owner) {
@@ -708,7 +733,11 @@ async function rehydrateMileTestFromCloud(owner) {
 
 function scheduleTargetedWorkoutRehydrate(record) {
   const owner = captureClientStateOwner();
-  void boundedTargetedRehydrate(owner, () => rehydrateWorkoutCompletionFromCloud(record, owner)).catch((error) => {
+  const completionEpochAtStart = completionMutationEpoch;
+  void boundedTargetedRehydrate(
+    owner,
+    () => rehydrateWorkoutCompletionFromCloud(record, owner, completionEpochAtStart),
+  ).catch((error) => {
     console.warn('Background workout rehydrate failed', error);
   });
 }
@@ -734,6 +763,7 @@ async function persistSignedInWorkoutCompletion(record, {
   const signedIn = isSupabaseConfigured && getCurrentUser();
   if (!signedIn) {
     const local = persistWorkoutCompletion(finalized);
+    if (local.record) noteCompletionMutation();
     return {
       success: !!local.record,
       record: local.record,
@@ -753,10 +783,11 @@ async function persistSignedInWorkoutCompletion(record, {
       // Soft-success only for position/completion_key conflicts when rehydrate
       // positively matches the requested logical save (Authority).
       const owner = captureClientStateOwner();
+      const completionEpochAtStart = completionMutationEpoch;
       let rehydrated = false;
       try {
         rehydrated = await withOperationTimeout(
-          rehydrateWorkoutCompletionFromCloud(finalized, owner),
+          rehydrateWorkoutCompletionFromCloud(finalized, owner, completionEpochAtStart),
           { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_HYDRATION, operation: 'identity_conflict_rehydrate' },
         );
       } catch (rehydrateError) {
@@ -767,6 +798,7 @@ async function persistSignedInWorkoutCompletion(record, {
       const context = finalized?.workoutContext || finalized?.cfg?.workoutContext || {};
       const restored = getWorkoutCompletion(context.weekIndex, context.workoutIndex);
       if (rehydrated && doesCloudCompletionMatchRequestedSave(restored, finalized)) {
+        noteCompletionMutation();
         return {
           success: true,
           record: restored,
@@ -790,6 +822,7 @@ async function persistSignedInWorkoutCompletion(record, {
 
   const local = persistWorkoutCompletion(finalized);
   const localCacheFailed = !local.localCacheOk;
+  noteCompletionMutation();
   if (localCacheFailed) {
     scheduleTargetedWorkoutRehydrate(finalized);
     shellHooks?.showToast?.('SAVED TO ACCOUNT · LOCAL CACHE WILL REFRESH');
@@ -1755,6 +1788,7 @@ async function clearCompletionFromDetail(weekIndex, workoutIndex) {
   markWorkoutCompletionCleared(safeWeekIndex, safeWorkoutIndex);
   const removed = removeWorkoutCompletion(safeWeekIndex, safeWorkoutIndex);
   if (!removed.logicalOk) { shellHooks?.showToast?.('NO COMPLETION TO CLEAR'); return; }
+  noteCompletionMutation();
 
   setDetailSkipCard(false);
   renderShell();
@@ -2553,6 +2587,7 @@ export async function initAthleteShell(hooks) {
     if (event.detail) {
       const completedWithNote = attachStoredNoteToCompletion(event.detail);
       saveWorkoutCompletion(completedWithNote);
+      noteCompletionMutation();
     }
   });
   window.addEventListener('ringready:workout-completion-cleared', (event) => {
@@ -2564,6 +2599,7 @@ export async function initAthleteShell(hooks) {
     const workoutIndex = Number(event.detail.workoutIndex);
     if (!Number.isFinite(weekIndex) || !Number.isFinite(workoutIndex)) return;
     markWorkoutCompletionCleared(weekIndex, workoutIndex);
+    noteCompletionMutation();
     deleteWorkoutCompletionFromCloud(weekIndex, workoutIndex).then((ok) => {
       if (!ok && isSupabaseConfigured && getCurrentUser()) {
         shellHooks?.showToast?.('CLEARED HERE · CLOUD DELETE FAILED');
@@ -2611,9 +2647,12 @@ export { completeWorkoutFromDetail, saveMileTestResult };
 export const cloudHydrationTestHooks = {
   shouldApplyCloudHydration,
   shouldApplyClientStateMutation,
+  shouldApplyCompletionHydration,
   captureClientStateOwner,
   invalidateCloudHydration,
   getHydrationGeneration: () => hydrationGeneration,
+  getCompletionMutationEpoch: () => completionMutationEpoch,
+  noteCompletionMutation,
   boundedCloudLoad,
   applyCloudHydrationResults,
   runCloudHydrationMaintenance,

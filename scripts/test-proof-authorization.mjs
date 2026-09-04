@@ -894,6 +894,83 @@ async function run() {
       .eq('workout_index', identityWorkout);
     assert(identityCount === 1, `Retry must converge on one row, got ${identityCount}`);
 
+    // ── Golden finalize lifecycle: provisional → proof RPC → finalize → fresh visible SELECT ──
+    const goldenWeek = 21;
+    const goldenWorkout = 4;
+    const goldenClientId = `${testPrefix}:golden-long-run`;
+    const goldenProofKey = `${testPrefix}:golden-long-run-proof`;
+    const goldenPath = `${user.id}/${goldenProofKey}/finalize.webp`;
+    const { data: goldenProvisional, error: goldenProvisionalError } = await client.from('workout_completions').insert({
+      user_id: user.id,
+      completion_key: `${goldenWeek}:${goldenWorkout}`,
+      client_record_id: goldenClientId,
+      week_index: goldenWeek,
+      workout_index: goldenWorkout,
+      workout_type: 'Long Run + S&C',
+      proof_pending: true,
+      completed_at: null,
+      record_json: {
+        id: goldenClientId,
+        status: 'pending_proof',
+        workoutContext: { weekIndex: goldenWeek, workoutIndex: goldenWorkout, workoutType: 'Long Run + S&C' },
+      },
+    }).select('id, completion_key, proof_pending, week_index, workout_index').single();
+    assert(!goldenProvisionalError && goldenProvisional?.id, `Golden provisional seed failed: ${goldenProvisionalError?.message || 'unknown'}`);
+    createdWorkoutIds.push(goldenProvisional.id);
+    assert(!isVisibleCompletionRow(goldenProvisional), 'Golden provisional must stay hidden from cloud hydration');
+
+    await uploadProofBlob(client, goldenPath);
+    storagePaths.push(goldenPath);
+    const { data: goldenProof, error: goldenProofError } = await createProof(client, {
+      p_proof_key: goldenProofKey,
+      p_linked_record_id: goldenClientId,
+      p_storage_path: goldenPath,
+      p_week_index: goldenWeek,
+      p_workout_index: goldenWorkout,
+      p_workout_type: 'Long Run + S&C',
+    });
+    assert(!goldenProofError && goldenProof?.id, `Golden proof RPC failed: ${goldenProofError?.message || 'unknown'}`);
+    createdAttachmentIds.push(goldenProof.id);
+
+    const goldenRecord = {
+      id: goldenClientId,
+      workoutContext: {
+        weekIndex: goldenWeek,
+        workoutIndex: goldenWorkout,
+        workoutType: 'Long Run + S&C',
+      },
+      workoutLog: {
+        totalMinutes: 45,
+        avgBpm: 142,
+        maxBpm: 168,
+        distance: 3.5,
+        completedAt: new Date().toISOString(),
+      },
+      completedAt: new Date().toISOString(),
+      attachment: { id: goldenProof.id },
+      proofPolicyVersion: 1,
+    };
+    const goldenSave = await saveWorkoutCompletionReconciled(client, user.id, goldenRecord);
+    assert(goldenSave?.rowId === goldenProvisional.id, 'Golden finalize must update the provisional row');
+    assert(goldenSave?.verified?.proof_pending === false, 'Golden finalize must verify proof_pending=false');
+    assert(!!goldenSave?.verified?.completed_at, 'Golden finalize must verify completed_at');
+    assert(String(goldenSave?.verified?.attachment_id) === String(goldenProof.id), 'Golden finalize must verify attachment_id');
+
+    const { data: goldenFreshRows, error: goldenFreshError } = await client
+      .from('workout_completions')
+      .select('id, completion_key, proof_pending, week_index, workout_index, completed_at, attachment_id, total_minutes')
+      .eq('user_id', user.id)
+      .eq('week_index', goldenWeek)
+      .eq('workout_index', goldenWorkout);
+    assert(!goldenFreshError, `Golden fresh SELECT failed: ${goldenFreshError?.message || 'unknown'}`);
+    const goldenVisible = (goldenFreshRows || []).filter(isVisibleCompletionRow);
+    assert(goldenVisible.length === 1, `Fresh client must see exactly one visible Long Run completion, got ${goldenVisible.length}`);
+    assert(goldenVisible[0].id === goldenProvisional.id, 'Fresh visible row must be the finalized provisional identity');
+    assert(goldenVisible[0].proof_pending === false, 'Fresh visible row must not be proof_pending');
+    assert(!!goldenVisible[0].completed_at, 'Fresh visible row must have completed_at');
+    assert(String(goldenVisible[0].attachment_id) === String(goldenProof.id), 'Fresh visible row must keep attachment');
+    assert(Number(goldenVisible[0].total_minutes) === 45, 'Fresh visible row must keep finalized metrics');
+
     // Dual mismatched rows: position must win / explicit conflict when keys disagree.
     const dualWeek = 17;
     const dualWorkout = 1;
