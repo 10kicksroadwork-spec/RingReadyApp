@@ -11,28 +11,123 @@
 
 let audioCtx = null;
 let restLogAlertTimer = null;
+let gestureReprimeBound = false;
 const holdActionSyncers = [];
 
 export function vibrate(p) {
   if (navigator.vibrate) navigator.vibrate(p);
 }
 
-export function unlockAudio() {
+/** Current Web Audio state for diagnostics / tests (`none` when unset). */
+export function getAudioContextState() {
+  return audioCtx ? audioCtx.state : 'none';
+}
+
+function logAudioState(reason) {
+  console.info('[ringready:audio]', reason, getAudioContextState());
+}
+
+function getAudioContextCtor() {
+  return window.AudioContext || window.webkitAudioContext || null;
+}
+
+/** One-sample silent buffer — keeps iOS Web Audio routed after resume. */
+function primeSilentBuffer(ctx) {
+  if (!ctx || ctx.state !== 'running') return;
   try {
-    const AudioContext = window.AudioContext || window.webkitAudioContext;
-    if (!AudioContext) return;
-    if (!audioCtx) audioCtx = new AudioContext();
-    if (audioCtx.state === 'suspended') audioCtx.resume();
-  } catch (err) {
-    console.warn('Audio unlock failed', err);
+    const sampleRate = ctx.sampleRate || 22050;
+    const buffer = ctx.createBuffer(1, 1, sampleRate);
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(ctx.destination);
+    source.start(0);
+  } catch {
+    // Silent prime is best-effort; beep path still attempts playback.
   }
 }
 
-export function beep(freq = REST_COMPLETE_BEEP_HZ, duration = REST_COMPLETE_BEEP_MS, volume = 0.2) {
+/**
+ * Ensure AudioContext exists and is running.
+ * Handles iOS suspended/interrupted after lock or background; awaits resume.
+ * @returns {Promise<boolean>}
+ */
+export async function unlockAudio(reason = 'unlock') {
   try {
-    unlockAudio();
+    const AudioContext = getAudioContextCtor();
+    if (!AudioContext) return false;
+
+    if (!audioCtx || audioCtx.state === 'closed') {
+      audioCtx = new AudioContext();
+      logAudioState(`${reason}:created`);
+    }
+
+    if (audioCtx.state !== 'running') {
+      logAudioState(`${reason}:before-resume`);
+      try {
+        await audioCtx.resume();
+      } catch (err) {
+        console.warn('Audio resume failed', err);
+        audioCtx = new AudioContext();
+        logAudioState(`${reason}:recreated`);
+        await audioCtx.resume();
+      }
+      logAudioState(`${reason}:after-resume`);
+    }
+
+    if (audioCtx.state === 'running') {
+      primeSilentBuffer(audioCtx);
+      return true;
+    }
+
+    logAudioState(`${reason}:not-running`);
+    return false;
+  } catch (err) {
+    console.warn('Audio unlock failed', err);
+    return false;
+  }
+}
+
+function disarmGestureReprime(reprime) {
+  if (!gestureReprimeBound) return;
+  gestureReprimeBound = false;
+  document.removeEventListener('pointerdown', reprime, true);
+  document.removeEventListener('touchstart', reprime, true);
+  document.removeEventListener('keydown', reprime, true);
+}
+
+/**
+ * After background/lock, attempt resume and arm a one-shot user-gesture re-prime.
+ * iOS often needs an explicit gesture before alerts are audible again.
+ */
+export function recoverAudioAfterBackground() {
+  logAudioState('foreground');
+  void unlockAudio('foreground');
+
+  if (gestureReprimeBound || typeof document === 'undefined') return;
+  gestureReprimeBound = true;
+
+  const reprime = () => {
+    disarmGestureReprime(reprime);
+    void unlockAudio('gesture-reprime');
+  };
+
+  document.addEventListener('pointerdown', reprime, true);
+  document.addEventListener('touchstart', reprime, true);
+  document.addEventListener('keydown', reprime, true);
+}
+
+export function beep(freq = REST_COMPLETE_BEEP_HZ, duration = REST_COMPLETE_BEEP_MS, volume = 0.2) {
+  void playBeep(freq, duration, volume);
+}
+
+async function playBeep(freq, duration, volume) {
+  try {
+    const ready = await unlockAudio('beep');
     const ctx = audioCtx;
-    if (!ctx) return;
+    if (!ready || !ctx || ctx.state !== 'running') {
+      logAudioState('beep:skipped');
+      return;
+    }
 
     const oscillator = ctx.createOscillator();
     const gain = ctx.createGain();
@@ -68,7 +163,7 @@ function pulseRestLogAlert() {
 /** Repeat until rest HR is logged. BLE capture stops it quickly; manual entry keeps it going. */
 export function startRestLogAlert() {
   if (restLogAlertTimer) return;
-  unlockAudio();
+  void unlockAudio('rest-log-alert');
   pulseRestLogAlert();
   restLogAlertTimer = setInterval(pulseRestLogAlert, REST_LOG_ALERT_INTERVAL_MS);
 }

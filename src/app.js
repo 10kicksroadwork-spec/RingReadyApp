@@ -88,6 +88,7 @@ import {
   closeExportModal,
   vibrate,
   unlockAudio,
+  recoverAudioAfterBackground,
   restCompleteAlert,
   startRestLogAlert,
   stopRestLogAlert,
@@ -342,6 +343,7 @@ function bindSessionPersistence() {
       persistSessionCheckpoint();
       return;
     }
+    recoverAudioAfterBackground();
     reconcileActiveSessionAfterBackground();
   });
 
@@ -351,6 +353,7 @@ function bindSessionPersistence() {
 
   window.addEventListener('pageshow', (event) => {
     if (!event.persisted) return;
+    recoverAudioAfterBackground();
     reconcileActiveSessionAfterBackground();
   });
 }
