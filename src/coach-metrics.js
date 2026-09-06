@@ -277,6 +277,9 @@ export function formatCoachSourceWarnings(sourceErrors = {}) {
     if (lower.includes('identit')) {
       return 'Roster identity data is temporarily unavailable. Athlete roster is withheld until identities can be verified.';
     }
+    if (lower.includes('exclusion')) {
+      return 'Roster exclusion data is temporarily unavailable. Athlete roster is withheld until exclusions can be verified.';
+    }
     if (lower.includes('note')) {
       return 'Coach notes are temporarily unavailable.';
     }
@@ -676,25 +679,32 @@ export function buildCoachAthleteAnalytics(athlete, helpers = {}) {
     : null;
 
   const profileMaxHr = Number(athlete?.maxHr);
-  const zoneHeatmap = buildZoneHeatmap(athlete, helpers);
-  const hrPaceEfficiency = buildHrPaceEfficiency(athlete, helpers);
+  const zoneHeatmap = completionsAvailable ? buildZoneHeatmap(athlete, helpers) : [];
+  const hrPaceEfficiency = completionsAvailable ? buildHrPaceEfficiency(athlete, helpers) : [];
 
   return {
     athleteId: athlete?.id || null,
     athleteName: athlete?.name || 'Athlete',
-    performance: {
-      value: performanceClassified.hasData ? performanceIndex : null,
-      displayValue: performanceClassified.hasData ? formatPi(performanceIndex) : '--',
-      delta: performanceClassified.delta,
-      detail: performanceClassified.hasData
-        ? `W1 100 → ${formatPi(performanceIndex)}`
-        : (athlete?.scan?.performance?.detail || 'No Performance Index yet'),
-      status: performanceClassified.status,
-      badge: statusBadgeLabel(performanceClassified.status),
-      tone: statusToTone(performanceClassified.status),
-      hasData: performanceClassified.hasData,
-      trendPoints: performanceTrend,
-    },
+    performance: completionsAvailable
+      ? {
+        value: performanceClassified.hasData ? performanceIndex : null,
+        displayValue: performanceClassified.hasData ? formatPi(performanceIndex) : '--',
+        delta: performanceClassified.delta,
+        detail: performanceClassified.hasData
+          ? `W1 100 → ${formatPi(performanceIndex)}`
+          : (athlete?.scan?.performance?.detail || 'No Performance Index yet'),
+        status: performanceClassified.status,
+        badge: statusBadgeLabel(performanceClassified.status),
+        tone: statusToTone(performanceClassified.status),
+        hasData: performanceClassified.hasData,
+        trendPoints: performanceTrend,
+        unavailable: false,
+      }
+      : {
+        ...unavailableMetric('Completion source unavailable — Performance Index not classified'),
+        trendPoints: [],
+        unavailable: true,
+      },
     recovery: sprintsAvailable
       ? {
         latest: recoveryLatest,
@@ -726,7 +736,8 @@ export function buildCoachAthleteAnalytics(athlete, helpers = {}) {
         campAverageLabel: null,
         unavailable: true,
       },
-    pace: {
+    pace: completionsAvailable
+      ? {
       value: paceClassified.hasData ? paceLatestPct : null,
       displayValue: paceClassified.hasData ? formatSignedPct(paceLatestPct, 1) : '--',
       delta: paceClassified.delta,
@@ -738,8 +749,16 @@ export function buildCoachAthleteAnalytics(athlete, helpers = {}) {
       tone: statusToTone(paceClassified.status),
       hasData: paceClassified.hasData,
       trendPoints: pacePoints,
-    },
-    hrAdherence: {
+    
+        unavailable: false,
+      }
+      : {
+        ...unavailableMetric('Completion source unavailable — pace not classified'),
+        trendPoints: [],
+        unavailable: true,
+      },
+    hrAdherence: completionsAvailable
+      ? {
       pct: hrClassified.pct,
       scored: hrClassified.scored ?? 0,
       onTarget: hrClassified.onTarget ?? 0,
@@ -753,7 +772,17 @@ export function buildCoachAthleteAnalytics(athlete, helpers = {}) {
       tone: statusToTone(hrClassified.status),
       hasData: hrClassified.hasData,
       trendPoints: hrTrend,
-    },
+    
+        unavailable: false,
+      }
+      : {
+        ...unavailableMetric('Completion source unavailable — HR adherence not classified'),
+        pct: null,
+        scored: 0,
+        onTarget: 0,
+        trendPoints: [],
+        unavailable: true,
+      },
     mileTest: {
       baseline: mileBaseline,
       latest: mileLatest,

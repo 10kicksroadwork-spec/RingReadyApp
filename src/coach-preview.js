@@ -484,7 +484,9 @@ function buildHeadline(athlete) {
   const bits = [];
   const { scan, tone, missingCount, currentWeekIndex, proofGaps } = athlete;
 
-  if (tone === 'behind' && currentWeekIndex === 0) {
+  if (tone === 'data-unavailable') {
+    bits.push('Completion data unavailable.');
+  } else if (tone === 'behind' && currentWeekIndex === 0) {
     bits.push(`Week 1. ${missingCount} session${missingCount === 1 ? '' : 's'} missing.`);
   } else if (tone === 'behind') {
     bits.push(`Behind. ${missingCount} missing.`);
@@ -566,6 +568,9 @@ function buildAthleteRecord(config) {
   const missingProofs = new Set(config.missingProofs || []);
   const flags = config.flags || {};
   const notes = config.sessionNotes || {};
+  const completionsAvailable = config.completionsAvailable !== false;
+  const attachmentsAvailable = config.sources?.attachments !== false;
+  const hrRowsAvailable = config.sources?.hrRows !== false;
   let logged = 0;
   let due = 0;
   let proofGaps = 0;
@@ -583,22 +588,27 @@ function buildAthleteRecord(config) {
         : false;
       const isFuture = isFutureWeek || isBeforeStart;
       const isSkipped = !isFuture && skipped.has(key);
-      const isMissing = !isFuture && !isSkipped && missing.has(key);
-      const status = isFuture ? 'upcoming' : isSkipped ? 'skipped' : isMissing ? 'missing' : 'logged';
-      const proof = isFuture || isSkipped
-        ? (isFuture ? 'upcoming' : 'none')
-        : missingProofs.has(key)
-          ? 'missing'
-          : status === 'logged'
-            ? 'on-file'
-            : 'none';
+      const isMissing = completionsAvailable && !isFuture && !isSkipped && missing.has(key);
+      // Completion outage: unknown must stay unknown — never infer logged or missing.
+      const status = isFuture
+        ? 'upcoming'
+        : isSkipped
+          ? 'skipped'
+          : (!completionsAvailable ? 'unavailable' : (isMissing ? 'missing' : 'logged'));
+      const proof = isFuture || isSkipped || !completionsAvailable
+        ? (isFuture ? 'upcoming' : (!completionsAvailable ? 'unavailable' : 'none'))
+        : (!attachmentsAvailable
+          ? 'unavailable'
+          : (missingProofs.has(key)
+            ? 'missing'
+            : (status === 'logged' ? 'on-file' : 'none')));
       const flag = flags[key] || '';
       if (!isFuture) due += 1;
       if (status === 'logged' || status === 'skipped') {
         logged += 1;
         done += 1;
       }
-      if (proof === 'missing') proofGaps += 1;
+      if (proof === 'missing' && completionsAvailable && attachmentsAvailable) proofGaps += 1;
       if (flag) watchCount += 1;
       const session = overlaySeriesOntoSession({
         key,
@@ -641,20 +651,24 @@ function buildAthleteRecord(config) {
     });
   });
 
-  const completionsAvailable = config.completionsAvailable !== false;
   const attention = [];
   if (!completionsAvailable) {
     attention.push('Completion data unavailable — schedule adherence not classified');
   } else if (due - logged > 0) {
     attention.push(`${due - logged} session${due - logged === 1 ? '' : 's'} missing`);
   }
-  if (proofGaps > 0) attention.push(`${proofGaps} proof gap${proofGaps === 1 ? '' : 's'}`);
+  if (!attachmentsAvailable) {
+    attention.push('Proof data unavailable — attachment source outage');
+  } else if (proofGaps > 0) {
+    attention.push(`${proofGaps} proof gap${proofGaps === 1 ? '' : 's'}`);
+  }
   if (watchCount > 0) attention.push(`${watchCount} HR flag${watchCount === 1 ? '' : 's'}`);
   const skippedCount = sessions.filter((session) => session.status === 'skipped').length;
   if (skippedCount > 0) attention.push(`${skippedCount} skipped`);
 
   let tone = 'on-track';
-  if (completionsAvailable && due - logged > 0) tone = 'behind';
+  if (!completionsAvailable) tone = 'data-unavailable';
+  else if (due - logged > 0) tone = 'behind';
   else if (watchCount > 0) tone = 'watch';
   else if (proofGaps > 0) tone = 'proof';
 
@@ -675,10 +689,12 @@ function buildAthleteRecord(config) {
   const athlete = {
     ...config,
     completionPct: completionsAvailable && due ? Math.round((logged / due) * 100) : null,
-    logged,
+    logged: completionsAvailable ? logged : null,
     due,
     missingCount: completionsAvailable ? Math.max(0, due - logged) : 0,
     completionsAvailable,
+    attachmentsAvailable,
+    hrRowsAvailable,
     skippedCount,
     proofGaps,
     watchCount,
@@ -1224,7 +1240,8 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, mileTests, note
         sessionNotes[key] = skipNote || (reason ? `Skipped · ${reason}` : 'Coach-approved skip.');
         return;
       }
-      if (!sessionHasProof({
+      const attachmentsAvailable = sourceAvailability.attachments !== false;
+      if (attachmentsAvailable && !sessionHasProof({
         row,
         sprintRow,
         attachments,
@@ -1297,6 +1314,8 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, mileTests, note
     mileTests: normalizedMileTests,
     sources: sourceAvailability,
     completionsAvailable,
+    hrRowsAvailable: sourceAvailability.hrRows !== false,
+    attachmentsAvailable: sourceAvailability.attachments !== false,
   };
 }
 
@@ -1338,8 +1357,9 @@ function buildLiveRoster(payload) {
 
   const sourceAvailability = buildCoachSourceAvailability(payload.sourceErrors || {}, payload.sources || null);
 
-  // Identity outage: fail closed. Do not assume unknown accounts are athletes.
-  if (sourceAvailability.identities === false) {
+  // Identity or exclusions outage: fail closed. Do not assume unknown accounts are athletes,
+  // and do not risk including dynamically excluded/test accounts.
+  if (sourceAvailability.identities === false || sourceAvailability.exclusions === false) {
     return [];
   }
 
@@ -1395,13 +1415,15 @@ function summaryCounts() {
   const list = rosterAthletes();
   return {
     total: list.length,
-    attention: list.filter((athlete) => athlete.tone !== 'on-track').length,
+    attention: list.filter((athlete) => athlete.tone !== 'on-track' && athlete.tone !== 'data-unavailable').length,
     onTrack: list.filter((athlete) => athlete.tone === 'on-track').length,
-    missing: list.reduce((sum, athlete) => sum + athlete.missingCount, 0),
+    unavailable: list.filter((athlete) => athlete.tone === 'data-unavailable').length,
+    missing: list.reduce((sum, athlete) => sum + (athlete.completionsAvailable === false ? 0 : athlete.missingCount), 0),
   };
 }
 
 function toneCopy(tone) {
+  if (tone === 'data-unavailable') return 'Data unavailable';
   if (tone === 'behind') return 'Behind';
   if (tone === 'watch') return 'Watch HR';
   if (tone === 'proof') return 'Proof gap';
@@ -1443,7 +1465,7 @@ function renderAthleteHrProfile(athlete, { compact = false } = {}) {
   }
   return `<div class="coach-hr-panel${hr.isComplete ? '' : ' is-incomplete'}" aria-label="Athlete heart rate profile">
     <div class="coach-hr-row">${chips}</div>
-    ${hr.isComplete ? '' : '<p class="coach-hr-note">Athlete has not entered full HR info yet.</p>'}
+    ${athlete.hrRowsAvailable === false ? '<p class="coach-hr-note">HR source unavailable — profile HR not loaded.</p>' : (hr.isComplete ? '' : '<p class="coach-hr-note">Athlete has not entered full HR info yet.</p>')}
   </div>`;
 }
 
@@ -1451,11 +1473,14 @@ function statusCopy(status) {
   if (status === 'missing') return 'Missing';
   if (status === 'upcoming') return 'Upcoming';
   if (status === 'skipped') return 'Skipped';
+  if (status === 'unavailable') return 'Unavailable';
   return 'Logged';
 }
 
 function matchesFilter(athlete) {
-  if (rosterFilter === 'attention') return athlete.tone !== 'on-track';
+  if (rosterFilter === 'attention') {
+    return athlete.tone !== 'on-track' && athlete.tone !== 'data-unavailable';
+  }
   if (rosterFilter === 'on-track') return athlete.tone === 'on-track';
   return true;
 }
@@ -1593,7 +1618,7 @@ function renderRoster() {
       ${renderAthleteHrProfile(athlete, { compact: true })}
       ${renderSignalPills(athlete)}
       <div class="coach-roster-meta">
-        <span>${athlete.logged}/${athlete.due} logged</span>
+        <span>${athlete.completionsAvailable === false ? 'Completion data unavailable' : `${athlete.logged}/${athlete.due} logged`}</span>
         ${athlete.campStartDate ? `<span>Starts ${escapeHTML(formatCampStartLabel(athlete.campStartDate))}</span>` : ''}
         <span>${escapeHTML(athlete.lastSession)}</span>
         <span>Fight ${escapeHTML(athlete.fightDate)}</span>
@@ -1748,9 +1773,11 @@ function renderAthlete() {
   const missed = athlete.sessions.filter((session) => session.status === 'missing');
   const skipped = athlete.sessions.filter((session) => session.status === 'skipped');
   const running = computeRunningTotals(athlete.sessions, normalizeModality, MODALITY_RUNNING);
-  const scheduleLabel = athlete.due
-    ? `${athlete.logged} / ${athlete.due} due sessions (${athlete.completionPct}%)`
-    : 'No due sessions yet';
+  const scheduleLabel = athlete.completionsAvailable === false
+    ? 'Completion data unavailable'
+    : (athlete.due
+      ? `${athlete.logged} / ${athlete.due} due sessions (${athlete.completionPct}%)`
+      : 'No due sessions yet');
 
   const pageTitle = document.querySelector('#coach-athlete .page-title');
   if (pageTitle) pageTitle.textContent = 'Detailed Summary';
@@ -1787,10 +1814,10 @@ function renderAthlete() {
   const summaryRoot = document.getElementById('coach-athlete-summary-stats');
   if (summaryRoot) {
     summaryRoot.innerHTML = `
-      <article class="dash-card dash-stat-card"><span>Workouts Completed</span><strong>${athlete.logged}</strong><em>${athlete.due} due</em></article>
+      <article class="dash-card dash-stat-card"><span>Workouts Completed</span><strong>${athlete.completionsAvailable === false ? '--' : athlete.logged}</strong><em>${athlete.completionsAvailable === false ? 'Completion data unavailable' : `${athlete.due} due`}</em></article>
       <article class="dash-card dash-stat-card"><span>Running Hours</span><strong>${formatDecimal(running.runningHours)}</strong><em>running only</em></article>
       <article class="dash-card dash-stat-card"><span>Mileage</span><strong>${formatDecimal(running.runningMiles)}</strong><em>running miles</em></article>
-      <article class="dash-card dash-stat-card"><span>Schedule Adherence</span><strong>${athlete.completionPct}%</strong><em>${escapeHTML(scheduleLabel)}</em></article>
+      <article class="dash-card dash-stat-card"><span>Schedule Adherence</span><strong>${athlete.completionsAvailable === false || athlete.completionPct == null ? '--' : `${athlete.completionPct}%`}</strong><em>${escapeHTML(scheduleLabel)}</em></article>
     `;
   }
 
