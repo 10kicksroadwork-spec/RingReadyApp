@@ -20,11 +20,14 @@ import {
   classifyPerformanceIndex,
   classifyRecovery,
   computeRunningTotals,
+  STATUS_UNAVAILABLE,
   formatCoachSourceWarnings,
+  normalizeMileTestCloudRows,
   selectVisibleCards,
   sortMetricCards,
   statusBadgeLabel,
 } from '../src/coach-metrics.js';
+import { buildLiveRoster } from '../src/coach-preview.js';
 import { MODALITY_RUNNING, normalizeModality } from '../src/modality.js';
 
 describe('classifyPerformanceIndex', () => {
@@ -350,5 +353,173 @@ describe('canonical analytics consistency', () => {
     const visible = selectVisibleCards(cards, { filter: 'declining', sort: 'desc' });
     expect(visible).toHaveLength(1);
     expect(visible.every((card) => card.status === STATUS_DECLINING)).toBe(true);
+  });
+});
+
+
+describe('production-shaped mile test cloud rows', () => {
+  it('keeps mile-test:baseline + program retest with time and HR deltas', () => {
+    const cloudRows = [
+      {
+        test_key: 'mile-test:baseline',
+        saved_at: '2026-08-01T12:00:00.000Z',
+        total_minutes: 6.7,
+        total_seconds: 402,
+        avg_bpm: 176,
+        max_bpm: 193,
+        test_context_json: { isBaseline: true },
+      },
+      {
+        test_key: 'program:7:5:2',
+        saved_at: '2026-09-05T12:00:00.000Z',
+        total_minutes: 6.4,
+        total_seconds: 384,
+        avg_bpm: 177,
+        max_bpm: 196,
+        test_context_json: { weekIndex: 5, workoutIndex: 2 },
+      },
+    ];
+    const mileTests = normalizeMileTestCloudRows(cloudRows);
+    const athlete = {
+      id: 'cloud-mile',
+      name: 'Cloud Mile',
+      maxHr: 188, // profile max must NOT replace mile-test max
+      mileTests,
+      performance: { index: 104 },
+      scan: { performance: { index: 104 }, recovery: {}, pace: {}, zone: {} },
+      sessions: [],
+    };
+    const analytics = buildCoachAthleteAnalytics(athlete);
+    expect(analytics.mileTest.hasData).toBe(true);
+    expect(analytics.mileTest.baselineDisplay).toBe('6:42');
+    expect(analytics.mileTest.latestDisplay).toBe('6:24');
+    expect(analytics.mileTest.deltaDisplay).toBe('-18s');
+    expect(analytics.mileTest.baselineMaxBpm).toBe(193);
+    expect(analytics.mileTest.latestMaxBpm).toBe(196);
+    expect(analytics.mileTest.maxHr).toBe(196);
+    expect(analytics.mileTest.profileMaxHr).toBe(188);
+    expect(analytics.mileTest.baselineAvgBpm).toBe(176);
+    expect(analytics.mileTest.latestAvgBpm).toBe(177);
+  });
+});
+
+describe('source outage fail-closed decisions', () => {
+  it('does not invent Missing/Behind when completions source fails', () => {
+    const payload = {
+      profiles: [{ user_id: 'u1', athlete_name: 'Pat', camp_length: 7, fight_date: '2026-11-01' }],
+      hrRows: [{ user_id: 'u1', max_hr: 190, resting_hr: 50 }],
+      completions: [], // empty because query rejected
+      sprints: [],
+      mileTests: [],
+      notes: [],
+      identities: [{ user_id: 'u1', email: 'pat@example.com' }],
+      exclusions: [],
+      meta: [],
+      sourceErrors: { completions: 'timeout' },
+      sources: {
+        profiles: true,
+        hrRows: true,
+        completions: false,
+        sprints: true,
+        mileTests: true,
+        notes: true,
+        identities: true,
+        exclusions: true,
+        meta: true,
+        attachments: true,
+      },
+    };
+    const roster = buildLiveRoster(payload);
+    expect(roster).toHaveLength(1);
+    expect(roster[0].missingCount).toBe(0);
+    expect(roster[0].tone).not.toBe('behind');
+    expect(roster[0].completionPct).toBeNull();
+    expect(roster[0].completionsAvailable).toBe(false);
+    expect(roster[0].attention.join(' ')).toMatch(/Completion data unavailable/i);
+  });
+
+  it('marks recovery DATA UNAVAILABLE when sprints source fails', () => {
+    const athlete = {
+      id: 'r1',
+      name: 'Ray',
+      sources: { sprints: false, completions: true, mileTests: true },
+      performance: { index: 101 },
+      scan: {
+        performance: { index: 101 },
+        recovery: { latest: 36, first: 29, avg: 33, points: [{ weekIndex: 0, first5Avg: 29 }, { weekIndex: 1, first5Avg: 36 }] },
+        pace: {},
+        zone: {},
+      },
+      sessions: [],
+    };
+    const analytics = buildCoachAthleteAnalytics(athlete);
+    expect(analytics.recovery.status).toBe(STATUS_UNAVAILABLE);
+    expect(statusBadgeLabel(analytics.recovery.status)).toBe('DATA UNAVAILABLE');
+    expect(analytics.recovery.unavailable).toBe(true);
+    expect(analytics.recovery.hasData).toBe(false);
+  });
+
+  it('marks mile section unavailable when mileTests source fails', () => {
+    const athlete = {
+      id: 'm1',
+      name: 'Miles',
+      sources: { mileTests: false, completions: true, sprints: true },
+      mileTests: [{ testKey: 'mile-test:baseline', seconds: 400, avgBpm: 170, maxBpm: 190, isBaseline: true }],
+      performance: { index: 100 },
+      scan: { performance: { index: 100 }, recovery: {}, pace: {}, zone: {} },
+      sessions: [],
+    };
+    const analytics = buildCoachAthleteAnalytics(athlete);
+    expect(analytics.mileTest.unavailable).toBe(true);
+    expect(analytics.mileTest.hasData).toBe(false);
+    expect(analytics.mileTest.status).toBe(STATUS_UNAVAILABLE);
+  });
+
+  it('returns an empty roster when identities source fails', () => {
+    const payload = {
+      profiles: [{ user_id: 'u1', athlete_name: 'Mystery', camp_length: 7 }],
+      hrRows: [],
+      completions: [],
+      sprints: [],
+      mileTests: [],
+      notes: [],
+      identities: [],
+      exclusions: [],
+      meta: [],
+      sourceErrors: { identities: 'timeout' },
+      sources: {
+        profiles: true,
+        hrRows: true,
+        completions: true,
+        sprints: true,
+        mileTests: true,
+        notes: true,
+        identities: false,
+        exclusions: true,
+        meta: true,
+        attachments: true,
+      },
+    };
+    expect(buildLiveRoster(payload)).toEqual([]);
+  });
+
+  it('does not present paceSec/BPM as an efficiency score', () => {
+    const athlete = {
+      id: 'p1',
+      name: 'Pace',
+      performance: { index: 102 },
+      scan: { performance: { index: 102 }, recovery: {}, pace: {}, zone: {} },
+      sessions: [
+        { status: 'logged', weekIndex: 0, workoutIndex: 1, type: 'Easy Run', avgBpm: 140, minutes: 40, distance: 4, modality: 'running' },
+        { status: 'logged', weekIndex: 1, workoutIndex: 1, type: 'Easy Run', avgBpm: 141, minutes: 38, distance: 4, modality: 'running' },
+      ],
+    };
+    const analytics = buildCoachAthleteAnalytics(athlete, {
+      normalizeModality: (value) => value,
+      runningModalityId: 'running',
+    });
+    expect(analytics.hrPaceEfficiency.length).toBe(2);
+    expect(analytics.hrPaceEfficiency.every((row) => row.efficiency == null)).toBe(true);
+    expect(analytics.hrPaceEfficiency[1].comparisonLabel).toMatch(/similar HR/i);
   });
 });

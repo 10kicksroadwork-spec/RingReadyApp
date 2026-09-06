@@ -35,10 +35,12 @@ import {
   LENS_RECOVERY,
   METRIC_PAGE_DEFS,
   buildCoachAthleteAnalytics,
+  buildCoachSourceAvailability,
   buildLensCards,
   computeRunningTotals,
   formatCoachSourceWarnings,
   lensForScreenId,
+  normalizeMileTestCloudRows,
   selectVisibleCards,
 } from './coach-metrics.js';
 
@@ -639,15 +641,20 @@ function buildAthleteRecord(config) {
     });
   });
 
+  const completionsAvailable = config.completionsAvailable !== false;
   const attention = [];
-  if (due - logged > 0) attention.push(`${due - logged} session${due - logged === 1 ? '' : 's'} missing`);
+  if (!completionsAvailable) {
+    attention.push('Completion data unavailable — schedule adherence not classified');
+  } else if (due - logged > 0) {
+    attention.push(`${due - logged} session${due - logged === 1 ? '' : 's'} missing`);
+  }
   if (proofGaps > 0) attention.push(`${proofGaps} proof gap${proofGaps === 1 ? '' : 's'}`);
   if (watchCount > 0) attention.push(`${watchCount} HR flag${watchCount === 1 ? '' : 's'}`);
   const skippedCount = sessions.filter((session) => session.status === 'skipped').length;
   if (skippedCount > 0) attention.push(`${skippedCount} skipped`);
 
   let tone = 'on-track';
-  if (due - logged > 0) tone = 'behind';
+  if (completionsAvailable && due - logged > 0) tone = 'behind';
   else if (watchCount > 0) tone = 'watch';
   else if (proofGaps > 0) tone = 'proof';
 
@@ -667,10 +674,11 @@ function buildAthleteRecord(config) {
 
   const athlete = {
     ...config,
-    completionPct: due ? Math.round((logged / due) * 100) : 0,
+    completionPct: completionsAvailable && due ? Math.round((logged / due) * 100) : null,
     logged,
     due,
-    missingCount: Math.max(0, due - logged),
+    missingCount: completionsAvailable ? Math.max(0, due - logged) : 0,
+    completionsAvailable,
     skippedCount,
     proofGaps,
     watchCount,
@@ -690,6 +698,7 @@ function buildAthleteRecord(config) {
     normalizeModality,
     runningModalityId: MODALITY_RUNNING,
     workoutLookup: (session) => PROGRAM[session.weekIndex]?.workouts?.[session.workoutIndex] || null,
+    sources: athlete.sources || null,
   });
   // Overwrite scan metric cards from canonical analytics so UI cannot diverge.
   athlete.scan = {
@@ -1146,8 +1155,11 @@ function isSkippedCloudCompletion(row, record = {}) {
     || log.status === 'skipped';
 }
 
-function liveAthleteConfig(profile, hrRow, completions, sprints, mileTests, note, email = '', campStartDate = '', attachments = []) {
+function liveAthleteConfig(profile, hrRow, completions, sprints, mileTests, note, email = '', campStartDate = '', attachments = [], sources = null) {
   const campLength = Number(profile.camp_length) === 4 ? 4 : 7;
+  const sourceAvailability = sources || {};
+  const completionsAvailable = sourceAvailability.completions !== false;
+  const normalizedMileTests = normalizeMileTestCloudRows(mileTests || []);
   const weeks = campWeeks(campLength);
   const byKey = new Map();
   completions.forEach((row) => {
@@ -1199,7 +1211,8 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, mileTests, note
         if (mileRow) row = synthesizeCompletionFromMileTest(mileRow, workout);
       }
       if (!row) {
-        missing.push(key);
+        // Source outage must not fabricate Missing/Behind from an empty completions array.
+        if (completionsAvailable) missing.push(key);
         return;
       }
       const record = row.record_json && typeof row.record_json === 'object' ? row.record_json : {};
@@ -1281,6 +1294,9 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, mileTests, note
     sessionNotes,
     sprints: sprintPoints,
     coachNote: note || '',
+    mileTests: normalizedMileTests,
+    sources: sourceAvailability,
+    completionsAvailable,
   };
 }
 
@@ -1320,6 +1336,13 @@ function buildLiveRoster(payload) {
   const coachUserIds = buildCoachUserIdSet(payload.identities, getCurrentUser()?.id);
   const excludedUserIds = buildRosterExclusionSet(payload.exclusions);
 
+  const sourceAvailability = buildCoachSourceAvailability(payload.sourceErrors || {}, payload.sources || null);
+
+  // Identity outage: fail closed. Do not assume unknown accounts are athletes.
+  if (sourceAvailability.identities === false) {
+    return [];
+  }
+
   return (payload.profiles || [])
     .filter((profile) => {
       const userId = normalizeUserId(profile?.user_id);
@@ -1336,7 +1359,8 @@ function buildLiveRoster(payload) {
       notesByUser.get(profile.user_id) || '',
       emailByUser.get(normalizeUserId(profile.user_id)) || '',
       metaByUser.get(profile.user_id)?.camp_start_date || '',
-      attachmentsByUser.get(profile.user_id) || []
+      attachmentsByUser.get(profile.user_id) || [],
+      sourceAvailability
     )))
     .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
 }
@@ -1841,17 +1865,25 @@ function renderAthleteParitySections(athlete) {
   const mile = analytics.mileTest || {};
   const mileBody = document.getElementById('coach-athlete-mile-test-body');
   if (mileBody) {
-    if (!mile.hasData) {
+    if (mile.unavailable) {
+      mileBody.innerHTML = '<p class="coach-parity-empty">Mile test data unavailable.</p>';
+    } else if (!mile.hasData) {
       mileBody.innerHTML = '<p class="coach-parity-empty">No mile test logged yet.</p>';
     } else {
       mileBody.innerHTML = `
         <div class="coach-parity-grid">
           <article><span>Baseline</span><strong>${escapeHTML(mile.baselineDisplay || '--')}</strong></article>
+          <article><span>Baseline Avg HR</span><strong>${mile.baselineAvgBpm != null ? `${Math.round(mile.baselineAvgBpm)} bpm` : '--'}</strong></article>
+          <article><span>Baseline Max HR</span><strong>${mile.baselineMaxBpm != null ? `${Math.round(mile.baselineMaxBpm)} bpm` : '--'}</strong></article>
           <article><span>Latest</span><strong>${escapeHTML(mile.latestDisplay || '--')}</strong></article>
-          <article><span>Delta</span><strong>${escapeHTML(mile.deltaDisplay || '--')}</strong></article>
-          <article><span>Max HR</span><strong>${escapeHTML(mile.maxHrDisplay || '--')}</strong></article>
+          <article><span>Latest Avg HR</span><strong>${mile.latestAvgBpm != null ? `${Math.round(mile.latestAvgBpm)} bpm` : '--'}</strong></article>
+          <article><span>Latest Max HR</span><strong>${mile.latestMaxBpm != null ? `${Math.round(mile.latestMaxBpm)} bpm` : '--'}</strong></article>
+          <article><span>Time Δ</span><strong>${escapeHTML(mile.deltaDisplay || '--')}</strong></article>
+          <article><span>Avg HR Δ</span><strong>${escapeHTML(mile.avgBpmDeltaDisplay || '--')}</strong></article>
+          <article><span>Max HR Δ</span><strong>${escapeHTML(mile.maxBpmDeltaDisplay || '--')}</strong></article>
+          <article><span>Profile Max HR</span><strong>${escapeHTML(mile.profileMaxHrDisplay || '--')}</strong></article>
         </div>
-        <p class="coach-parity-note">${escapeHTML(mile.badge || 'BASELINE')} · Mile Test &amp; Max HR context</p>
+        <p class="coach-parity-note">${escapeHTML(mile.badge || 'BASELINE')} · Mile Test times &amp; HR from the tests themselves</p>
       `;
     }
   }
@@ -1883,7 +1915,7 @@ function renderAthleteParitySections(athlete) {
           <span>${escapeHTML(row.label || '')}</span>
           <strong>${escapeHTML(row.paceLabel || '--')}</strong>
           <em>${row.avgBpm != null ? `${Math.round(row.avgBpm)} bpm` : '--'}</em>
-          <em>${row.efficiency != null ? `${row.efficiency} s/bpm` : '--'}</em>
+          <em>${escapeHTML(row.comparisonLabel || 'HR vs pace observation')}</em>
         </div>
       `).join('')}</div>`;
     }
@@ -2043,9 +2075,20 @@ async function loadLiveRoster() {
   try {
     const payload = await loadCoachRosterPayload();
     const sourceErrors = payload?.sourceErrors || {};
+    const sources = payload?.sources || buildCoachSourceAvailability(sourceErrors);
     rosterSourceWarnings = formatCoachSourceWarnings(sourceErrors);
-    liveAthletes = buildLiveRoster(payload || {
-      profiles: [], hrRows: [], completions: [], sprints: [], mileTests: [], notes: [], identities: [], exclusions: [], meta: [],
+    if (sources.identities === false && !rosterSourceWarnings.some((w) => /identity/i.test(w))) {
+      rosterSourceWarnings = [
+        ...rosterSourceWarnings,
+        'Roster identity data is temporarily unavailable. Athlete roster is withheld until identities can be verified.',
+      ];
+    }
+    liveAthletes = buildLiveRoster({
+      ...(payload || {
+        profiles: [], hrRows: [], completions: [], sprints: [], mileTests: [], notes: [], identities: [], exclusions: [], meta: [],
+      }),
+      sourceErrors,
+      sources,
     });
     liveLoadState = 'ready';
   } catch (error) {
@@ -2185,3 +2228,10 @@ export function initCoachPreview(hooks) {
     if (isCoachScreen(screen)) renderCoachPage(screen);
   });
 }
+
+
+// Test seams for production-shaped roster / outage coverage.
+export {
+  buildLiveRoster,
+  liveAthleteConfig,
+};

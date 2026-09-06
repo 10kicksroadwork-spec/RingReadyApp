@@ -16,6 +16,7 @@ export const STATUS_ON_TARGET = 'on-target';
 export const STATUS_NEEDS_ATTENTION = 'needs-attention';
 export const STATUS_WATCH = 'watch';
 export const STATUS_NO_DATA = 'no-data';
+export const STATUS_UNAVAILABLE = 'unavailable';
 
 const PACE_FLAT_PCT = 0.8;
 
@@ -163,6 +164,7 @@ export function statusBadgeLabel(status) {
     case STATUS_NEEDS_ATTENTION: return 'NEEDS ATTENTION';
     case STATUS_WATCH: return 'WATCH';
     case STATUS_NO_DATA: return 'NO DATA';
+    case STATUS_UNAVAILABLE: return 'DATA UNAVAILABLE';
     default: return 'NO DATA';
   }
 }
@@ -226,6 +228,34 @@ export function statusToTone(status) {
  * Coach-facing copy for partial source outages. Never silently treat an
  * outage as athlete "No Data" without this banner on analysis pages.
  */
+/**
+ * Structured source availability for fail-closed coach decisions.
+ * Warnings alone are not enough — unavailable sources must not invent athlete states.
+ */
+export function buildCoachSourceAvailability(sourceErrors = {}, sources = null) {
+  const keys = [
+    'profiles',
+    'hrRows',
+    'completions',
+    'sprints',
+    'mileTests',
+    'notes',
+    'identities',
+    'exclusions',
+    'meta',
+    'attachments',
+  ];
+  const availability = {};
+  keys.forEach((key) => {
+    if (sources && typeof sources === 'object' && key in sources) {
+      availability[key] = Boolean(sources[key]);
+    } else {
+      availability[key] = !(sourceErrors && sourceErrors[key]);
+    }
+  });
+  return availability;
+}
+
 export function formatCoachSourceWarnings(sourceErrors = {}) {
   const entries = sourceErrors && typeof sourceErrors === 'object'
     ? Object.entries(sourceErrors)
@@ -233,16 +263,19 @@ export function formatCoachSourceWarnings(sourceErrors = {}) {
   return entries.map(([key, message]) => {
     const lower = `${key} ${message || ''}`.toLowerCase();
     if (lower.includes('sprint')) {
-      return 'Sprint data is temporarily unavailable. Recovery metrics may be incomplete.';
+      return 'Sprint data is temporarily unavailable. Recovery metrics are marked data unavailable — not athlete no data.';
     }
     if (lower.includes('mile')) {
-      return 'Mile test data is temporarily unavailable. Benchmark / mile metrics may be incomplete.';
+      return 'Mile test data is temporarily unavailable. Mile Test metrics are marked data unavailable.';
     }
-    if (lower.includes('hr')) {
+    if (lower.includes('hr') && !lower.includes('adherence')) {
       return 'HR data is temporarily unavailable. Zone adherence metrics may be incomplete.';
     }
     if (lower.includes('completion')) {
-      return 'Completion data is temporarily unavailable. Adherence metrics may be incomplete.';
+      return 'Completion data is temporarily unavailable. Missing / Behind / schedule adherence are not classified from this outage.';
+    }
+    if (lower.includes('identit')) {
+      return 'Roster identity data is temporarily unavailable. Athlete roster is withheld until identities can be verified.';
     }
     if (lower.includes('note')) {
       return 'Coach notes are temporarily unavailable.';
@@ -266,6 +299,8 @@ function formatSignedNumber(value, digits = 0, suffix = '') {
   return `${sign}${n.toFixed(digits)}${suffix}`;
 }
 
+export const MILE_TEST_BASELINE_KEY = 'mile-test:baseline';
+
 function isMileTestSession(session) {
   const text = String(session?.type || '').toLowerCase();
   return /\bmile\b/.test(text) && /\b(test|re-?test|time trial)\b/.test(text);
@@ -279,25 +314,141 @@ function mileSecondsFromSession(session) {
   return null;
 }
 
-function collectMileTestRows(athlete) {
-  const fromConfig = (athlete?.mileTests || [])
-    .map((row) => ({
-      weekIndex: Number(row.weekIndex),
-      seconds: Number(row.timeSec ?? row.seconds),
-      label: row.label || null,
-    }))
-    .filter((row) => Number.isFinite(row.weekIndex) && Number.isFinite(row.seconds) && row.seconds > 0);
-  if (fromConfig.length) return fromConfig.sort((a, b) => a.weekIndex - b.weekIndex);
+function mileSecondsFromCloudRow(row = {}) {
+  const explicit = Number(row.total_seconds ?? row.totalSeconds ?? row.timeSec ?? row.seconds);
+  if (Number.isFinite(explicit) && explicit > 0) return explicit;
+  const minutes = Number(row.total_minutes ?? row.totalMinutes);
+  if (Number.isFinite(minutes) && minutes > 0) return minutes * 60;
+  const result = row.result_json && typeof row.result_json === 'object' ? row.result_json : {};
+  const fromResult = Number(result.totalSeconds ?? result.timeSec ?? result.seconds);
+  if (Number.isFinite(fromResult) && fromResult > 0) return fromResult;
+  const resultMinutes = Number(result.totalMinutes ?? result.minutes);
+  if (Number.isFinite(resultMinutes) && resultMinutes > 0) return resultMinutes * 60;
+  return null;
+}
 
-  return (athlete?.sessions || [])
-    .filter((session) => session.status === 'logged' && isMileTestSession(session))
-    .map((session) => ({
-      weekIndex: Number(session.weekIndex),
-      seconds: mileSecondsFromSession(session),
-      label: session.type || 'Mile Test',
-    }))
-    .filter((row) => Number.isFinite(row.weekIndex) && Number.isFinite(row.seconds) && row.seconds > 0)
-    .sort((a, b) => a.weekIndex - b.weekIndex);
+/**
+ * Normalize raw Supabase mile_tests rows (including mile-test:baseline)
+ * into the coach analytics history shape. Prefer this over reconstructing
+ * mile history only from weekly program sessions.
+ */
+export function normalizeMileTestCloudRows(rows = []) {
+  return (rows || []).map((row) => {
+    const testKey = String(row.test_key || row.testKey || '').trim();
+    const ctx = (row.test_context_json && typeof row.test_context_json === 'object')
+      ? row.test_context_json
+      : ((row.testContextJson && typeof row.testContextJson === 'object') ? row.testContextJson : {});
+    let weekIndex = Number(ctx.weekIndex);
+    let workoutIndex = Number(ctx.workoutIndex);
+    if (!Number.isFinite(weekIndex) || !Number.isFinite(workoutIndex)) {
+      const match = testKey.match(/^program:\d+:(\d+):(\d+)$/);
+      if (match) {
+        weekIndex = Number(match[1]);
+        workoutIndex = Number(match[2]);
+      }
+    }
+    const seconds = mileSecondsFromCloudRow(row);
+    const avgBpm = Number(row.avg_bpm ?? row.avgBpm);
+    const maxBpm = Number(row.max_bpm ?? row.maxBpm);
+    const savedAt = row.saved_at || row.savedAt || row.updated_at || row.updatedAt || null;
+    const isBaseline = testKey === MILE_TEST_BASELINE_KEY || ctx.isBaseline === true;
+    return {
+      testKey,
+      savedAt,
+      weekIndex: Number.isFinite(weekIndex) ? weekIndex : null,
+      workoutIndex: Number.isFinite(workoutIndex) ? workoutIndex : null,
+      seconds: Number.isFinite(seconds) && seconds > 0 ? seconds : null,
+      timeSec: Number.isFinite(seconds) && seconds > 0 ? seconds : null,
+      avgBpm: Number.isFinite(avgBpm) && avgBpm > 0 ? avgBpm : null,
+      maxBpm: Number.isFinite(maxBpm) && maxBpm > 0 ? maxBpm : null,
+      distance: Number(row.distance) || null,
+      isBaseline,
+      label: isBaseline ? 'Baseline' : (Number.isFinite(weekIndex) ? `W${weekIndex + 1}` : (testKey || 'Mile Test')),
+    };
+  }).filter((row) => Number.isFinite(row.seconds) && row.seconds > 0);
+}
+
+function sortMileTestHistory(rows) {
+  return [...rows].sort((a, b) => {
+    const aTime = Date.parse(a.savedAt || '') || null;
+    const bTime = Date.parse(b.savedAt || '') || null;
+    if (aTime != null && bTime != null && aTime !== bTime) return aTime - bTime;
+    if (a.isBaseline !== b.isBaseline) return a.isBaseline ? -1 : 1;
+    const aWeek = Number.isFinite(a.weekIndex) ? a.weekIndex : Number.POSITIVE_INFINITY;
+    const bWeek = Number.isFinite(b.weekIndex) ? b.weekIndex : Number.POSITIVE_INFINITY;
+    if (aWeek !== bWeek) return aWeek - bWeek;
+    return String(a.testKey || '').localeCompare(String(b.testKey || ''));
+  });
+}
+
+function collectMileTestRows(athlete) {
+  const fromConfig = (athlete?.mileTests || []).map((row) => {
+    // Already-normalized cloud rows or mock { weekIndex, timeSec }
+    if (row && (row.testKey || row.isBaseline || row.avgBpm != null || row.maxBpm != null || row.savedAt)) {
+      const seconds = Number(row.seconds ?? row.timeSec);
+      return {
+        testKey: row.testKey || '',
+        savedAt: row.savedAt || null,
+        weekIndex: Number.isFinite(Number(row.weekIndex)) ? Number(row.weekIndex) : null,
+        workoutIndex: Number.isFinite(Number(row.workoutIndex)) ? Number(row.workoutIndex) : null,
+        seconds: Number.isFinite(seconds) && seconds > 0 ? seconds : null,
+        timeSec: Number.isFinite(seconds) && seconds > 0 ? seconds : null,
+        avgBpm: Number.isFinite(Number(row.avgBpm)) ? Number(row.avgBpm) : null,
+        maxBpm: Number.isFinite(Number(row.maxBpm)) ? Number(row.maxBpm) : null,
+        distance: Number(row.distance) || null,
+        isBaseline: Boolean(row.isBaseline) || row.testKey === MILE_TEST_BASELINE_KEY,
+        label: row.label || null,
+      };
+    }
+    const seconds = Number(row?.timeSec ?? row?.seconds);
+    return {
+      testKey: '',
+      savedAt: null,
+      weekIndex: Number(row?.weekIndex),
+      workoutIndex: null,
+      seconds: Number.isFinite(seconds) && seconds > 0 ? seconds : null,
+      timeSec: Number.isFinite(seconds) && seconds > 0 ? seconds : null,
+      avgBpm: Number.isFinite(Number(row?.avgBpm)) ? Number(row.avgBpm) : null,
+      maxBpm: Number.isFinite(Number(row?.maxBpm)) ? Number(row.maxBpm) : null,
+      distance: Number(row?.distance) || null,
+      isBaseline: Number(row?.weekIndex) === 0,
+      label: row?.label || null,
+    };
+  }).filter((row) => Number.isFinite(row.seconds) && row.seconds > 0);
+
+  if (fromConfig.length) return sortMileTestHistory(fromConfig);
+
+  return sortMileTestHistory(
+    (athlete?.sessions || [])
+      .filter((session) => session.status === 'logged' && isMileTestSession(session))
+      .map((session) => ({
+        testKey: '',
+        savedAt: session.completedAt || session.savedAt || null,
+        weekIndex: Number(session.weekIndex),
+        workoutIndex: Number(session.workoutIndex),
+        seconds: mileSecondsFromSession(session),
+        timeSec: mileSecondsFromSession(session),
+        avgBpm: Number.isFinite(Number(session.avgBpm)) ? Number(session.avgBpm) : null,
+        maxBpm: Number.isFinite(Number(session.maxBpm)) ? Number(session.maxBpm) : null,
+        distance: Number(session.distance) || null,
+        isBaseline: Number(session.weekIndex) === 0,
+        label: session.type || 'Mile Test',
+      }))
+      .filter((row) => Number.isFinite(row.seconds) && row.seconds > 0)
+  );
+}
+
+function pickMileBaseline(rows) {
+  if (!rows.length) return null;
+  return rows.find((row) => row.isBaseline) || rows[0];
+}
+
+function pickMileLatest(rows) {
+  if (!rows.length) return null;
+  if (rows.length === 1) return rows[0];
+  const baseline = pickMileBaseline(rows);
+  const nonBaseline = rows.filter((row) => row !== baseline);
+  return nonBaseline.length ? nonBaseline[nonBaseline.length - 1] : rows[rows.length - 1];
 }
 
 function buildWeeklyHrTrend(athlete, helpers = {}) {
@@ -360,10 +511,15 @@ function buildZoneHeatmap(athlete, helpers = {}) {
     .filter(Boolean);
 }
 
+/**
+ * HR vs pace observations over time (Sheets decision framing).
+ * Does NOT invent a paceSec/BPM "efficiency score".
+ * When a prior session sits in a similar HR band (±5 bpm), attach a pace comparison.
+ */
 function buildHrPaceEfficiency(athlete, helpers = {}) {
   const normalize = helpers.normalizeModality || ((value) => value);
   const runningId = helpers.runningModalityId;
-  return (athlete?.sessions || [])
+  const observations = (athlete?.sessions || [])
     .filter((session) => session.status === 'logged')
     .filter((session) => !runningId || normalize(session.modality) === runningId)
     .map((session) => {
@@ -380,17 +536,58 @@ function buildHrPaceEfficiency(athlete, helpers = {}) {
         avgBpm,
         paceSec,
         paceLabel: formatClockFromSeconds(paceSec) === '--' ? '--' : `${formatClockFromSeconds(paceSec)}/mi`,
-        efficiency: Number((paceSec / avgBpm).toFixed(3)),
         label: `W${Number(session.weekIndex) + 1}${session.day ? ` ${session.day}` : ''}`,
       };
     })
     .filter(Boolean);
+
+  return observations.map((row, index) => {
+    const prior = [...observations.slice(0, index)]
+      .reverse()
+      .find((candidate) => Math.abs(candidate.avgBpm - row.avgBpm) <= 5);
+    if (!prior) {
+      return {
+        ...row,
+        similarHrComparison: null,
+        comparisonLabel: 'No similar-HR prior yet',
+      };
+    }
+    const paceDeltaSec = Number((row.paceSec - prior.paceSec).toFixed(1));
+    let interpretation = 'similar';
+    if (paceDeltaSec < -2) interpretation = 'faster-at-similar-hr';
+    else if (paceDeltaSec > 2) interpretation = 'slower-at-similar-hr';
+    return {
+      ...row,
+      similarHrComparison: {
+        vsLabel: prior.label,
+        vsAvgBpm: prior.avgBpm,
+        paceDeltaSec,
+        interpretation,
+      },
+      comparisonLabel: interpretation === 'faster-at-similar-hr'
+        ? `Faster vs ${prior.label} at similar HR`
+        : interpretation === 'slower-at-similar-hr'
+          ? `Slower vs ${prior.label} at similar HR`
+          : `Similar pace vs ${prior.label} at similar HR`,
+    };
+  });
 }
 
-/**
- * Single canonical analytics object for one athlete.
- * Detailed Summary + aggregate pages must consume this — no second interpretation.
- */
+function unavailableMetric(detail) {
+  return {
+    value: null,
+    displayValue: '--',
+    delta: null,
+    detail,
+    status: STATUS_UNAVAILABLE,
+    badge: statusBadgeLabel(STATUS_UNAVAILABLE),
+    tone: statusToTone(STATUS_UNAVAILABLE),
+    hasData: false,
+    trendPoints: [],
+    unavailable: true,
+  };
+}
+
 export function buildCoachAthleteAnalytics(athlete, helpers = {}) {
   const performanceIndex = Number(athlete?.performance?.index ?? athlete?.scan?.performance?.index);
   const performanceClassified = classifyPerformanceIndex(performanceIndex);
@@ -448,17 +645,37 @@ export function buildCoachAthleteAnalytics(athlete, helpers = {}) {
   const hrClassified = classifyHrAdherence(hrOnTarget, hrScored);
   const hrTrend = buildWeeklyHrTrend(athlete, helpers);
 
-  const mileRows = collectMileTestRows(athlete);
-  const mileBaseline = mileRows.length ? mileRows[0].seconds : null;
-  const mileLatest = mileRows.length ? mileRows[mileRows.length - 1].seconds : null;
+  const sources = athlete?.sources || helpers.sources || buildCoachSourceAvailability(athlete?.sourceErrors || {});
+  const sprintsAvailable = sources.sprints !== false;
+  const mileTestsAvailable = sources.mileTests !== false;
+  const completionsAvailable = sources.completions !== false;
+
+  const mileRows = mileTestsAvailable ? collectMileTestRows(athlete) : [];
+  const mileBaselineRow = pickMileBaseline(mileRows);
+  const mileLatestRow = pickMileLatest(mileRows);
+  const mileBaseline = mileBaselineRow?.seconds ?? null;
+  const mileLatest = mileLatestRow?.seconds ?? null;
   const mileDelta = Number.isFinite(mileLatest) && Number.isFinite(mileBaseline)
     ? Number((mileLatest - mileBaseline).toFixed(1))
     : null;
-  const mileStatus = Number.isFinite(mileDelta)
-    ? (mileDelta < -0.4 ? STATUS_IMPROVING : mileDelta > 0.4 ? STATUS_DECLINING : STATUS_BASELINE)
-    : (Number.isFinite(mileLatest) ? STATUS_BASELINE : STATUS_NO_DATA);
+  const mileStatus = !mileTestsAvailable
+    ? STATUS_UNAVAILABLE
+    : Number.isFinite(mileDelta)
+      ? (mileDelta < -0.4 ? STATUS_IMPROVING : mileDelta > 0.4 ? STATUS_DECLINING : STATUS_BASELINE)
+      : (Number.isFinite(mileLatest) ? STATUS_BASELINE : STATUS_NO_DATA);
 
-  const maxHr = Number(athlete?.maxHr);
+  const baselineAvgBpm = mileBaselineRow?.avgBpm ?? null;
+  const latestAvgBpm = mileLatestRow?.avgBpm ?? null;
+  const baselineMaxBpm = mileBaselineRow?.maxBpm ?? null;
+  const latestMaxBpm = mileLatestRow?.maxBpm ?? null;
+  const avgBpmDelta = Number.isFinite(latestAvgBpm) && Number.isFinite(baselineAvgBpm)
+    ? latestAvgBpm - baselineAvgBpm
+    : null;
+  const maxBpmDelta = Number.isFinite(latestMaxBpm) && Number.isFinite(baselineMaxBpm)
+    ? latestMaxBpm - baselineMaxBpm
+    : null;
+
+  const profileMaxHr = Number(athlete?.maxHr);
   const zoneHeatmap = buildZoneHeatmap(athlete, helpers);
   const hrPaceEfficiency = buildHrPaceEfficiency(athlete, helpers);
 
@@ -478,27 +695,37 @@ export function buildCoachAthleteAnalytics(athlete, helpers = {}) {
       hasData: performanceClassified.hasData,
       trendPoints: performanceTrend,
     },
-    recovery: {
-      latest: recoveryLatest,
-      baseline: recoveryBaseline,
-      campAverage: recoveryCampAverage,
-      value: recoveryClassified.hasData ? recoveryLatest : null,
-      displayValue: recoveryClassified.hasData && Number.isFinite(recoveryLatest)
-        ? String(Math.round(recoveryLatest))
-        : '--',
-      delta: recoveryClassified.delta,
-      detail: recoveryClassified.hasData
-        ? `Latest First-5 Drop: ${Math.round(recoveryLatest)} BPM`
-        : (athlete?.scan?.recovery?.detail || 'No sprint yet'),
-      campAverageLabel: Number.isFinite(recoveryCampAverage)
-        ? `Camp Avg: ${Math.round(recoveryCampAverage)} BPM`
-        : null,
-      status: recoveryClassified.status,
-      badge: statusBadgeLabel(recoveryClassified.status),
-      tone: statusToTone(recoveryClassified.status),
-      hasData: recoveryClassified.hasData,
-      trendPoints: recoveryPoints,
-    },
+    recovery: sprintsAvailable
+      ? {
+        latest: recoveryLatest,
+        baseline: recoveryBaseline,
+        campAverage: recoveryCampAverage,
+        value: recoveryClassified.hasData ? recoveryLatest : null,
+        displayValue: recoveryClassified.hasData && Number.isFinite(recoveryLatest)
+          ? String(Math.round(recoveryLatest))
+          : '--',
+        delta: recoveryClassified.delta,
+        detail: recoveryClassified.hasData
+          ? `Latest First-5 Drop: ${Math.round(recoveryLatest)} BPM`
+          : (athlete?.scan?.recovery?.detail || 'No sprint yet'),
+        campAverageLabel: Number.isFinite(recoveryCampAverage)
+          ? `Camp Avg: ${Math.round(recoveryCampAverage)} BPM`
+          : null,
+        status: recoveryClassified.status,
+        badge: statusBadgeLabel(recoveryClassified.status),
+        tone: statusToTone(recoveryClassified.status),
+        hasData: recoveryClassified.hasData,
+        trendPoints: recoveryPoints,
+        unavailable: false,
+      }
+      : {
+        ...unavailableMetric('Sprint source unavailable — recovery not classified'),
+        latest: null,
+        baseline: null,
+        campAverage: null,
+        campAverageLabel: null,
+        unavailable: true,
+      },
     pace: {
       value: paceClassified.hasData ? paceLatestPct : null,
       displayValue: paceClassified.hasData ? formatSignedPct(paceLatestPct, 1) : '--',
@@ -534,14 +761,30 @@ export function buildCoachAthleteAnalytics(athlete, helpers = {}) {
       latestDisplay: formatClockFromSeconds(mileLatest),
       delta: mileDelta,
       deltaDisplay: formatSignedNumber(mileDelta, 0, 's'),
+      baselineAvgBpm,
+      latestAvgBpm,
+      avgBpmDelta,
+      avgBpmDeltaDisplay: formatSignedNumber(avgBpmDelta, 0, ' bpm'),
+      baselineMaxBpm,
+      latestMaxBpm,
+      maxBpmDelta,
+      maxBpmDeltaDisplay: formatSignedNumber(maxBpmDelta, 0, ' bpm'),
       status: mileStatus,
       badge: statusBadgeLabel(mileStatus),
       tone: statusToTone(mileStatus),
-      hasData: Number.isFinite(mileLatest),
+      hasData: mileTestsAvailable && Number.isFinite(mileLatest),
+      unavailable: !mileTestsAvailable,
       history: mileRows,
-      maxHr: Number.isFinite(maxHr) ? maxHr : null,
-      maxHrDisplay: Number.isFinite(maxHr) ? `${Math.round(maxHr)} BPM` : '--',
+      // Mile Test Max HR comes from the all-out test rows — not profile Max HR.
+      maxHr: Number.isFinite(latestMaxBpm) ? latestMaxBpm : (Number.isFinite(baselineMaxBpm) ? baselineMaxBpm : null),
+      maxHrDisplay: Number.isFinite(latestMaxBpm)
+        ? `${Math.round(latestMaxBpm)} BPM`
+        : (Number.isFinite(baselineMaxBpm) ? `${Math.round(baselineMaxBpm)} BPM` : '--'),
+      profileMaxHr: Number.isFinite(profileMaxHr) ? profileMaxHr : null,
+      profileMaxHrDisplay: Number.isFinite(profileMaxHr) ? `${Math.round(profileMaxHr)} BPM` : '--',
     },
+    sources,
+    completionsAvailable,
     zoneHeatmap,
     hrPaceEfficiency,
   };
