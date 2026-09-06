@@ -1878,9 +1878,9 @@ function renderAthleteParitySections(athlete) {
           <article><span>Latest</span><strong>${escapeHTML(mile.latestDisplay || '--')}</strong></article>
           <article><span>Latest Avg HR</span><strong>${mile.latestAvgBpm != null ? `${Math.round(mile.latestAvgBpm)} bpm` : '--'}</strong></article>
           <article><span>Latest Max HR</span><strong>${mile.latestMaxBpm != null ? `${Math.round(mile.latestMaxBpm)} bpm` : '--'}</strong></article>
-          <article><span>Time Δ</span><strong>${escapeHTML(mile.deltaDisplay || '--')}</strong></article>
-          <article><span>Avg HR Δ</span><strong>${escapeHTML(mile.avgBpmDeltaDisplay || '--')}</strong></article>
-          <article><span>Max HR Δ</span><strong>${escapeHTML(mile.maxBpmDeltaDisplay || '--')}</strong></article>
+          <article><span>Time Delta</span><strong>${escapeHTML(mile.deltaDisplay || '--')}</strong></article>
+          <article><span>Avg HR Delta</span><strong>${escapeHTML(mile.avgBpmDeltaDisplay || '--')}</strong></article>
+          <article><span>Max HR Delta</span><strong>${escapeHTML(mile.maxBpmDeltaDisplay || '--')}</strong></article>
           <article><span>Profile Max HR</span><strong>${escapeHTML(mile.profileMaxHrDisplay || '--')}</strong></article>
         </div>
         <p class="coach-parity-note">${escapeHTML(mile.badge || 'BASELINE')} · Mile Test times &amp; HR from the tests themselves</p>
