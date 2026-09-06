@@ -404,13 +404,27 @@ describe('production-shaped mile test cloud rows', () => {
 });
 
 describe('source outage fail-closed decisions', () => {
-  it('does not invent Missing/Behind when completions source fails', () => {
+  it('does not invent Missing/Behind/Logged/On-track when completions source fails', () => {
     const payload = {
       profiles: [{ user_id: 'u1', athlete_name: 'Pat', camp_length: 7, fight_date: '2026-11-01' }],
       hrRows: [{ user_id: 'u1', max_hr: 190, resting_hr: 50 }],
       completions: [], // empty because query rejected
-      sprints: [],
-      mileTests: [],
+      sprints: [{
+        user_id: 'u1',
+        week_index: 0,
+        workout_index: 0,
+        session_at: '2026-09-01T12:00:00.000Z',
+        avg_drop: 34,
+        session_json: { data: [{ drop: 32 }, { drop: 34 }, { drop: 36 }, { drop: 33 }, { drop: 35 }] },
+      }],
+      mileTests: [{
+        user_id: 'u1',
+        test_key: 'mile-test:baseline',
+        saved_at: '2026-08-01T12:00:00.000Z',
+        total_seconds: 402,
+        avg_bpm: 176,
+        max_bpm: 193,
+      }],
       notes: [],
       identities: [{ user_id: 'u1', email: 'pat@example.com' }],
       exclusions: [],
@@ -431,11 +445,131 @@ describe('source outage fail-closed decisions', () => {
     };
     const roster = buildLiveRoster(payload);
     expect(roster).toHaveLength(1);
-    expect(roster[0].missingCount).toBe(0);
-    expect(roster[0].tone).not.toBe('behind');
-    expect(roster[0].completionPct).toBeNull();
-    expect(roster[0].completionsAvailable).toBe(false);
-    expect(roster[0].attention.join(' ')).toMatch(/Completion data unavailable/i);
+    const athlete = roster[0];
+    expect(athlete.missingCount).toBe(0);
+    expect(athlete.logged).toBeNull();
+    expect(athlete.completionPct).toBeNull();
+    expect(athlete.completionsAvailable).toBe(false);
+    expect(athlete.tone).toBe('data-unavailable');
+    expect(athlete.tone).not.toBe('on-track');
+    expect(athlete.tone).not.toBe('behind');
+    expect(athlete.headline).toMatch(/Completion data unavailable/i);
+    expect(athlete.headline).not.toMatch(/On track/i);
+    expect(athlete.attention.join(' ')).toMatch(/Completion data unavailable/i);
+    const dueSessions = athlete.sessions.filter((session) => session.status !== 'upcoming');
+    expect(dueSessions.length).toBeGreaterThan(0);
+    expect(dueSessions.every((session) => session.status === 'unavailable' || session.status === 'skipped')).toBe(true);
+    expect(dueSessions.some((session) => session.status === 'logged')).toBe(false);
+    expect(athlete.analytics.performance.status).toBe(STATUS_UNAVAILABLE);
+    expect(athlete.analytics.pace.status).toBe(STATUS_UNAVAILABLE);
+    expect(athlete.analytics.hrAdherence.status).toBe(STATUS_UNAVAILABLE);
+    expect(athlete.analytics.zoneHeatmap).toEqual([]);
+    expect(athlete.analytics.hrPaceEfficiency).toEqual([]);
+    // Independent sources remain usable when healthy.
+    expect(athlete.analytics.recovery.unavailable).not.toBe(true);
+    expect(athlete.analytics.mileTest.unavailable).not.toBe(true);
+    expect(athlete.analytics.mileTest.hasData).toBe(true);
+  });
+
+  it('fails closed when roster exclusions source fails', () => {
+    const payload = {
+      profiles: [{ user_id: 'u1', athlete_name: 'Pat', camp_length: 7 }],
+      hrRows: [],
+      completions: [],
+      sprints: [],
+      mileTests: [],
+      notes: [],
+      identities: [{ user_id: 'u1', email: 'pat@example.com' }],
+      exclusions: [],
+      meta: [],
+      sourceErrors: { exclusions: 'timeout' },
+      sources: {
+        profiles: true,
+        hrRows: true,
+        completions: true,
+        sprints: true,
+        mileTests: true,
+        notes: true,
+        identities: true,
+        exclusions: false,
+        meta: true,
+        attachments: true,
+      },
+    };
+    expect(buildLiveRoster(payload)).toEqual([]);
+  });
+
+  it('marks HR profile as source-unavailable instead of athlete omission', () => {
+    const payload = {
+      profiles: [{ user_id: 'u1', athlete_name: 'Pat', camp_length: 7, fight_date: '2026-11-01' }],
+      hrRows: [],
+      completions: [],
+      sprints: [],
+      mileTests: [],
+      notes: [],
+      identities: [{ user_id: 'u1', email: 'pat@example.com' }],
+      exclusions: [],
+      meta: [],
+      sourceErrors: { hrRows: 'timeout' },
+      sources: {
+        profiles: true,
+        hrRows: false,
+        completions: true,
+        sprints: true,
+        mileTests: true,
+        notes: true,
+        identities: true,
+        exclusions: true,
+        meta: true,
+        attachments: true,
+      },
+    };
+    const roster = buildLiveRoster(payload);
+    expect(roster).toHaveLength(1);
+    expect(roster[0].hrRowsAvailable).toBe(false);
+    expect(roster[0].maxHr).toBeNull();
+  });
+
+  it('does not invent proof gaps when attachments source fails', () => {
+    const payload = {
+      profiles: [{ user_id: 'u1', athlete_name: 'Pat', camp_length: 7, fight_date: '2026-11-01' }],
+      hrRows: [{ user_id: 'u1', max_hr: 190, resting_hr: 50 }],
+      completions: [{
+        user_id: 'u1',
+        completion_key: '0:1',
+        week_index: 0,
+        workout_index: 1,
+        workout_type: 'Easy Run',
+        avg_bpm: 140,
+        completed_at: '2026-09-01T12:00:00.000Z',
+        record_json: {},
+      }],
+      sprints: [],
+      mileTests: [],
+      notes: [],
+      identities: [{ user_id: 'u1', email: 'pat@example.com' }],
+      exclusions: [],
+      meta: [],
+      attachments: [],
+      sourceErrors: { attachments: 'timeout' },
+      sources: {
+        profiles: true,
+        hrRows: true,
+        completions: true,
+        sprints: true,
+        mileTests: true,
+        notes: true,
+        identities: true,
+        exclusions: true,
+        meta: true,
+        attachments: false,
+      },
+    };
+    const roster = buildLiveRoster(payload);
+    expect(roster).toHaveLength(1);
+    expect(roster[0].proofGaps).toBe(0);
+    expect(roster[0].tone).not.toBe('proof');
+    expect(roster[0].attachmentsAvailable).toBe(false);
   });
 
   it('marks recovery DATA UNAVAILABLE when sprints source fails', () => {
