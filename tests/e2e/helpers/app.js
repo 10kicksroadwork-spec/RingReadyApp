@@ -266,6 +266,25 @@ export async function seedLocalActiveSessionCheckpoint(page, partial = {}) {
   }, partial);
 }
 
+export async function seedDoneSessionCheckpoint(page, partial = {}) {
+  return seedLocalActiveSessionCheckpoint(page, {
+    sessionId: partial.sessionId || 'done-checkpoint-session',
+    state: {
+      phase: 'done',
+      currentRep: 5,
+      data: [
+        { sprintHR: 172, restHR: 118, drop: 54, suspicious: false },
+        { sprintHR: 175, restHR: 120, drop: 55, suspicious: false },
+        { sprintHR: 178, restHR: 122, drop: 56, suspicious: false },
+        { sprintHR: 180, restHR: 124, drop: 56, suspicious: false },
+        { sprintHR: 176, restHR: 121, drop: 55, suspicious: false },
+      ],
+      ...(partial.state || {}),
+    },
+    ...partial,
+  });
+}
+
 export async function assertNoHorizontalOverflow(page) {
   const overflow = await page.evaluate(() => {
     const root = document.documentElement;
