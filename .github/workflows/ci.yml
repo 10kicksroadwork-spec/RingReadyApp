@@ -27,6 +27,9 @@ jobs:
       - name: Lint
         run: npm run lint -- --max-warnings=0
 
+      - name: Architecture gate
+        run: npm run test:architecture
+
       - name: Unit tests
         run: npm test
 

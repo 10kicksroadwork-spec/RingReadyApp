@@ -21,6 +21,8 @@ Production does **not** expose the Apps Script `/exec` URL to the browser. Athle
 
 **Auth / RLS:** each athlete has a private data locker keyed by `user_id`. Coaches read across lockers; proof attachments are created only through SECURITY DEFINER RPCs. See [docs/AUTH_LOCKER_MODEL.md](docs/AUTH_LOCKER_MODEL.md).
 
+**Athlete mutations / identity:** entity identity for workouts, proofs, and mile tests is owned by `src/workout-completion-identity.js`. See [docs/ATHLETE_MUTATION_MAP.md](docs/ATHLETE_MUTATION_MAP.md).
+
 ## Project layout
 
 ```

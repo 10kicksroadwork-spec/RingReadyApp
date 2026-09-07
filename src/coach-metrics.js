@@ -4,6 +4,10 @@
  * same value/status everywhere (see docs/COACH_DECISION_DASHBOARD_SPEC.md).
  */
 
+import { MILE_TEST_BASELINE_KEY } from './workout-completion-identity.js';
+
+export { MILE_TEST_BASELINE_KEY } from './workout-completion-identity.js';
+
 export const LENS_BENCHMARK = 'benchmark';
 export const LENS_RECOVERY = 'recovery';
 export const LENS_PACE = 'pace';
@@ -435,8 +439,6 @@ function formatSignedNumber(value, digits = 0, suffix = '') {
   const sign = n > 0 ? '+' : '';
   return `${sign}${n.toFixed(digits)}${suffix}`;
 }
-
-export const MILE_TEST_BASELINE_KEY = 'mile-test:baseline';
 
 function isMileTestSession(session) {
   const text = String(session?.type || '').toLowerCase();

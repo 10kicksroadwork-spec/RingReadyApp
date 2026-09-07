@@ -118,7 +118,6 @@ import {
 import { isSupabaseConfigured } from './supabase-client.js';
 import {
   PROOF_POLICY_VERSION,
-  buildProgramProofKey,
   ensureWorkoutProofUploaded,
   hasPendingWorkoutProof,
   hasWorkoutProof,
@@ -129,8 +128,14 @@ import { resolveCanonicalClientRecordId } from './proof-staging.js';
 import { shouldRollbackProvisionalIdentity } from './proof-diagnostics.js';
 import {
   athleteFacingWorkoutSaveError,
+  buildDetailCompletionFlightKey,
+  buildMileCompletionFlightKey,
+  buildMileTestKey,
+  buildProgramProofKey,
+  buildWorkoutCompletionKey,
   doesCloudCompletionMatchRequestedSave,
   isReconcileableUniqueConflict,
+  MILE_TEST_BASELINE_KEY,
 } from './workout-completion-identity.js';
 import { OPERATION_TIMEOUT_MS, withOperationTimeout } from './operation-timeout.js';
 import { runSingleFlight } from './single-flight.js';
@@ -171,7 +176,7 @@ let scWeek = Number(getStorageItem(SC_WEEK_STORAGE_KEY).value || activeWeekIndex
 let shellHooks = null;
 let authMode = 'sign-in';
 let passwordRecoveryPending = false;
-let activeMileTestContext = { testKey: 'mile-test:baseline', workoutContext: null };
+let activeMileTestContext = { testKey: MILE_TEST_BASELINE_KEY, workoutContext: null };
 let detailModality = MODALITY_RUNNING;
 let detailModalityInitialized = false;
 
@@ -758,7 +763,8 @@ async function rehydrateWorkoutCompletionFromCloud(record, owner, completionEpoc
     return false;
   }
 
-  const key = `${weekIndex}:${workoutIndex}`;
+  const key = buildWorkoutCompletionKey(weekIndex, workoutIndex);
+  if (!key) return false;
   const cloudRecord = cloudCompletions?.[key];
   if (!cloudRecord) return false;
 
@@ -1428,7 +1434,7 @@ function buildSkippedWorkoutCompletion(week, workout, weekIndex, workoutIndex, s
   };
 }
 function getWorkoutNoteKey(weekIndex, workoutIndex) {
-  return `${Number(weekIndex)}:${Number(workoutIndex)}`;
+  return buildWorkoutCompletionKey(weekIndex, workoutIndex);
 }
 function sanitizeWorkoutNote(value) {
   return String(value || '').slice(0, WORKOUT_NOTE_MAX_LENGTH);
@@ -1773,7 +1779,7 @@ async function completeWorkoutFromDetail(weekIndex, workoutIndex) {
     return;
   }
 
-  return runSingleFlight(`completion:detail:${safeWeekIndex}:${safeWorkoutIndex}`, async () => withSavingButton(action, async () => {
+  return runSingleFlight(buildDetailCompletionFlightKey(safeWeekIndex, safeWorkoutIndex), async () => withSavingButton(action, async () => {
     const week = getWeek(safeWeekIndex);
     const workout = week.workouts[safeWorkoutIndex] || week.workouts[0];
     const workoutLog = readDetailWorkoutLog();
@@ -2267,7 +2273,7 @@ function getActiveMileProofContext() {
   const profile = getAthleteProfile();
   const workoutContext = activeMileTestContext.workoutContext;
   return {
-    testKey: activeMileTestContext.testKey || 'mile-test:baseline',
+    testKey: activeMileTestContext.testKey || MILE_TEST_BASELINE_KEY,
     campLength: Number(profile.campLength) || 7,
     weekIndex: workoutContext?.weekIndex,
     workoutIndex: workoutContext?.workoutIndex,
@@ -2284,7 +2290,7 @@ function renderMileTestPage() {
   if (link) link.href = MILE_TEST_INFO.warmupLink;
   const result = getMileTestResult();
   const proofContext = getActiveMileProofContext();
-  const matchesActiveTest = result && String(result.testKey || 'mile-test:baseline') === proofContext.testKey;
+  const matchesActiveTest = result && String(result.testKey || MILE_TEST_BASELINE_KEY) === proofContext.testKey;
   initWorkoutProof('mile', {
     proofKey: proofContext.testKey,
     context: proofContext,
@@ -2330,7 +2336,7 @@ async function saveMileTestResult() {
   const proofContext = getActiveMileProofContext();
   const testKey = proofContext.testKey || 'mile';
 
-  return runSingleFlight(`completion:mile:${testKey}`, async () => withSavingButton(button, async () => {
+  return runSingleFlight(buildMileCompletionFlightKey(testKey), async () => withSavingButton(button, async () => {
     const existingMile = getMileTestResult();
     const result = { id: makeWorkoutCompletionId(), testKey: proofContext.testKey, distance, totalMinutes, totalSeconds: duration?.totalSeconds ?? Math.round(totalMinutes * 60), totalTimeDisplay: duration?.display || '', avgBpm, maxBpm, paceMinPerMile: distance > 0 ? totalMinutes / distance : '', savedAt: new Date().toISOString() };
     if (existingMile?.id && existingMile.testKey === proofContext.testKey) {
@@ -2591,7 +2597,7 @@ function bindShellEvents() {
     const pageBtn = event.target.closest('[data-page-target]');
     if (!pageBtn) return;
     event.preventDefault();
-    if (pageBtn.dataset.pageTarget === 'mile-test-page') activeMileTestContext = { testKey: 'mile-test:baseline', workoutContext: null };
+    if (pageBtn.dataset.pageTarget === 'mile-test-page') activeMileTestContext = { testKey: MILE_TEST_BASELINE_KEY, workoutContext: null };
     navigateTo(pageBtn.dataset.pageTarget);
   });
   document.querySelectorAll('[data-open-menu]').forEach((btn) => btn.addEventListener('click', openWeekDrawer));
@@ -2645,7 +2651,14 @@ function bindShellEvents() {
       const week = getWeek(weekIndex);
       const workout = week.workouts[workoutIndex] || week.workouts[0];
       const context = buildWorkoutContext(week, workout, weekIndex, workoutIndex);
-      activeMileTestContext = { testKey: buildProgramProofKey(getAthleteProfile().campLength, weekIndex, workoutIndex), workoutContext: context };
+      activeMileTestContext = {
+        testKey: buildMileTestKey({
+          campLength: getAthleteProfile().campLength,
+          weekIndex,
+          workoutIndex,
+        }),
+        workoutContext: context,
+      };
       navigateTo('mile-test-page');
     } else if (event.currentTarget.dataset.action === 'complete-workout') {
       completeWorkoutFromDetail(event.currentTarget.dataset.weekIndex, event.currentTarget.dataset.workoutIndex);

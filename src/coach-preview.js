@@ -24,6 +24,7 @@ import {
 } from './modality.js';
 import { sessionHasProof } from './coach-proof.js';
 import { readJSONValue, writeJSON } from './safe-storage.js';
+import { buildWorkoutCompletionKey } from './workout-completion-identity.js';
 import {
   getSessionZoneTarget,
   isSessionAvgOnTarget,
@@ -145,7 +146,7 @@ function campWeeks(campLength) {
 }
 
 function sessionKey(weekIndex, workoutIndex) {
-  return `${weekIndex}:${workoutIndex}`;
+  return buildWorkoutCompletionKey(weekIndex, workoutIndex);
 }
 
 /**
@@ -1079,10 +1080,7 @@ function inferCurrentWeekIndex(fightDate, campLength, completionWeeks, campStart
 
 function completionKeyFromRow(row) {
   if (row.completion_key) return String(row.completion_key);
-  if (Number.isFinite(Number(row.week_index)) && Number.isFinite(Number(row.workout_index))) {
-    return `${Number(row.week_index)}:${Number(row.workout_index)}`;
-  }
-  return '';
+  return buildWorkoutCompletionKey(row.week_index, row.workout_index);
 }
 
 function mileTestKeyFromRow(row) {

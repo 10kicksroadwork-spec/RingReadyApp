@@ -17,6 +17,10 @@ import {
   setStorageItem,
   writeJSON,
 } from './safe-storage.js';
+import {
+  buildProgramProofKey,
+  MILE_TEST_BASELINE_KEY,
+} from './workout-completion-identity.js';
 
 export const MAX_QUEUE_ITEMS = 50;
 export const MAX_SYNC_ATTEMPTS = 5;
@@ -38,10 +42,6 @@ const PROFILE_DEFAULTS = {
 
 function normalizeCampLength(value) {
   return String(value) === '4' ? '4' : '7';
-}
-
-function buildProgramProofKey(campLength, weekIndex, workoutIndex) {
-  return `program:${normalizeCampLength(campLength)}:${Number(weekIndex)}:${Number(workoutIndex)}`;
 }
 
 function cleanProfile(profile = {}) {
@@ -438,7 +438,7 @@ export function buildMileTestPayload(result, hrInfo, testContext = {}) {
   const totalMinutes = Number(result.totalMinutes) || 0;
   const paceMinPerMile = distance > 0 && totalMinutes > 0 ? totalMinutes / distance : '';
   const linkedRecordId = String(result.id || '');
-  const proofKey = String(result.testKey || testContext.testKey || testContext.proofKey || 'mile-test:baseline');
+  const proofKey = String(result.testKey || testContext.testKey || testContext.proofKey || MILE_TEST_BASELINE_KEY);
   const proofMeta = buildProofMetadata({ ...testContext, testKey: proofKey }, linkedRecordId, proofKey);
 
   return {

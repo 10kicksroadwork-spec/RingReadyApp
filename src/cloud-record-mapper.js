@@ -1,7 +1,10 @@
 /** Cloud payload builders shared by auth saves and proof-identity tests. */
 
 import { readOutputFromWorkoutLog } from './modality.js';
-import { resolveCanonicalWorkoutIdentity } from './workout-completion-identity.js';
+import {
+  MILE_TEST_BASELINE_KEY,
+  resolveCanonicalWorkoutIdentity,
+} from './workout-completion-identity.js';
 
 function textOrEmpty(value) {
   return String(value || '').trim();
@@ -145,7 +148,7 @@ export function buildSprintCloudPayload(record, userId) {
 }
 
 export function buildMileTestCloudPayload(result, hrInfo, testContext, userId) {
-  const testKey = String(testContext?.testKey || result.testKey || 'mile-test:baseline');
+  const testKey = String(testContext?.testKey || result.testKey || MILE_TEST_BASELINE_KEY);
   const resultWithContext = { ...result, testKey };
   return {
     user_id: userId,
@@ -205,7 +208,7 @@ export function buildProvisionalWorkoutCloudPayload(record, userId) {
 }
 
 export function buildProvisionalMileTestCloudPayload(result, testContext, userId) {
-  const testKey = String(testContext?.testKey || result.testKey || 'mile-test:baseline');
+  const testKey = String(testContext?.testKey || result.testKey || MILE_TEST_BASELINE_KEY);
   return {
     user_id: userId,
     client_record_id: textOrEmpty(result.id),

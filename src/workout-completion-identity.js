@@ -31,6 +31,66 @@ export function parseNonNegativeInteger(value) {
   return num;
 }
 
+/** Baseline mile-test entity key (not a program week/workout assignment). */
+export const MILE_TEST_BASELINE_KEY = 'mile-test:baseline';
+
+/**
+ * Canonical completion key for one athlete assignment position.
+ * Sole owner of the `${week}:${workout}` entity-identity format.
+ */
+export function buildWorkoutCompletionKey(weekIndex, workoutIndex) {
+  const week = parseNonNegativeInteger(weekIndex);
+  const workout = parseNonNegativeInteger(workoutIndex);
+  if (week === null || workout === null) return '';
+  return `${week}:${workout}`;
+}
+
+/**
+ * Canonical program proof / linked mile-test key.
+ * Sole owner of the `program:{4|7}:{week}:{workout}` format.
+ */
+export function buildProgramProofKey(campLength, weekIndex, workoutIndex) {
+  return `program:${String(campLength) === '4' ? 4 : 7}:${Number(weekIndex)}:${Number(workoutIndex)}`;
+}
+
+/**
+ * Canonical mile-test entity key: baseline or program-linked.
+ * Pass an explicit testKey to normalize/trim; otherwise derive from context.
+ */
+export function buildMileTestKey({
+  isBaseline = false,
+  campLength,
+  weekIndex,
+  workoutIndex,
+  testKey,
+} = {}) {
+  const explicit = String(testKey || '').trim();
+  if (explicit) return explicit;
+  if (isBaseline) return MILE_TEST_BASELINE_KEY;
+  const week = parseNonNegativeInteger(weekIndex);
+  const workout = parseNonNegativeInteger(workoutIndex);
+  if (week !== null && workout !== null) {
+    return buildProgramProofKey(campLength, week, workout);
+  }
+  return MILE_TEST_BASELINE_KEY;
+}
+
+export function buildDetailCompletionFlightKey(weekIndex, workoutIndex) {
+  return `completion:detail:${weekIndex}:${workoutIndex}`;
+}
+
+export function buildSprintCompletionFlightKey(recordId) {
+  return `completion:sprint:${recordId}`;
+}
+
+export function buildMileCompletionFlightKey(testKey) {
+  return `completion:mile:${testKey}`;
+}
+
+export function buildProofFlightKey(surface, proofKey = '', uploadId = '') {
+  return `proof:${surface}:${proofKey || 'unknown'}:${uploadId || 'pending'}`;
+}
+
 export function resolveCanonicalWorkoutIdentity(record = {}) {
   const context = record?.cfg?.workoutContext || record?.workoutContext || {};
   const weekIndex = parseNonNegativeInteger(context.weekIndex);
@@ -39,7 +99,7 @@ export function resolveCanonicalWorkoutIdentity(record = {}) {
     return {
       weekIndex,
       workoutIndex,
-      completionKey: `${weekIndex}:${workoutIndex}`,
+      completionKey: buildWorkoutCompletionKey(weekIndex, workoutIndex),
       source: 'week_workout',
     };
   }
@@ -237,7 +297,7 @@ export function projectCloudCompletionMutation(cloudRecord = {}) {
   );
   const completionKey = String(
     cloudRecord.completionKey || cloudRecord.completion_key || '',
-  ).trim() || (week !== null && workout !== null ? `${week}:${workout}` : null);
+  ).trim() || (week !== null && workout !== null ? buildWorkoutCompletionKey(week, workout) : null) || null;
 
   const modality = workoutLog.modality || cloudRecord.modality || null;
   const outputType = workoutLog.outputType || cloudRecord.output_type || cloudRecord.outputType || null;

@@ -19,6 +19,10 @@ import {
   rollbackWorkoutIdentityIfOwned,
   saveWorkoutCompletionReconciled,
 } from './workout-completion-reconcile.js';
+import {
+  buildWorkoutCompletionKey,
+  MILE_TEST_BASELINE_KEY,
+} from './workout-completion-identity.js';
 
 let currentSession = null;
 let authSubscription = null;
@@ -166,7 +170,7 @@ function mapCloudMileTest(row) {
   return {
     ...result,
     id: result.id || row.client_record_id || row.id,
-    testKey: row.test_key || result.testKey || 'mile-test:baseline',
+    testKey: row.test_key || result.testKey || MILE_TEST_BASELINE_KEY,
     distance: row.distance ?? result.distance,
     totalMinutes: row.total_minutes ?? result.totalMinutes,
     totalSeconds: row.total_seconds ?? result.totalSeconds,
@@ -513,9 +517,10 @@ export async function saveCloudWorkoutCompletion(record) {
 export async function deleteCloudWorkoutCompletion(weekIndex, workoutIndex) {
   const user = getCurrentUser();
   if (!isSupabaseConfigured || !supabase || !user) return false;
+  const completionKey = buildWorkoutCompletionKey(weekIndex, workoutIndex);
+  if (!completionKey) return false;
   const week = Number(weekIndex);
   const workout = Number(workoutIndex);
-  const completionKey = `${week}:${workout}`;
 
   // Prefer key delete, then fall back to week/workout columns in case older rows
   // were saved with a mismatched completion_key.

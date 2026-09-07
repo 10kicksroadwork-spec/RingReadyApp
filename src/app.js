@@ -72,12 +72,15 @@ import {
 } from './hr-service.js';
 import {
   PROOF_POLICY_VERSION,
-  buildProgramProofKey,
   ensureWorkoutProofUploaded,
   hasPendingWorkoutProof,
   hasWorkoutProof,
   initWorkoutProof,
 } from './proof.js';
+import {
+  buildProgramProofKey,
+  buildSprintCompletionFlightKey,
+} from './workout-completion-identity.js';
 import {
   showScreen,
   setStatus,
@@ -1315,7 +1318,7 @@ export async function completeWorkout() {
   const recordId = activeResultRecord.id || 'sprint';
   const button = document.getElementById('complete-workout-btn');
 
-  return runSingleFlight(`completion:sprint:${recordId}`, async () => withSavingButton(button, async () => {
+  return runSingleFlight(buildSprintCompletionFlightKey(recordId), async () => withSavingButton(button, async () => {
     const isNewProof = hasPendingWorkoutProof('sprint');
     try {
       if (isSupabaseConfigured && getCurrentUser()) {

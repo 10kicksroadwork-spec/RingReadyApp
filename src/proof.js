@@ -13,6 +13,14 @@ import { OPERATION_TIMEOUT_MS, withOperationTimeout } from './operation-timeout.
 import { captureRuntimeDiagnostic, sanitizeDiagnosticValue } from './runtime-diagnostics.js';
 import { runProofTransportOperation } from './proof-transport.js';
 import { runSingleFlight } from './single-flight.js';
+import {
+  buildProofFlightKey,
+} from './workout-completion-identity.js';
+
+export {
+  buildProgramProofKey,
+  buildProofFlightKey,
+} from './workout-completion-identity.js';
 
 export const PROOF_POLICY_VERSION = 1;
 export const PROOF_BUCKET = 'workout-proof-staging';
@@ -397,14 +405,6 @@ function bindListeners() {
     handleFile(input.dataset.proofInput, input.files?.[0]);
     input.value = '';
   });
-}
-
-export function buildProgramProofKey(campLength, weekIndex, workoutIndex) {
-  return `program:${String(campLength) === '4' ? 4 : 7}:${Number(weekIndex)}:${Number(workoutIndex)}`;
-}
-
-export function buildProofFlightKey(surface, proofKey = '', uploadId = '') {
-  return `proof:${surface}:${proofKey || 'unknown'}:${uploadId || 'pending'}`;
 }
 
 export function canReplaceWorkoutProof(surface) {

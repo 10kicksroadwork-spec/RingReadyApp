@@ -1,6 +1,10 @@
 import { STORAGE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY } from './constants.js';
 import { readJSONValue, writeJSON } from './safe-storage.js';
 import { calculateAvgDrop, calculatePeakHR } from './workout.js';
+import {
+  buildWorkoutCompletionKey,
+  resolveCanonicalWorkoutIdentity,
+} from './workout-completion-identity.js';
 
 const MAX_STORED_SESSIONS = 50;
 const CLEARED_COMPLETIONS_KEY = 'ringReadyClearedWorkoutCompletions';
@@ -140,16 +144,11 @@ export function persistWorkoutCompletion(record) {
 }
 
 export function getWorkoutCompletionKey(weekIndex, workoutIndex) {
-  const week = Number(weekIndex);
-  const workout = Number(workoutIndex);
-  if (!Number.isFinite(week) || !Number.isFinite(workout)) return '';
-  return `${week}:${workout}`;
+  return buildWorkoutCompletionKey(weekIndex, workoutIndex);
 }
 
 function getCompletionKeyFromRecord(record) {
-  const context = record?.cfg?.workoutContext || record?.workoutContext || null;
-  if (!context) return '';
-  return getWorkoutCompletionKey(context.weekIndex, context.workoutIndex);
+  return resolveCanonicalWorkoutIdentity(record).completionKey || '';
 }
 
 export function getWorkoutCompletions() {
