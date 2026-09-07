@@ -187,3 +187,49 @@ export async function assertNoHorizontalOverflow(page) {
   expect(overflow).toBe(false);
 }
 
+export function buildFinishedSprintSessionFixture({
+  weekIndex = 0,
+  workoutIndex = 0,
+  sessionId = 'sprint-recovery-session',
+} = {}) {
+  return {
+    id: sessionId,
+    date: '2026-09-07T12:00:00.000Z',
+    cfg: {
+      reps: 5,
+      rest: 90,
+      maxHR: 183,
+      targetPct: 90,
+      workoutContext: {
+        weekIndex,
+        workoutIndex,
+        weekLabel: 'Week 1',
+        workoutType: 'Sprint Intervals',
+      },
+    },
+    data: [
+      { sprintHR: 172, restHR: 118, drop: 54, suspicious: false },
+      { sprintHR: 175, restHR: 120, drop: 55, suspicious: false },
+      { sprintHR: 178, restHR: 122, drop: 56, suspicious: false },
+      { sprintHR: 180, restHR: 124, drop: 56, suspicious: false },
+      { sprintHR: 176, restHR: 121, drop: 55, suspicious: false },
+    ],
+    avgDrop: 55,
+    peakHR: 180,
+  };
+}
+
+export async function seedFinishedSprintSession(page, options = {}) {
+  const record = buildFinishedSprintSessionFixture(options);
+  await page.evaluate((session) => {
+    localStorage.setItem('sprintTrainerHistory', JSON.stringify([session]));
+  }, record);
+  return record;
+}
+
+export function weekWorkoutCard(page, weekIndex = 0, workoutIndex = 0) {
+  return page.locator(
+    `.week-workout-card[data-week-index="${weekIndex}"][data-workout-index="${workoutIndex}"]`,
+  );
+}
+

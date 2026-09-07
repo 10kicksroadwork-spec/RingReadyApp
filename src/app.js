@@ -1207,6 +1207,11 @@ export function buildResults(record = activeResultRecord) {
   body.innerHTML = '';
 
   document.getElementById('results-date').textContent = formatResultDate(resultRecord);
+  const pendingProof = isProgramWorkoutRecord(resultRecord) && !resultRecord.completedAt;
+  const kicker = document.getElementById('results-kicker');
+  if (kicker) kicker.textContent = pendingProof ? 'SPRINT SAVED' : 'Session Complete';
+  const recoveryBanner = document.getElementById('sprint-recovery-banner');
+  if (recoveryBanner) recoveryBanner.hidden = !pendingProof;
   if (isProgramWorkoutRecord(resultRecord)) {
     const context = getRecordContext(resultRecord);
     const campLength = Number(getAthleteProfile().campLength) || 7;
