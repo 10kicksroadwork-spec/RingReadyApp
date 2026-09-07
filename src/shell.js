@@ -414,19 +414,6 @@ async function boundedCloudWrite(label, writer) {
     return { ok: false, error };
   }
 }
-async function saveWorkoutCompletionToCloud(record, successMessage = '') {
-  const owner = captureAthleteOperation();
-  if (!record || !isSupabaseConfigured || !getCurrentUser()) return false;
-  try {
-    await ownedResult(owner, saveCloudWorkoutCompletion(record));
-    if (successMessage) shellHooks?.showToast?.(successMessage);
-    return true;
-  } catch (error) {
-    if (!isAthleteOperationCurrent(owner)) return false;
-    console.warn('Cloud workout completion save failed', error);
-    return false;
-  }
-}
 async function deleteWorkoutCompletionFromCloud(weekIndex, workoutIndex) {
   if (!isSupabaseConfigured || !getCurrentUser()) return false;
   try {

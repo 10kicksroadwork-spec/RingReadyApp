@@ -31,10 +31,11 @@ Auth-touching migrations: `000`–`006`, `009`, `012`–`013`, `015`–`016`.
 | 17 | [016_idempotent_proof_attachment.sql](./migrations/016_idempotent_proof_attachment.sql) | Same-path proof RPC idempotency for safe mobile retries |
 | 18 | [017_workout_completion_position_unique.sql](./migrations/017_workout_completion_position_unique.sql) | Document/ensure UNIQUE(user_id, week_index, workout_index) matching production |
 | 19 | [018_clear_retry_and_sprint_proof.sql](./migrations/018_clear_retry_and_sprint_proof.sql) | Idempotent clear and atomic removal of cleared proof from Sprint recovery |
+| 20 | [019_assigned_mile_clear_lifecycle.sql](./migrations/019_assigned_mile_clear_lifecycle.sql) | Optional assigned Mile clear RPC (staging/testable; **not** required for Review B client — do not apply to production this turn) |
 
 ## Fresh database
 
-Paste and run each file in the Supabase SQL editor in order. Follow this table for the current canonical sequence.
+Paste and run each file in the Supabase SQL editor in order. Follow this table for the current canonical sequence. Migration **019** is optional staging-only until Review B2 promotes it.
 
 ## Upgrade from existing production
 
