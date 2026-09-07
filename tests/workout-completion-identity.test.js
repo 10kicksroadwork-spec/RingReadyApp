@@ -1,16 +1,26 @@
 import { describe, expect, it } from 'vitest';
 import {
   athleteFacingWorkoutSaveError,
+  buildDetailCompletionFlightKey,
+  buildMileCompletionFlightKey,
+  buildMileTestKey,
+  buildProgramProofKey,
+  buildProofFlightKey,
+  buildSprintCompletionFlightKey,
+  buildWorkoutCompletionKey,
   classifyUniqueViolation,
   doesCloudCompletionMatchRequestedSave,
   isAmbiguousNetworkError,
   isAuthSessionError,
   isReconcileableUniqueConflict,
   looksLikeInfrastructureError,
+  MILE_TEST_BASELINE_KEY,
   parseNonNegativeInteger,
   resolveCanonicalWorkoutIdentity,
   UNIQUE_CONFLICT,
 } from '../src/workout-completion-identity.js';
+import { buildProgramProofKey as proofReexport } from '../src/proof.js';
+import { MILE_TEST_BASELINE_KEY as coachBaseline } from '../src/coach-metrics.js';
 
 describe('parseNonNegativeInteger', () => {
   it('accepts only exact non-negative integers', () => {
@@ -21,6 +31,40 @@ describe('parseNonNegativeInteger', () => {
     expect(parseNonNegativeInteger(-1)).toBeNull();
     expect(parseNonNegativeInteger('')).toBeNull();
     expect(parseNonNegativeInteger(null)).toBeNull();
+  });
+});
+
+describe('entity identity constructors', () => {
+  it('builds canonical workout completion keys', () => {
+    expect(buildWorkoutCompletionKey(2, 1)).toBe('2:1');
+    expect(buildWorkoutCompletionKey('0', '3')).toBe('0:3');
+    expect(buildWorkoutCompletionKey(1.5, 2)).toBe('');
+    expect(buildWorkoutCompletionKey(-1, 0)).toBe('');
+  });
+
+  it('owns the sole program proof-key format', () => {
+    expect(buildProgramProofKey(7, 1, 2)).toBe('program:7:1:2');
+    expect(buildProgramProofKey('4', 0, 1)).toBe('program:4:0:1');
+    expect(buildProgramProofKey('9', 2, 3)).toBe('program:7:2:3');
+    expect(proofReexport(7, 1, 2)).toBe('program:7:1:2');
+  });
+
+  it('builds mile-test keys from baseline or program context', () => {
+    expect(MILE_TEST_BASELINE_KEY).toBe('mile-test:baseline');
+    expect(coachBaseline).toBe(MILE_TEST_BASELINE_KEY);
+    expect(buildMileTestKey({ isBaseline: true })).toBe(MILE_TEST_BASELINE_KEY);
+    expect(buildMileTestKey({ campLength: 7, weekIndex: 2, workoutIndex: 1 }))
+      .toBe('program:7:2:1');
+    expect(buildMileTestKey({ testKey: 'program:4:0:2' })).toBe('program:4:0:2');
+  });
+
+  it('builds single-flight keys from entity identity', () => {
+    expect(buildDetailCompletionFlightKey(1, 2)).toBe('completion:detail:1:2');
+    expect(buildSprintCompletionFlightKey('abc')).toBe('completion:sprint:abc');
+    expect(buildMileCompletionFlightKey(MILE_TEST_BASELINE_KEY))
+      .toBe(`completion:mile:${MILE_TEST_BASELINE_KEY}`);
+    expect(buildProofFlightKey('detail', 'program:7:0:1', 'u1'))
+      .toBe('proof:detail:program:7:0:1:u1');
   });
 });
 
