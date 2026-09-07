@@ -71,7 +71,7 @@ test.describe('coach decision dashboard drawer and lenses', () => {
     await page.locator('#coach-benchmark-stats-search').fill('Alex');
     await expect(page.locator('#coach-benchmark-stats-list .coach-lens-card')).toHaveCount(1);
     await expect(page.locator('#coach-benchmark-stats-list .coach-lens-card strong')).toContainText(/Alex/i);
-    const aggregatePi = (await page.locator('#coach-benchmark-stats-list .coach-lens-card em').textContent())?.trim();
+    const aggregateBench = (await page.locator('#coach-benchmark-stats-list .coach-lens-card em').textContent())?.trim();
 
     await page.locator('#coach-benchmark-stats-list .coach-lens-card').click();
     await expect(page.locator('#coach-athlete.screen.active')).toBeVisible();
@@ -80,9 +80,10 @@ test.describe('coach decision dashboard drawer and lenses', () => {
     await expect(page.locator('#coach-athlete-guidance-label')).toContainText(/Generated guidance/i);
     await expect(page.locator('#coach-athlete-notes-kicker')).toContainText(/Coach-authored notes/i);
 
-    const detailPi = page.locator('.coach-metric-card').filter({ hasText: 'Performance Index' }).locator('strong');
-    await expect(detailPi).toHaveText(aggregatePi || '');
-    await expect(detailPi).toHaveText(/\d+\.\d/);
+    const detailBench = page.locator('.coach-metric-card').filter({ hasText: 'Benchmark Run' }).locator('strong');
+    await expect(detailBench).toHaveText(aggregateBench || '');
+    await expect(detailBench).toHaveText(/\d+\.\d/);
+    await expect(page.locator('.coach-metric-card').filter({ hasText: 'Performance Index' }).locator('strong')).toHaveText(/\d+\.\d/);
 
     await expect(page.locator('#coach-athlete-mile-test')).toBeVisible();
     await expect(page.locator('#coach-athlete-mile-test-body')).toContainText(/Baseline/i);

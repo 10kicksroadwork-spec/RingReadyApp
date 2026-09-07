@@ -1,6 +1,11 @@
 /**
  * Calendar-based camp scheduling for the coach roster.
  * Week 1 Monday aligns to camp start; each program day becomes due on that weekday.
+ *
+ * Schedule states (independent of whether the athlete logged):
+ *   upcoming → before the scheduled window
+ *   open     → inside the completion window (Due Today / Due This Weekend)
+ *   overdue  → after the completion window (Missing if still unlogged)
  */
 
 export function parseCampDate(value) {
@@ -23,6 +28,10 @@ export function campDayOffset(workoutDay) {
   return 0;
 }
 
+function isWeekendProgramDay(workoutDay) {
+  return /saturday\/sunday|sat\/sun/i.test(String(workoutDay || ''));
+}
+
 export function sessionDueDate(campStartDate, weekIndex, workoutDay) {
   const start = parseCampDate(campStartDate);
   if (!start) return null;
@@ -31,12 +40,39 @@ export function sessionDueDate(campStartDate, weekIndex, workoutDay) {
   return due;
 }
 
-export function isSessionDueYet(campStartDate, weekIndex, workoutDay, now = new Date()) {
+/** Last calendar day (noon) the athlete may still complete without being Missing. */
+export function sessionOpenEndDate(campStartDate, weekIndex, workoutDay) {
   const due = sessionDueDate(campStartDate, weekIndex, workoutDay);
-  if (!due) return true;
+  if (!due) return null;
+  const end = new Date(due);
+  // Combined Saturday/Sunday program slots stay open through Sunday.
+  if (isWeekendProgramDay(workoutDay)) {
+    end.setDate(end.getDate() + 1);
+  }
+  return end;
+}
+
+/**
+ * @returns {'upcoming'|'open'|'overdue'}
+ */
+export function getSessionScheduleState(campStartDate, weekIndex, workoutDay, now = new Date()) {
+  const due = sessionDueDate(campStartDate, weekIndex, workoutDay);
+  const openEnd = sessionOpenEndDate(campStartDate, weekIndex, workoutDay);
+  if (!due || !openEnd) return 'overdue';
   const today = new Date(now);
   today.setHours(12, 0, 0, 0);
-  return today.getTime() >= due.getTime();
+  if (today.getTime() < due.getTime()) return 'upcoming';
+  if (today.getTime() <= openEnd.getTime()) return 'open';
+  return 'overdue';
+}
+
+/** True once the scheduled window has started (open or overdue). */
+export function isSessionDueYet(campStartDate, weekIndex, workoutDay, now = new Date()) {
+  return getSessionScheduleState(campStartDate, weekIndex, workoutDay, now) !== 'upcoming';
+}
+
+export function dueStatusLabel(workoutDay) {
+  return isWeekendProgramDay(workoutDay) ? 'due-weekend' : 'due-today';
 }
 
 export function inferCampWeekIndex(campStartDate, campLength, now = new Date()) {
