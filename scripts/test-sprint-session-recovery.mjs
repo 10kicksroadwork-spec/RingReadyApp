@@ -70,6 +70,7 @@ async function run() {
     },
   };
 
+  let cleanupError = null;
   try {
     const { error: insertError } = await client.from('sprint_sessions').insert(payload);
     if (insertError) throw new Error(`sprint_sessions insert failed: ${insertError.message}`);
@@ -102,9 +103,11 @@ async function run() {
       .delete()
       .eq('user_id', user.id)
       .eq('session_id', sessionId);
-    if (deleteError) {
-      throw new Error(`sprint_sessions cleanup failed: ${deleteError.message}`);
-    }
+    cleanupError = deleteError;
+  }
+
+  if (cleanupError) {
+    throw new Error(`sprint_sessions cleanup failed: ${cleanupError.message}`);
   }
 }
 
