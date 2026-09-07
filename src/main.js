@@ -31,9 +31,11 @@ import {
   clearResultWorkoutCompletion,
   newSession,
   showSavedWorkoutResult,
-  initSessionPersistence,
+  bindSessionPersistence,
+  resumeActiveSprintIfPresent,
   resetSprintRuntimeForAccountBoundary,
 } from './app.js';
+import { doesActiveSprintOwnNavigation } from './sprint-navigation.js';
 
 const READABILITY_STYLES = `
   :root {
@@ -297,18 +299,23 @@ async function init() {
   scheduleStartupContractHealthCheck();
   initSyncControls({ showToast });
   installSignupNameCapture();
+  bindSessionPersistence();
   await initAthleteShell({
     showToast,
     showScreen,
     setWorkoutContext,
     showSavedWorkoutResult,
     resetSprintRuntimeForAccountBoundary,
+    resumeActiveSprintIfPresent,
   });
 
   initReadabilityEnhancements();
-  const openedCoachPreview = openCoachPreviewIfRequested();
-  if (!openedCoachPreview) await enforceAthleteOnboarding({ showScreen });
-  initSessionPersistence();
+  const openedCoachPreview = doesActiveSprintOwnNavigation()
+    ? false
+    : openCoachPreviewIfRequested();
+  if (!openedCoachPreview && !doesActiveSprintOwnNavigation()) {
+    await enforceAthleteOnboarding({ showScreen });
+  }
   registerMainHandlers({ handleMainBtn, handleSprintDone });
 
   initHRService({
