@@ -3368,6 +3368,16 @@
     color: var(--light-grey);
   }
 
+  .coach-session-row.is-due-today,
+  .coach-session-row.is-due-weekend {
+    border-color: rgba(245, 200, 66, 0.4);
+  }
+
+  .coach-session-row.is-due-today em,
+  .coach-session-row.is-due-weekend em {
+    color: #ffd19a;
+  }
+
   .coach-session-row.has-flag {
     border-color: rgba(240, 138, 42, 0.5);
   }

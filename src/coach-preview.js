@@ -1,8 +1,9 @@
 import { PROGRAM } from './program.js';
 import {
+  dueStatusLabel,
   formatCampStartLabel,
+  getSessionScheduleState,
   inferCampWeekIndex,
-  isSessionDueYet,
 } from './coach-camp-schedule.js';
 import { buildCoachUserIdSet, buildRosterExclusionSet, isCoachEmail, isLocalCoachPreviewHost as isLocalHost, isRosterExcludedEmail, normalizeUserId } from './coach-access.js';
 import {
@@ -580,30 +581,35 @@ function buildAthleteRecord(config) {
 
   weeks.forEach((week, weekIndex) => {
     let done = 0;
-    const weekSessions =     week.workouts.map((workout, workoutIndex) => {
+    const weekSessions = week.workouts.map((workout, workoutIndex) => {
       const key = sessionKey(weekIndex, workoutIndex);
       const isFutureWeek = weekIndex > config.currentWeekIndex;
-      const isBeforeStart = config.campStartDate
-        ? !isSessionDueYet(config.campStartDate, weekIndex, workout.day)
-        : false;
-      const isFuture = isFutureWeek || isBeforeStart;
-      const isSkipped = !isFuture && skipped.has(key);
-      const isMissing = completionsAvailable && !isFuture && !isSkipped && missing.has(key);
+      const scheduleState = config.campStartDate
+        ? getSessionScheduleState(config.campStartDate, weekIndex, workout.day, config.now)
+        : (isFutureWeek ? 'upcoming' : 'overdue');
+      const isUpcoming = isFutureWeek || scheduleState === 'upcoming';
+      const isOpenWindow = !isUpcoming && scheduleState === 'open';
+      const isSkipped = !isUpcoming && skipped.has(key);
+      const unfinished = missing.has(key);
       // Completion outage: unknown must stay unknown — never infer logged or missing.
-      const status = isFuture
-        ? 'upcoming'
-        : isSkipped
-          ? 'skipped'
-          : (!completionsAvailable ? 'unavailable' : (isMissing ? 'missing' : 'logged'));
-      const proof = isFuture || isSkipped || !completionsAvailable
-        ? (isFuture ? 'upcoming' : (!completionsAvailable ? 'unavailable' : 'none'))
+      let status = 'logged';
+      if (isUpcoming) status = 'upcoming';
+      else if (isSkipped) status = 'skipped';
+      else if (!completionsAvailable) status = 'unavailable';
+      else if (unfinished && isOpenWindow) status = dueStatusLabel(workout.day);
+      else if (unfinished) status = 'missing';
+      const proof = isUpcoming || isSkipped || !completionsAvailable
+        ? (isUpcoming ? 'upcoming' : (!completionsAvailable ? 'unavailable' : 'none'))
         : (!attachmentsAvailable
           ? 'unavailable'
           : (missingProofs.has(key)
             ? 'missing'
             : (status === 'logged' ? 'on-file' : 'none')));
       const flag = flags[key] || '';
-      if (!isFuture) due += 1;
+      // Open (still-due) sessions are excluded from adherence until grace expires.
+      if (status === 'logged' || status === 'skipped' || status === 'missing') {
+        due += 1;
+      }
       if (status === 'logged' || status === 'skipped') {
         logged += 1;
         done += 1;
@@ -621,6 +627,7 @@ function buildAthleteRecord(config) {
         targetZone: workout.targetZone || '',
         targetBPM: workout.targetBPM ?? null,
         status,
+        scheduleState: isUpcoming ? 'upcoming' : scheduleState,
         proof,
         flag,
         note: notes[key] || '',
@@ -691,7 +698,9 @@ function buildAthleteRecord(config) {
     completionPct: completionsAvailable && due ? Math.round((logged / due) * 100) : null,
     logged: completionsAvailable ? logged : null,
     due,
-    missingCount: completionsAvailable ? Math.max(0, due - logged) : 0,
+    missingCount: completionsAvailable
+      ? sessions.filter((session) => session.status === 'missing').length
+      : 0,
     completionsAvailable,
     attachmentsAvailable,
     hrRowsAvailable,
@@ -1216,7 +1225,10 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, mileTests, note
     week.workouts.forEach((workout, workoutIndex) => {
       const key = sessionKey(weekIndex, workoutIndex);
       if (weekIndex > currentWeekIndex) return;
-      if (campStartDate && !isSessionDueYet(campStartDate, weekIndex, workout.day)) return;
+      const scheduleState = campStartDate
+        ? getSessionScheduleState(campStartDate, weekIndex, workout.day)
+        : 'overdue';
+      if (scheduleState === 'upcoming') return;
       let row = byKey.get(key);
       const sprintRow = sprintsByKey.get(key);
       if (!row && isSprintType(workout.type) && sprintRow) {
@@ -1228,6 +1240,8 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, mileTests, note
       }
       if (!row) {
         // Source outage must not fabricate Missing/Behind from an empty completions array.
+        // Open-window unfinished sessions stay in `missing` so the UI can show Due Today
+        // (not Logged); buildAthleteRecord maps open+unfinished → due-*, overdue → missing.
         if (completionsAvailable) missing.push(key);
         return;
       }
@@ -1471,6 +1485,8 @@ function renderAthleteHrProfile(athlete, { compact = false } = {}) {
 
 function statusCopy(status) {
   if (status === 'missing') return 'Missing';
+  if (status === 'due-today') return 'Due Today';
+  if (status === 'due-weekend') return 'Due This Weekend';
   if (status === 'upcoming') return 'Upcoming';
   if (status === 'skipped') return 'Skipped';
   if (status === 'unavailable') return 'Unavailable';
@@ -1714,6 +1730,8 @@ function sessionDetail(session) {
   if (session.note) return session.note;
   if (session.proof === 'missing') return 'Logged, but workout proof is missing.';
   if (session.status === 'missing') return 'Assigned work not logged yet.';
+  if (session.status === 'due-today') return 'Scheduled today — still inside the completion window.';
+  if (session.status === 'due-weekend') return 'Scheduled this weekend — still inside the completion window.';
   const bits = [];
   const modality = normalizeModality(session.modality);
   if (modality !== MODALITY_RUNNING) bits.push(formatModalityLabel(modality));
@@ -1741,7 +1759,7 @@ function renderSessionRows(sessions) {
         <strong>${escapeHTML(session.type)}</strong>
         <p>${escapeHTML(sessionDetail(session))}</p>
       </div>
-      <em>${escapeHTML(session.status === 'missing' ? 'Missing' : statusCopy(session.status))}</em>
+      <em>${escapeHTML(statusCopy(session.status))}</em>
     </div>
   `).join('');
 }
@@ -2259,6 +2277,7 @@ export function initCoachPreview(hooks) {
 
 // Test seams for production-shaped roster / outage coverage.
 export {
+  buildAthleteRecord,
   buildLiveRoster,
   liveAthleteConfig,
 };
