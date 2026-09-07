@@ -179,6 +179,93 @@ export async function waitForActiveSessionCheckpoint(page) {
   return checkpoint;
 }
 
+function startScreenTraceInPage() {
+  window.__ringReadyScreenTrace = [];
+
+  const record = () => {
+    const active = document.querySelector('.screen.active');
+    const id = active?.id || '';
+    if (!id) return;
+
+    const trace = window.__ringReadyScreenTrace;
+    if (trace[trace.length - 1] !== id) trace.push(id);
+  };
+
+  const start = () => {
+    record();
+
+    const observer = new MutationObserver(record);
+    observer.observe(document.documentElement, {
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['class'],
+    });
+
+    window.__ringReadyScreenObserver = observer;
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start, { once: true });
+  } else {
+    start();
+  }
+}
+
+export async function installScreenTrace(page) {
+  await page.addInitScript(startScreenTraceInPage);
+}
+
+export async function startScreenTrace(page) {
+  await page.evaluate(startScreenTraceInPage);
+}
+
+export async function readScreenTrace(page) {
+  return page.evaluate(() => window.__ringReadyScreenTrace || []);
+}
+
+export async function seedLocalActiveSessionCheckpoint(page, partial = {}) {
+  return page.evaluate((overrides) => {
+    const now = new Date().toISOString();
+    const checkpoint = {
+      version: 1,
+      userId: 'local-athlete',
+      sessionId: overrides.sessionId || 'seeded-active-sprint',
+      createdAt: now,
+      updatedAt: now,
+      savedAt: now,
+      cfg: {
+        reps: 5,
+        rest: 90,
+        maxHR: 183,
+        targetPct: 90,
+        workoutContext: {
+          weekIndex: 0,
+          workoutIndex: 0,
+          weekLabel: 'Week 1',
+          workoutType: 'Sprint Intervals',
+        },
+        ...(overrides.cfg || {}),
+      },
+      state: {
+        phase: 'sprinting',
+        currentRep: 1,
+        seconds: 0,
+        data: [],
+        pendingRep: null,
+        awaitingModal: false,
+        capturedSprintHR: null,
+        capturedRestHR: null,
+        ...(overrides.state || {}),
+      },
+      timer: Object.prototype.hasOwnProperty.call(overrides, 'timer')
+        ? overrides.timer
+        : null,
+    };
+    localStorage.setItem('ringReadyActiveSession:local-athlete', JSON.stringify(checkpoint));
+    return checkpoint;
+  }, partial);
+}
+
 export async function assertNoHorizontalOverflow(page) {
   const overflow = await page.evaluate(() => {
     const root = document.documentElement;
