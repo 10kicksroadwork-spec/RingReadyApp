@@ -27,7 +27,7 @@ import {
   sortMetricCards,
   statusBadgeLabel,
 } from '../src/coach-metrics.js';
-import { buildLiveRoster } from '../src/coach-preview.js';
+import { buildAthleteRecord, buildLiveRoster } from '../src/coach-preview.js';
 import { MODALITY_RUNNING, normalizeModality } from '../src/modality.js';
 
 describe('classifyPerformanceIndex', () => {
@@ -109,6 +109,10 @@ describe('canonical lens cards', () => {
     id: 'daniel',
     name: 'Daniel',
     currentWeekIndex: 3,
+    benchmarks: [
+      { weekIndex: 0, distance: 3.0, avgBpm: 137 },
+      { weekIndex: 3, distance: 3.252, avgBpm: 137 },
+    ],
     scan: {
       performance: {
         index: 108.4,
@@ -143,12 +147,16 @@ describe('canonical lens cards', () => {
     },
     performance: { index: 108.4, points: [{ weekIndex: 0, index: 100 }, { weekIndex: 3, index: 108.4 }] },
   };
+  athlete.analytics = buildCoachAthleteAnalytics(athlete);
 
-  it('produces identical PI on benchmark lens from the same athlete', () => {
+  it('produces identical Benchmark Index on benchmark lens from the same athlete', () => {
     const card = buildLensCard(athlete, LENS_BENCHMARK);
-    expect(card.value).toBe('108.4');
+    expect(card.value).toBe(athlete.analytics.benchmark.displayValue);
+    expect(card.status).toBe(athlete.analytics.benchmark.status);
     expect(card.status).toBe(STATUS_IMPROVING);
     expect(card.userId).toBe('daniel');
+    // General PI remains a separate metric.
+    expect(athlete.analytics.performance.value).toBeCloseTo(108.4);
   });
 
   it('keeps recovery / pace / adherence consistent for the same athlete', () => {
@@ -170,6 +178,7 @@ describe('canonical lens cards', () => {
         zone: {},
       },
     };
+    empty.analytics = buildCoachAthleteAnalytics(empty);
     const cards = buildLensCards([athlete, athlete, empty], LENS_BENCHMARK);
     expect(cards).toHaveLength(2);
     const noData = cards.find((card) => card.userId === 'empty');
@@ -178,17 +187,23 @@ describe('canonical lens cards', () => {
   });
 
   it('filters and searches without mutating source cards', () => {
-    const source = buildLensCards([athlete, {
+    const maya = {
       id: 'maya',
       name: 'Maya Chen',
       currentWeekIndex: 2,
+      benchmarks: [
+        { weekIndex: 0, distance: 3.0, avgBpm: 137 },
+        { weekIndex: 2, distance: 2.76, avgBpm: 137 },
+      ],
       scan: {
         performance: { index: 92, points: [{ weekIndex: 0, pct: 100 }, { weekIndex: 2, pct: 92 }] },
         recovery: {},
         pace: {},
         zone: { onTarget: 2, scored: 10 },
       },
-    }], LENS_BENCHMARK);
+    };
+    maya.analytics = buildCoachAthleteAnalytics(maya);
+    const source = buildLensCards([athlete, maya], LENS_BENCHMARK);
     const before = source.map((card) => card.status);
     const visible = selectVisibleCards(source, { filter: 'improving', query: 'dan', sort: 'desc' });
     expect(visible).toHaveLength(1);
@@ -211,12 +226,16 @@ describe('computeRunningTotals', () => {
 });
 
 describe('canonical analytics consistency', () => {
-  it('keeps PI 97 Declining and one-decimal display on detail + aggregate card', () => {
+  it('keeps general PI 97 Declining separate from Benchmark Index', () => {
     const athlete = {
       id: 'pi97',
       name: 'Pat',
       currentWeekIndex: 1,
       performance: { index: 97 },
+      benchmarks: [
+        { weekIndex: 0, distance: 3.0, avgBpm: 137 },
+        { weekIndex: 1, distance: 2.91, avgBpm: 137 },
+      ],
       scan: {
         performance: { index: 97, points: [{ weekIndex: 0, pct: 100 }, { weekIndex: 1, pct: 97 }] },
         recovery: {},
@@ -229,17 +248,22 @@ describe('canonical analytics consistency', () => {
     const card = buildLensCard(athlete, LENS_BENCHMARK);
     expect(athlete.analytics.performance.displayValue).toBe('97.0');
     expect(athlete.analytics.performance.status).toBe(STATUS_DECLINING);
-    expect(card.value).toBe('97.0');
+    expect(athlete.analytics.benchmark.displayValue).toBe('97.0');
+    expect(athlete.analytics.benchmark.status).toBe(STATUS_DECLINING);
+    expect(card.value).toBe(athlete.analytics.benchmark.displayValue);
     expect(card.status).toBe(STATUS_DECLINING);
     expect(statusBadgeLabel(card.status)).toBe('DECLINING');
   });
 
-  it('keeps PI 100 as Baseline on both surfaces', () => {
+  it('keeps Benchmark Index 100 as Baseline on both surfaces', () => {
     const athlete = {
       id: 'pi100',
       name: 'Base',
       currentWeekIndex: 1,
       performance: { index: 100 },
+      benchmarks: [
+        { weekIndex: 0, distance: 3.0, avgBpm: 137 },
+      ],
       scan: {
         performance: { index: 100, points: [{ weekIndex: 0, pct: 100 }] },
         recovery: {},
@@ -251,8 +275,137 @@ describe('canonical analytics consistency', () => {
     athlete.analytics = buildCoachAthleteAnalytics(athlete);
     const card = buildLensCard(athlete, LENS_BENCHMARK);
     expect(athlete.analytics.performance.status).toBe(STATUS_BASELINE);
+    expect(athlete.analytics.benchmark.status).toBe(STATUS_BASELINE);
+    expect(athlete.analytics.benchmark.displayValue).toBe('100.0');
     expect(card.status).toBe(STATUS_BASELINE);
     expect(statusBadgeLabel(card.status)).toBe('BASELINE');
+  });
+
+  it('uses week-one Benchmark baseline (not 2-session PI) for Test Account W1/W2', () => {
+    const athlete = {
+      id: 'test-account',
+      name: 'Test Account',
+      currentWeekIndex: 1,
+      // General PI would still be baseline at 2 sessions — Benchmark Index must not.
+      performance: { index: 100 },
+      benchmarks: [
+        { weekIndex: 0, distance: 3.09, avgBpm: 142, minutes: 30.03 },
+        { weekIndex: 1, distance: 4.02, avgBpm: 146, minutes: 30.03 },
+      ],
+      scan: {
+        performance: { index: 100, points: [{ weekIndex: 0, pct: 100 }, { weekIndex: 1, pct: 100 }] },
+        recovery: {},
+        pace: {},
+        zone: {},
+      },
+      sessions: [],
+    };
+    athlete.analytics = buildCoachAthleteAnalytics(athlete);
+    const card = buildLensCard(athlete, LENS_BENCHMARK);
+    const bench = athlete.analytics.benchmark;
+    expect(athlete.analytics.performance.status).toBe(STATUS_BASELINE);
+    expect(athlete.analytics.performance.displayValue).toBe('100.0');
+    expect(bench.trendPoints).toHaveLength(2);
+    expect(bench.trendPoints[0].value).toBe(100);
+    expect(bench.trendPoints[1].value).toBeGreaterThan(100);
+    expect(bench.index).toBeGreaterThan(100);
+    expect(bench.status).toBe(STATUS_IMPROVING);
+    expect(card.status).toBe(STATUS_IMPROVING);
+    expect(card.value).toBe(bench.displayValue);
+    expect(card.trendPoints).toHaveLength(2);
+    expect(statusBadgeLabel(card.status)).not.toBe('BASELINE');
+  });
+
+  it('keeps Detailed Summary Benchmark Run identical to Benchmark Stats via buildAthleteRecord', () => {
+    const athlete = buildAthleteRecord({
+      id: 'test-account',
+      name: 'Test Account',
+      campLength: 7,
+      currentWeekIndex: 1,
+      fightDate: '2026-10-01',
+      maxHr: 190,
+      restingHr: 50,
+      missing: [],
+      benchmarks: [
+        { weekIndex: 0, distance: 3.09, avgBpm: 142 },
+        { weekIndex: 1, distance: 4.02, avgBpm: 146 },
+      ],
+    });
+    const card = buildLensCard(athlete, LENS_BENCHMARK);
+    expect(athlete.analytics.benchmark.status).toBe(STATUS_IMPROVING);
+    expect(athlete.scan.bench.value).toBe(athlete.analytics.benchmark.displayValue);
+    expect(athlete.scan.bench.status).toBe(athlete.analytics.benchmark.status);
+    expect(card.value).toBe(athlete.scan.bench.value);
+    expect(card.status).toBe(athlete.scan.bench.status);
+    expect(Number(athlete.analytics.benchmark.index)).toBeGreaterThan(120);
+    // General PI stays on its own 2-session baseline path and is not forced through Benchmark Index.
+    expect(athlete.analytics.performance).toBeTruthy();
+    expect(athlete.analytics.performance).not.toEqual(athlete.analytics.benchmark);
+  });
+
+  it('marks worse W2 Benchmark as Declining and equal W2 as Baseline', () => {
+    const declining = {
+      id: 'worse',
+      benchmarks: [
+        { weekIndex: 0, distance: 3.0, avgBpm: 137 },
+        { weekIndex: 1, distance: 2.7, avgBpm: 137 },
+      ],
+      scan: { performance: {}, recovery: {}, pace: {}, zone: {} },
+      sessions: [],
+    };
+    declining.analytics = buildCoachAthleteAnalytics(declining);
+    expect(declining.analytics.benchmark.status).toBe(STATUS_DECLINING);
+    expect(declining.analytics.benchmark.index).toBeLessThan(100);
+
+    const flat = {
+      id: 'flat',
+      benchmarks: [
+        { weekIndex: 0, distance: 3.0, avgBpm: 137 },
+        { weekIndex: 1, distance: 3.0, avgBpm: 137 },
+      ],
+      scan: { performance: {}, recovery: {}, pace: {}, zone: {} },
+      sessions: [],
+    };
+    flat.analytics = buildCoachAthleteAnalytics(flat);
+    expect(flat.analytics.benchmark.status).toBe(STATUS_BASELINE);
+    expect(flat.analytics.benchmark.index).toBe(100);
+  });
+
+  it('does not invent running Benchmark Index from machine modality sessions', () => {
+    const athlete = {
+      id: 'bike',
+      name: 'Bike Only',
+      sessions: [
+        {
+          status: 'logged',
+          type: 'Benchmark',
+          modality: 'assault_bike',
+          weekIndex: 0,
+          distance: 0,
+          avgWatts: 220,
+          avgBpm: 140,
+          minutes: 30,
+        },
+        {
+          status: 'logged',
+          type: 'Benchmark',
+          modality: 'assault_bike',
+          weekIndex: 1,
+          distance: 0,
+          avgWatts: 240,
+          avgBpm: 142,
+          minutes: 30,
+        },
+      ],
+      scan: { performance: {}, recovery: {}, pace: {}, zone: {} },
+    };
+    athlete.analytics = buildCoachAthleteAnalytics(athlete, {
+      normalizeModality: (value) => String(value || '').toLowerCase(),
+      runningModalityId: 'running',
+    });
+    expect(athlete.analytics.benchmark.hasData).toBe(false);
+    expect(athlete.analytics.benchmark.status).toBe(STATUS_NO_DATA);
+    expect(buildLensCard(athlete, LENS_BENCHMARK).status).toBe(STATUS_NO_DATA);
   });
 
   it('uses latest First-5 recovery on detail and aggregate, not camp average', () => {
@@ -461,6 +614,7 @@ describe('source outage fail-closed decisions', () => {
     expect(dueSessions.every((session) => session.status === 'unavailable' || session.status === 'skipped')).toBe(true);
     expect(dueSessions.some((session) => session.status === 'logged')).toBe(false);
     expect(athlete.analytics.performance.status).toBe(STATUS_UNAVAILABLE);
+    expect(athlete.analytics.benchmark.status).toBe(STATUS_UNAVAILABLE);
     expect(athlete.analytics.pace.status).toBe(STATUS_UNAVAILABLE);
     expect(athlete.analytics.hrAdherence.status).toBe(STATUS_UNAVAILABLE);
     expect(athlete.analytics.zoneHeatmap).toEqual([]);

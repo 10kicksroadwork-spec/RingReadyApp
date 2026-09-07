@@ -217,6 +217,140 @@ function formatPi(value) {
   return Number.isFinite(num) ? num.toFixed(1) : '--';
 }
 
+/** HR-adjusted equivalent distance for Benchmark Index (matches coach-preview). */
+const BENCHMARK_EQUIV_RATIO_MIN = 0.85;
+const BENCHMARK_EQUIV_RATIO_MAX = 1.15;
+const BENCHMARK_EQUIV_K = 0.5;
+const BENCHMARK_TARGET_BPM = 137;
+
+function clampBenchmarkRatio(value, min, max) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return min;
+  return Math.min(max, Math.max(min, num));
+}
+
+export function getBenchmarkEquivDistance(distance, avgBpm, targetBpm = BENCHMARK_TARGET_BPM) {
+  const dist = Number(distance);
+  if (!Number.isFinite(dist) || dist <= 0) return null;
+  const avg = Number(avgBpm);
+  const tgt = Number(targetBpm) || BENCHMARK_TARGET_BPM;
+  if (!Number.isFinite(avg) || avg <= 0 || !Number.isFinite(tgt) || tgt <= 0) return dist;
+  const ratio = clampBenchmarkRatio(tgt / avg, BENCHMARK_EQUIV_RATIO_MIN, BENCHMARK_EQUIV_RATIO_MAX);
+  const equiv = dist * (ratio ** BENCHMARK_EQUIV_K);
+  return Number.isFinite(equiv) && equiv > 0 ? equiv : dist;
+}
+
+/**
+ * Canonical Benchmark Index from valid Benchmark sessions only.
+ * Week 1 = 100; later weeks = equivDistance / week1Equiv × 100.
+ * Distinct from the cross-modality Performance Index (2-session baseline).
+ */
+export function buildBenchmarkMetricFromPoints(points = [], { unavailable = false, unavailableDetail = '' } = {}) {
+  if (unavailable) {
+    return {
+      ...unavailableMetric(unavailableDetail || 'Completion source unavailable — Benchmark Index not classified'),
+      baselineEquivalentDistance: null,
+      latestEquivalentDistance: null,
+      index: null,
+      unavailable: true,
+    };
+  }
+
+  const valid = (Array.isArray(points) ? points : [])
+    .map((row) => {
+      const equiv = Number.isFinite(Number(row?.equiv)) && Number(row.equiv) > 0
+        ? Number(row.equiv)
+        : getBenchmarkEquivDistance(row?.distance, row?.avgBpm, row?.targetBPM);
+      return {
+        weekIndex: Number.isFinite(Number(row?.weekIndex)) ? Number(row.weekIndex) : null,
+        equiv,
+        distance: Number(row?.distance),
+        avgBpm: Number(row?.avgBpm),
+      };
+    })
+    .filter((row) => Number.isFinite(row.equiv) && row.equiv > 0);
+
+  if (!valid.length) {
+    return {
+      value: null,
+      displayValue: '--',
+      delta: null,
+      detail: 'No benchmark yet',
+      status: STATUS_NO_DATA,
+      badge: statusBadgeLabel(STATUS_NO_DATA),
+      tone: statusToTone(STATUS_NO_DATA),
+      hasData: false,
+      baselineEquivalentDistance: null,
+      latestEquivalentDistance: null,
+      index: null,
+      trendPoints: [],
+      unavailable: false,
+    };
+  }
+
+  const baselineEquiv = valid[0].equiv;
+  const trendPoints = valid.map((row) => {
+    const index = baselineEquiv > 0 ? (row.equiv / baselineEquiv) * 100 : 100;
+    return {
+      weekIndex: row.weekIndex,
+      value: Number(Number(index).toFixed(1)),
+      equiv: row.equiv,
+    };
+  });
+  const latest = trendPoints[trendPoints.length - 1];
+  const index = latest.value;
+  const classified = classifyPerformanceIndex(index);
+  const latestEquiv = valid[valid.length - 1].equiv;
+
+  return {
+    value: classified.hasData ? index : null,
+    displayValue: classified.hasData ? formatPi(index) : '--',
+    delta: classified.delta,
+    detail: classified.hasData
+      ? (valid.length < 2
+        ? 'Week 1 sets the baseline'
+        : `W1 100 → ${formatPi(index)}`)
+      : 'No benchmark yet',
+    status: classified.status,
+    badge: statusBadgeLabel(classified.status),
+    tone: statusToTone(classified.status),
+    hasData: classified.hasData,
+    baselineEquivalentDistance: baselineEquiv,
+    latestEquivalentDistance: latestEquiv,
+    index: classified.hasData ? index : null,
+    trendPoints,
+    unavailable: false,
+  };
+}
+
+function resolveBenchmarkPoints(athlete, helpers = {}) {
+  const fromScan = athlete?.scan?.bench?.points;
+  if (Array.isArray(fromScan) && fromScan.length) {
+    return fromScan;
+  }
+  if (Array.isArray(athlete?.benchmarks) && athlete.benchmarks.length) {
+    return athlete.benchmarks;
+  }
+  const sessions = Array.isArray(athlete?.sessions) ? athlete.sessions : [];
+  const normalize = typeof helpers.normalizeModality === 'function'
+    ? helpers.normalizeModality
+    : (value) => value;
+  const runningId = helpers.runningModalityId || 'running';
+  return sessions
+    .filter((session) =>
+      session?.status === 'logged'
+      && /benchmark/i.test(String(session.type || ''))
+      && normalize(session.modality) === runningId
+      && Number(session.distance) > 0
+    )
+    .map((session) => ({
+      weekIndex: session.weekIndex,
+      distance: Number(session.distance),
+      avgBpm: Number(session.avgBpm),
+      targetBPM: Number(session.targetBPM) || BENCHMARK_TARGET_BPM,
+    }));
+}
+
 export function statusToTone(status) {
   if (status === STATUS_IMPROVING || status === STATUS_ON_TARGET) return 'green';
   if (status === STATUS_DECLINING || status === STATUS_NEEDS_ATTENTION) return 'red';
@@ -653,6 +787,14 @@ export function buildCoachAthleteAnalytics(athlete, helpers = {}) {
   const mileTestsAvailable = sources.mileTests !== false;
   const completionsAvailable = sources.completions !== false;
 
+  const benchmarkMetric = buildBenchmarkMetricFromPoints(
+    resolveBenchmarkPoints(athlete, helpers),
+    {
+      unavailable: !completionsAvailable,
+      unavailableDetail: 'Completion source unavailable — Benchmark Index not classified',
+    }
+  );
+
   const mileRows = mileTestsAvailable ? collectMileTestRows(athlete) : [];
   const mileBaselineRow = pickMileBaseline(mileRows);
   const mileLatestRow = pickMileLatest(mileRows);
@@ -705,6 +847,7 @@ export function buildCoachAthleteAnalytics(athlete, helpers = {}) {
         trendPoints: [],
         unavailable: true,
       },
+    benchmark: benchmarkMetric,
     recovery: sprintsAvailable
       ? {
         latest: recoveryLatest,
@@ -863,8 +1006,8 @@ export function buildLensCard(athlete, lens) {
   const analytics = athlete?.analytics || null;
 
   if (lens === LENS_BENCHMARK) {
-    if (analytics?.performance) {
-      const metric = analytics.performance;
+    if (analytics?.benchmark) {
+      const metric = analytics.benchmark;
       return cardFromAnalyticsMetric(base, metric, {
         valueLabel: 'PERFORMANCE INDEX',
         value: metric.displayValue,
@@ -872,29 +1015,28 @@ export function buildLensCard(athlete, lens) {
         detail: metric.detail,
         sortValue: metric.hasData ? metric.value : null,
         trendPoints: metric.trendPoints,
-        extra: { delta: metric.delta },
+        extra: {
+          delta: metric.delta,
+          baselineEquivalentDistance: metric.baselineEquivalentDistance,
+          latestEquivalentDistance: metric.latestEquivalentDistance,
+        },
       });
     }
-    const index = Number(athlete?.scan?.performance?.index ?? athlete?.performance?.index);
-    const classified = classifyPerformanceIndex(index);
-    const points = (athlete?.scan?.performance?.points || athlete?.performance?.points || [])
-      .map((row) => ({
-        weekIndex: row.weekIndex,
-        value: Number(row.pct ?? row.index),
-      }))
-      .filter((row) => Number.isFinite(row.value));
-    return {
-      ...base,
-      ...classified,
-      value: classified.hasData ? formatPi(index) : '--',
+    const points = resolveBenchmarkPoints(athlete);
+    const metric = buildBenchmarkMetricFromPoints(points);
+    return cardFromAnalyticsMetric(base, metric, {
       valueLabel: 'PERFORMANCE INDEX',
-      deltaLabel: classified.hasData ? formatSignedPct(classified.delta) : '',
-      detail: classified.hasData
-        ? `W1 100 → ${formatPi(index)}`
-        : (athlete?.scan?.performance?.detail || 'No Performance Index yet'),
-      trendPoints: points,
-      badge: statusBadgeLabel(classified.status),
-    };
+      value: metric.displayValue,
+      deltaLabel: metric.hasData ? formatSignedPct(metric.delta) : '',
+      detail: metric.detail,
+      sortValue: metric.hasData ? metric.value : null,
+      trendPoints: metric.trendPoints,
+      extra: {
+        delta: metric.delta,
+        baselineEquivalentDistance: metric.baselineEquivalentDistance,
+        latestEquivalentDistance: metric.latestEquivalentDistance,
+      },
+    });
   }
 
   if (lens === LENS_RECOVERY) {

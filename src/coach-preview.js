@@ -736,6 +736,7 @@ function buildAthleteRecord(config) {
 
 function scanFromAnalytics(analytics, priorScan = {}) {
   const performance = analytics?.performance || {};
+  const benchmark = analytics?.benchmark || {};
   const recovery = analytics?.recovery || {};
   const pace = analytics?.pace || {};
   const hr = analytics?.hrAdherence || {};
@@ -754,6 +755,28 @@ function scanFromAnalytics(analytics, priorScan = {}) {
       index: performance.hasData ? performance.value : null,
       status: performance.status,
       badge: performance.badge,
+    },
+    bench: {
+      key: 'bench',
+      tone: benchmark.tone || priorScan.bench?.tone || 'neutral',
+      value: benchmark.displayValue || priorScan.bench?.value || '--',
+      short: Number.isFinite(Number(benchmark.delta))
+        ? formatSignedPct(Number(benchmark.delta))
+        : (benchmark.displayValue || priorScan.bench?.short || '--'),
+      detail: benchmark.detail || priorScan.bench?.detail || 'No benchmark yet',
+      points: (benchmark.trendPoints || []).map((row) => ({
+        weekIndex: row.weekIndex,
+        pct: row.value,
+        index: row.value,
+        equiv: row.equiv,
+      })),
+      index: benchmark.hasData ? benchmark.value : null,
+      status: benchmark.status,
+      badge: benchmark.badge,
+      latestPct: Number.isFinite(Number(benchmark.delta)) ? Number(benchmark.delta) : null,
+      lastAvg: priorScan.bench?.lastAvg,
+      baselineEquivalentDistance: benchmark.baselineEquivalentDistance ?? null,
+      latestEquivalentDistance: benchmark.latestEquivalentDistance ?? null,
     },
     recovery: {
       key: 'recovery',
