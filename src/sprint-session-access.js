@@ -99,6 +99,32 @@ export function pickAssignedSprintResultRecord(completion, sprintSession) {
   return null;
 }
 
+export function hasSavedSprintAttachment(record) {
+  const attachment = record?.attachment;
+  if (attachment && typeof attachment === 'object') {
+    return !!(attachment.id || attachment.storagePath || attachment.storage_path);
+  }
+  return !!(record?.attachmentId || record?.attachment_id);
+}
+
+export function getSprintRecoveryBannerCopy(record) {
+  if (!record || record.completedAt) return null;
+  if (hasSavedSprintAttachment(record)) {
+    return {
+      kicker: 'SPRINT SAVED',
+      message: 'Finish saving this workout to your account.',
+    };
+  }
+  return {
+    kicker: 'SPRINT SAVED',
+    message: 'Proof required to complete this workout.',
+  };
+}
+
+function withActionCopy(state) {
+  return { ...state, actionCopy: state.action };
+}
+
 /**
  * Home / detail presentation for an assigned Sprint workout.
  * Final completion is independent from a saved pre-proof Sprint session.
@@ -109,46 +135,47 @@ export function resolveSprintProgramCardState({
   skipped = false,
 } = {}) {
   if (skipped) {
-    return {
+    return withActionCopy({
       tag: 'Skipped',
       action: 'SKIPPED',
       actionType: 'complete-workout',
       cardState: 'skipped',
       resultRecord: completion,
       isFinalized: false,
-    };
+    });
   }
 
   if (completion) {
     const resultRecord = pickAssignedSprintResultRecord(completion, sprintSession) || completion;
     const canViewResults = hasSavedSprintResults(resultRecord);
-    return {
+    return withActionCopy({
       tag: 'Done',
       action: canViewResults ? 'RESULTS' : 'EDIT',
       actionType: canViewResults ? 'view-results' : 'sprint',
       cardState: 'completed',
       resultRecord,
       isFinalized: true,
-    };
+    });
   }
 
   if (hasSavedSprintResults(sprintSession)) {
-    return {
-      tag: 'Proof Needed',
+    const proofSaved = hasSavedSprintAttachment(sprintSession);
+    return withActionCopy({
+      tag: proofSaved ? 'Finish Save' : 'Proof Needed',
       action: 'RESULTS',
       actionType: 'view-results',
-      cardState: 'proof-needed',
+      cardState: proofSaved ? 'finish-save' : 'proof-needed',
       resultRecord: sprintSession,
       isFinalized: false,
-    };
+    });
   }
 
-  return {
+  return withActionCopy({
     tag: 'Timer Ready',
     action: 'OPEN TIMER',
     actionType: 'sprint',
     cardState: '',
     resultRecord: null,
     isFinalized: false,
-  };
+  });
 }

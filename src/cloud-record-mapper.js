@@ -91,12 +91,28 @@ export function mapCloudSprintSessionRow(row, parseJSON = (value, fallback) => {
 }) {
   if (!row) return null;
   const record = stripClientSprintMetadata(parseJSON(row.session_json, {}));
+  const weekIndex = record.weekIndex ?? record.week_index ?? row.week_index ?? null;
+  const workoutIndex = record.workoutIndex ?? record.workout_index ?? row.workout_index ?? null;
+  const hasNestedContext = !!(record.cfg?.workoutContext || record.workoutContext);
+  const relationalContext = !hasNestedContext && weekIndex != null && workoutIndex != null
+    ? { weekIndex, workoutIndex }
+    : null;
   return {
     ...record,
     id: record.id || row.session_id || row.id,
     date: row.session_at || record.date || row.created_at,
     avgDrop: record.avgDrop ?? row.avg_drop ?? null,
     peakHR: record.peakHR ?? row.peak_hr ?? null,
+    weekIndex,
+    workoutIndex,
+    week_index: weekIndex,
+    workout_index: workoutIndex,
+    ...(relationalContext
+      ? {
+        workoutContext: relationalContext,
+        cfg: { ...(record.cfg || {}), workoutContext: relationalContext },
+      }
+      : {}),
   };
 }
 

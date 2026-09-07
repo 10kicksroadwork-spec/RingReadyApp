@@ -191,6 +191,7 @@ export function buildFinishedSprintSessionFixture({
   weekIndex = 0,
   workoutIndex = 0,
   sessionId = 'sprint-recovery-session',
+  ...overrides
 } = {}) {
   return {
     id: sessionId,
@@ -203,7 +204,7 @@ export function buildFinishedSprintSessionFixture({
       workoutContext: {
         weekIndex,
         workoutIndex,
-        weekLabel: 'Week 1',
+        weekLabel: `Week ${weekIndex + 1}`,
         workoutType: 'Sprint Intervals',
       },
     },
@@ -216,6 +217,7 @@ export function buildFinishedSprintSessionFixture({
     ],
     avgDrop: 55,
     peakHR: 180,
+    ...overrides,
   };
 }
 

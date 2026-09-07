@@ -139,7 +139,7 @@ function setupHomeDom() {
     <div id="results-kicker">Session Complete</div>
     <div id="sprint-recovery-banner" hidden>
       <div class="sprint-recovery-kicker">SPRINT SAVED</div>
-      <p>Proof required to complete this workout</p>
+      <p id="sprint-recovery-banner-copy">Proof required to complete this workout.</p>
     </div>
     <div data-proof-host="sprint"></div>
     <button id="complete-workout-btn"></button>
@@ -201,6 +201,35 @@ describe('sprint result recovery', () => {
     const card = week1SprintCard();
     expect(card.querySelector('.workout-tag').textContent).toBe('Timer Ready');
     expect(card.querySelector('.workout-action').textContent).toBe('OPEN TIMER');
+  });
+
+  it('renders Finish Save / RESULTS when proof exists but completion does not', () => {
+    persistSessionRecord(buildSavedSprint({
+      attachment: { id: 'attachment-1', storagePath: 'user/week1/proof.webp' },
+      proofPolicyVersion: 1,
+    }));
+    cloudHydrationTestHooks.renderShell();
+
+    const card = week1SprintCard();
+    expect(card.classList.contains('finish-save')).toBe(true);
+    expect(card.classList.contains('proof-needed')).toBe(false);
+    expect(card.classList.contains('completed')).toBe(false);
+    expect(card.querySelector('.workout-tag').textContent).toBe('Finish Save');
+    expect(card.querySelector('.workout-action').textContent).toBe('RESULTS');
+  });
+
+  it('does not say proof is required when a saved Sprint already has an attachment', () => {
+    const record = buildSavedSprint({
+      attachment: { id: 'attachment-1', storagePath: 'user/week1/proof.webp' },
+      proofPolicyVersion: 1,
+    });
+    showSavedWorkoutResult(record);
+    expect(document.getElementById('results-kicker').textContent).toBe('SPRINT SAVED');
+    expect(document.getElementById('sprint-recovery-banner').hidden).toBe(false);
+    expect(document.getElementById('sprint-recovery-banner-copy').textContent)
+      .toBe('Finish saving this workout to your account.');
+    expect(document.getElementById('sprint-recovery-banner').textContent)
+      .not.toMatch(/Proof required/i);
   });
 
   it('renders Done / RESULTS after a finalized Sprint completion', () => {

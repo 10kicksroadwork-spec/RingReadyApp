@@ -117,4 +117,51 @@ test.describe('sprint result recovery', () => {
 
     consoleGate.assertClean();
   });
+
+  test('shows Finish Save when proof is already attached and completion is missing', async ({
+    localAthletePage,
+    consoleGate,
+  }) => {
+    const page = localAthletePage;
+    await seedFinishedSprintSession(page, {
+      sessionId: 'sprint-finish-save-session',
+      attachment: { id: 'attachment-1', storagePath: 'user/week1/proof.webp' },
+      proofPolicyVersion: 1,
+    });
+    await page.reload();
+    await waitForHome(page);
+
+    await expectSprintCardState(page, { tag: 'Finish Save', action: 'RESULTS' });
+    await openPendingSprintResults(page);
+    await expect(page.locator('#sprint-recovery-banner')).toBeVisible();
+    await expect(page.locator('#sprint-recovery-banner-copy'))
+      .toHaveText('Finish saving this workout to your account.');
+    await expect(page.locator('#sprint-recovery-banner')).not.toContainText(/Proof required/i);
+    await expect(page.locator('#complete-workout-btn')).toBeEnabled();
+
+    consoleGate.assertClean();
+  });
+
+  test('never assigns a Week 4 Sprint to Week 1', async ({
+    localAthletePage,
+    consoleGate,
+  }) => {
+    const page = localAthletePage;
+    await seedFinishedSprintSession(page, {
+      weekIndex: 3,
+      sessionId: 'week4-sprint-session',
+    });
+    await page.reload();
+    await waitForHome(page);
+
+    await expectSprintCardState(page, { tag: 'Timer Ready', action: 'OPEN TIMER' });
+
+    await page.locator('#open-week-menu-btn').click();
+    await page.locator('.drawer-week-btn[data-week-index="3"]').click();
+    await expect(page.locator('#home.screen.active')).toBeVisible();
+    await expect(weekWorkoutCard(page, 3, 0).locator('.workout-tag')).toHaveText('Proof Needed');
+    await expect(weekWorkoutCard(page, 3, 0).locator('.workout-action')).toHaveText('RESULTS');
+
+    consoleGate.assertClean();
+  });
 });
