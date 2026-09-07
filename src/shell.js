@@ -46,7 +46,13 @@ import {
   getAthleteProfile,
   saveAthleteProfile,
 } from './sync.js';
-import { getWorkoutCompletion, getWorkoutCompletions, isWorkoutCompletionCleared, markWorkoutCompletionCleared, removeWorkoutCompletion, saveWorkoutCompletion, finalizeWorkoutCompletionRecord, persistWorkoutCompletion, clearWorkoutCompletionClearedMarker, getCloudPendingSprintSessions, clearSessionCloudPending } from './storage.js';
+import { getWorkoutCompletion, getWorkoutCompletions, getSessionHistory, isWorkoutCompletionCleared, markWorkoutCompletionCleared, removeWorkoutCompletion, saveWorkoutCompletion, finalizeWorkoutCompletionRecord, persistWorkoutCompletion, clearWorkoutCompletionClearedMarker, getCloudPendingSprintSessions, clearSessionCloudPending } from './storage.js';
+import {
+  getLatestSprintSessionForWorkout,
+  hasSavedSprintResults,
+  pickAssignedSprintResultRecord,
+  resolveSprintProgramCardState,
+} from './sprint-session-access.js';
 import { parseDurationMinutes, sanitizeDurationInput } from './workout.js';
 import {
   calculateZoneBPM,
@@ -1163,6 +1169,9 @@ function getHrFeedback(workout, hrInfo = getHRInfo()) {
 function isSprintWorkout(workout) {
   return workout?.action === 'sprint' || /sprint/i.test(String(workout?.type || ''));
 }
+function getSavedSprintSessionForWorkout(weekIndex, workoutIndex) {
+  return getLatestSprintSessionForWorkout(getSessionHistory(), weekIndex, workoutIndex);
+}
 function getWorkoutGuidance(workout) {
   const type = String(workout?.type || '');
   if (workout?.action === 'mile-test' || /mile/i.test(type)) return MILE_TEST_GUIDANCE;
@@ -1944,7 +1953,6 @@ function getVisibleWorkoutSlots() {
 function getVisibleCompletionRows() {
   return getVisibleWorkoutSlots().map((slot) => ({ ...slot, completion: getWorkoutCompletion(slot.weekIndex, slot.workoutIndex) })).filter((row) => !!row.completion);
 }
-function getSessionHistory() { return readJSON(STORAGE_KEY, []); }
 function average(values) {
   const nums = values.map(Number).filter((value) => Number.isFinite(value) && value > 0);
   return nums.length ? nums.reduce((sum, value) => sum + value, 0) / nums.length : null;
@@ -2181,11 +2189,24 @@ function renderShell() {
   root.innerHTML = week.workouts.map((workout, index) => {
     const completion = getWorkoutCompletion(activeWeekIndex, index);
     const skipped = isSkippedCompletion(completion);
+    const sprintSession = isSprintWorkout(workout)
+      ? getSavedSprintSessionForWorkout(activeWeekIndex, index)
+      : null;
+    const sprintState = isSprintWorkout(workout)
+      ? resolveSprintProgramCardState({ completion, sprintSession, skipped })
+      : null;
     const targetBPM = getWorkoutTargetBPM(workout);
     const targetCopy = isSprintWorkout(workout) ? 'All out' : (targetBPM ? `${targetBPM} bpm` : '--');
-    const cardState = skipped ? 'skipped' : (completion ? 'completed' : '');
-    const tag = skipped ? 'Skipped' : (completion ? 'Done' : workoutTag(workout));
-    return `<button type="button" class="week-workout-card ${cardState}" data-week-index="${activeWeekIndex}" data-workout-index="${index}"><div><div class="field-label week-card-day">${escapeHTML(workout.day)}</div><div class="week-card-title">${escapeHTML(workout.type)}</div><div class="week-card-desc">${escapeHTML(workout.description)}</div></div><div class="week-card-side"><div class="workout-tag">${escapeHTML(tag)}</div><div class="workout-target">${targetCopy}</div><div class="workout-action">${escapeHTML(getActionCopy(workout, completion))}</div></div></button>`;
+    const cardState = sprintState
+      ? sprintState.cardState
+      : (skipped ? 'skipped' : (completion ? 'completed' : ''));
+    const tag = sprintState
+      ? sprintState.tag
+      : (skipped ? 'Skipped' : (completion ? 'Done' : workoutTag(workout)));
+    const actionCopy = sprintState
+      ? sprintState.action
+      : getActionCopy(workout, completion);
+    return `<button type="button" class="week-workout-card ${cardState}" data-week-index="${activeWeekIndex}" data-workout-index="${index}"><div><div class="field-label week-card-day">${escapeHTML(workout.day)}</div><div class="week-card-title">${escapeHTML(workout.type)}</div><div class="week-card-desc">${escapeHTML(workout.description)}</div></div><div class="week-card-side"><div class="workout-tag">${escapeHTML(tag)}</div><div class="workout-target">${targetCopy}</div><div class="workout-action">${escapeHTML(actionCopy)}</div></div></button>`;
   }).join('');
   renderDrawerWeeks();
 }
@@ -2448,6 +2469,12 @@ function openWorkoutDetail(weekIndex, workoutIndex) {
   const workout = week.workouts[safeWorkoutIndex] || week.workouts[0];
   const completion = getWorkoutCompletion(safeWeekIndex, safeWorkoutIndex);
   const skipped = isSkippedCompletion(completion);
+  const sprintSession = isSprintWorkout(workout)
+    ? getSavedSprintSessionForWorkout(safeWeekIndex, safeWorkoutIndex)
+    : null;
+  const sprintResultRecord = isSprintWorkout(workout)
+    ? pickAssignedSprintResultRecord(completion, sprintSession)
+    : null;
   setText('detail-week', `${week.label} / ${workout.day}`);
   setText('detail-title', workout.type);
   setText('detail-desc', workout.description);
@@ -2459,7 +2486,10 @@ function openWorkoutDetail(weekIndex, workoutIndex) {
   renderDetailExpectedAvg(workout);
   syncDetailSprintLayout(workout);
   const baseActionType = ['sprint', 'mile-test'].includes(workout.action) ? workout.action : 'complete-workout';
-  const actionType = !skipped && completion && hasSessionResults(completion) ? 'view-results' : baseActionType;
+  const actionType = !skipped && (
+    (completion && hasSessionResults(completion))
+    || hasSavedSprintResults(sprintResultRecord)
+  ) ? 'view-results' : baseActionType;
   setDetailWorkoutLog(baseActionType === 'complete-workout' && !skipped, skipped ? null : completion, workout);
   if (baseActionType === 'complete-workout' && !skipped) {
     const proofContext = { ...buildWorkoutContext(week, workout, safeWeekIndex, safeWorkoutIndex), campLength: Number(getAthleteProfile().campLength) || 7 };
@@ -2587,8 +2617,14 @@ function bindShellEvents() {
   document.getElementById('detail-skip-confirm-btn')?.addEventListener('click', confirmSkipWorkoutFromDetail);
   document.getElementById('detail-action-btn')?.addEventListener('click', (event) => {
     if (event.currentTarget.dataset.action === 'view-results') {
-      const completion = getWorkoutCompletion(event.currentTarget.dataset.weekIndex, event.currentTarget.dataset.workoutIndex);
-      if (completion) shellHooks?.showSavedWorkoutResult?.(completion);
+      const weekIndex = event.currentTarget.dataset.weekIndex;
+      const workoutIndex = event.currentTarget.dataset.workoutIndex;
+      const completion = getWorkoutCompletion(weekIndex, workoutIndex);
+      const record = pickAssignedSprintResultRecord(
+        completion,
+        getSavedSprintSessionForWorkout(weekIndex, workoutIndex),
+      ) || completion;
+      if (record) shellHooks?.showSavedWorkoutResult?.(record);
       setActiveNavigation('');
     } else if (event.currentTarget.dataset.action === 'sprint') {
       const weekIndex = Number(event.currentTarget.dataset.weekIndex || activeWeekIndex);
@@ -2668,7 +2704,7 @@ export async function initAthleteShell(hooks) {
     });
   });
   window.addEventListener('ringready:sprint-session-saved', () => {
-    // Cloud sprint save is awaited in finishSession before proof can be submitted.
+    renderShell();
   });
 
   renderAllPages();
@@ -2706,6 +2742,9 @@ export async function initAthleteShell(hooks) {
 export { completeWorkoutFromDetail, saveMileTestResult };
 
 export const cloudHydrationTestHooks = {
+  renderShell,
+  openWorkoutDetail,
+  getSavedSprintSessionForWorkout,
   shouldApplyCloudHydration,
   shouldApplyClientStateMutation,
   shouldApplyCompletionHydration,

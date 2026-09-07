@@ -46,6 +46,7 @@ import {
   persistWorkoutCompletion,
   removeWorkoutCompletion,
 } from './storage.js';
+import { getSprintRecoveryBannerCopy } from './sprint-session-access.js';
 import {
   applyCompletionActionState,
   buildProofChecklistItem,
@@ -1207,6 +1208,17 @@ export function buildResults(record = activeResultRecord) {
   body.innerHTML = '';
 
   document.getElementById('results-date').textContent = formatResultDate(resultRecord);
+  const recoveryCopy = isProgramWorkoutRecord(resultRecord) && !resultRecord.completedAt
+    ? getSprintRecoveryBannerCopy(resultRecord)
+    : null;
+  const kicker = document.getElementById('results-kicker');
+  if (kicker) kicker.textContent = recoveryCopy ? recoveryCopy.kicker : 'Session Complete';
+  const recoveryBanner = document.getElementById('sprint-recovery-banner');
+  if (recoveryBanner) {
+    recoveryBanner.hidden = !recoveryCopy;
+    const recoveryMessage = document.getElementById('sprint-recovery-banner-copy');
+    if (recoveryMessage && recoveryCopy) recoveryMessage.textContent = recoveryCopy.message;
+  }
   if (isProgramWorkoutRecord(resultRecord)) {
     const context = getRecordContext(resultRecord);
     const campLength = Number(getAthleteProfile().campLength) || 7;

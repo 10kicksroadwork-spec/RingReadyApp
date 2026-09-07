@@ -647,6 +647,27 @@
   .results-title  { font-family: Impact, Haettenschweiler, 'Arial Narrow Bold', sans-serif; font-size: 48px; color: var(--black); line-height: 0.95; }
   .results-sub    { font-size: 13px; color: rgba(0,0,0,0.55); margin-top: 6px; }
 
+  .sprint-recovery-banner {
+    margin: 16px 24px 0;
+    padding: 16px 18px;
+    border: 1px solid var(--gold);
+    border-radius: 12px;
+    background: rgba(245, 200, 66, 0.12);
+  }
+  .sprint-recovery-kicker {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px;
+    letter-spacing: 1.6px;
+    color: var(--gold);
+    text-transform: uppercase;
+  }
+  .sprint-recovery-banner p {
+    margin: 6px 0 0;
+    color: var(--white);
+    font-size: 14px;
+    line-height: 1.4;
+  }
+
   .results-body { padding: 24px; display: flex; flex-direction: column; gap: 12px; }
 
   .summary-card {
@@ -1139,6 +1160,24 @@
   .week-workout-card.completed .workout-action { color: var(--green); }
   .week-workout-card.completed .workout-tag { background: var(--green); color: var(--black); }
   .week-workout-card.completed .workout-target { color: var(--white); }
+
+  .week-workout-card.proof-needed {
+    border-color: var(--gold);
+    background: linear-gradient(135deg, rgba(245, 200, 66, 0.18), rgba(36, 28, 12, 0.78));
+    box-shadow: inset 0 0 0 1px rgba(245, 200, 66, 0.2);
+  }
+  .week-workout-card.proof-needed .week-card-day,
+  .week-workout-card.proof-needed .workout-action { color: var(--gold); }
+  .week-workout-card.proof-needed .workout-tag { background: var(--gold); color: var(--black); }
+
+  .week-workout-card.finish-save {
+    border-color: var(--gold);
+    background: linear-gradient(135deg, rgba(245, 200, 66, 0.18), rgba(36, 28, 12, 0.78));
+    box-shadow: inset 0 0 0 1px rgba(245, 200, 66, 0.2);
+  }
+  .week-workout-card.finish-save .week-card-day,
+  .week-workout-card.finish-save .workout-action { color: var(--gold); }
+  .week-workout-card.finish-save .workout-tag { background: var(--gold); color: var(--black); }
 
   .week-card-title {
     font-family: Impact, Haettenschweiler, 'Arial Narrow Bold', sans-serif;
