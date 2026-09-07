@@ -20,6 +20,7 @@ import {
   ensureWorkoutIdentityReconciled,
   rollbackWorkoutIdentityIfOwned,
   saveWorkoutCompletionReconciled,
+  updateWorkoutNoteFieldsReconciled,
 } from './workout-completion-reconcile.js';
 
 let currentSession = null;
@@ -510,6 +511,41 @@ export async function saveCloudWorkoutCompletion(record) {
   if (!isSupabaseConfigured || !supabase || !user || !record) return null;
   const result = await saveWorkoutCompletionReconciled(supabase, user.id, record);
   return result?.record || null;
+}
+
+export async function updateCloudWorkoutNoteFields(record) {
+  const user = getCurrentUser();
+  if (!isSupabaseConfigured || !supabase || !user || !record) {
+    return { updated: false, absent: true, record: null };
+  }
+  return updateWorkoutNoteFieldsReconciled(supabase, user.id, record);
+}
+
+export async function clearCloudAssignedMileWithProof({
+  testKey,
+  weekIndex,
+  workoutIndex,
+  attachmentId = null,
+} = {}) {
+  const user = getCurrentUser();
+  if (!isSupabaseConfigured || !supabase || !user) return false;
+  const owner = captureAthleteOperation();
+  const key = String(testKey || '').trim();
+  const week = Number(weekIndex);
+  const workout = Number(workoutIndex);
+
+  if (key) {
+    const { error: mileError } = await ownedResult(owner, withOperationTimeout(
+      supabase.from('mile_tests').delete().eq('user_id', user.id).eq('test_key', key),
+      { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_COMPLETION, operation: 'clear_mile_test' },
+    ));
+    if (mileError) throw mileError;
+  }
+
+  if (Number.isFinite(week) && Number.isFinite(workout)) {
+    await ownedResult(owner, clearCloudWorkoutCompletionWithProof(week, workout, attachmentId));
+  }
+  return true;
 }
 
 export async function deleteCloudWorkoutCompletion(weekIndex, workoutIndex) {

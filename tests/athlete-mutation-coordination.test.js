@@ -105,6 +105,66 @@ describe('athlete mutation coordinator', () => {
     release();
     await expect(complete).resolves.toBe('saved');
   });
+
+  it('rejects note-save while Complete is in flight', async () => {
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const complete = runAthleteMutation('0:1', 'complete', async () => {
+      await gate;
+      return 'saved';
+    });
+
+    await expect(runAthleteMutation('0:1', 'note-save', async () => 'noted'))
+      .rejects.toMatchObject({ busy: true, activeOperation: 'complete', requestedOperation: 'note-save' });
+
+    release();
+    await expect(complete).resolves.toBe('saved');
+  });
+
+  it('rejects Clear while note-save is in flight', async () => {
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const note = runAthleteMutation('0:1', 'note-save', async () => {
+      await gate;
+      return 'noted';
+    });
+
+    await expect(runAthleteMutation('0:1', 'clear', async () => 'cleared'))
+      .rejects.toMatchObject({ busy: true, activeOperation: 'note-save', requestedOperation: 'clear' });
+
+    release();
+    await expect(note).resolves.toBe('noted');
+  });
+
+  it('rejects Skip while note-save is in flight', async () => {
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const note = runAthleteMutation('0:1', 'note-save', async () => {
+      await gate;
+      return 'noted';
+    });
+
+    await expect(runAthleteMutation('0:1', 'skip', async () => 'skipped'))
+      .rejects.toMatchObject({ busy: true, activeOperation: 'note-save', requestedOperation: 'skip' });
+
+    release();
+    await expect(note).resolves.toBe('noted');
+  });
+
+  it('rejects note-save while Skip is in flight', async () => {
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const skip = runAthleteMutation('0:1', 'skip', async () => {
+      await gate;
+      return 'skipped';
+    });
+
+    await expect(runAthleteMutation('0:1', 'note-save', async () => 'noted'))
+      .rejects.toMatchObject({ busy: true, activeOperation: 'skip', requestedOperation: 'note-save' });
+
+    release();
+    await expect(skip).resolves.toBe('skipped');
+  });
 });
 
 describe('outgoing athlete draft cleanup', () => {

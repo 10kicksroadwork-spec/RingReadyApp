@@ -49,7 +49,7 @@ import {
   getAthleteProfile,
   saveAthleteProfile,
 } from './sync.js';
-import { getWorkoutCompletion, getWorkoutCompletions, getSessionHistory, isWorkoutCompletionCleared, markWorkoutCompletionCleared, removeWorkoutCompletion, saveWorkoutCompletion, finalizeWorkoutCompletionRecord, persistWorkoutCompletion, clearWorkoutCompletionClearedMarker, getCloudPendingSprintSessions, clearSessionCloudPending } from './storage.js';
+import { getWorkoutCompletion, getWorkoutCompletions, getSessionHistory, isWorkoutCompletionCleared, markWorkoutCompletionCleared, removeWorkoutCompletion, saveWorkoutCompletion, finalizeWorkoutCompletionRecord, persistWorkoutCompletion, persistWorkoutNoteUpdate, clearWorkoutCompletionClearedMarker, getCloudPendingSprintSessions, clearSessionCloudPending } from './storage.js';
 import {
   getLatestSprintSessionForWorkout,
   hasSavedSprintResults,
@@ -94,6 +94,7 @@ import {
   archiveAndResetCamp,
   clearAuthRedirectParams,
   clearCloudWorkoutCompletionWithProof,
+  clearCloudAssignedMileWithProof,
   deleteCloudWorkoutCompletion,
   ensureCloudMileTestIdentity,
   ensureCloudWorkoutIdentity,
@@ -112,6 +113,7 @@ import {
   saveCloudProfile,
   saveCloudSprintSession,
   saveCloudWorkoutCompletion,
+  updateCloudWorkoutNoteFields,
   rollbackCloudMileTestIdentity,
   rollbackCloudWorkoutIdentity,
   signInWithEmail,
@@ -157,15 +159,33 @@ const WORKOUT_NOTE_MAX_LENGTH = 200;
 const DETAIL_MODALITY_NOTE_KEY = 'ringReadyModalitySwitchNoteSeen';
 
 let hydrationGeneration = 0;
-/** Bumped on athlete completion save/clear/recomplete so in-flight cloud reads cannot erase newer local state. */
+/** Resource-specific epochs so one mutation does not discard unrelated hydration. */
 let completionMutationEpoch = 0;
+let sprintMutationEpoch = 0;
+let mileMutationEpoch = 0;
 
 function noteCompletionMutation() {
   completionMutationEpoch += 1;
 }
 
+function noteSprintMutation() {
+  sprintMutationEpoch += 1;
+}
+
+function noteMileMutation() {
+  mileMutationEpoch += 1;
+}
+
 function shouldApplyCompletionHydration(completionEpochAtStart) {
   return Number(completionEpochAtStart) === completionMutationEpoch;
+}
+
+function shouldApplySprintHydration(sprintEpochAtStart) {
+  return Number(sprintEpochAtStart) === sprintMutationEpoch;
+}
+
+function shouldApplyMileHydration(mileEpochAtStart) {
+  return Number(mileEpochAtStart) === mileMutationEpoch;
 }
 
 let activeWeekIndex = Number(getStorageItem(WEEK_INDEX_KEY).value || 0);
@@ -575,7 +595,17 @@ async function applyCloudHydrationResults(userId, generation, {
   completionsResult,
   sessionsResult,
   mileResult,
-} = {}, completionEpochAtStart = completionMutationEpoch) {
+} = {}, hydrationEpochsAtStart = {}) {
+  const normalizedEpochs = typeof hydrationEpochsAtStart === 'number'
+    ? {
+      completions: hydrationEpochsAtStart,
+      sprints: hydrationEpochsAtStart,
+      miles: hydrationEpochsAtStart,
+    }
+    : hydrationEpochsAtStart;
+  const completionEpochAtStart = Number(normalizedEpochs.completions ?? completionMutationEpoch);
+  const sprintEpochAtStart = Number(normalizedEpochs.sprints ?? sprintMutationEpoch);
+  const mileEpochAtStart = Number(normalizedEpochs.miles ?? mileMutationEpoch);
   if (!shouldApplyCloudHydration(userId, generation)) return;
 
   if (profileResult?.ok) {
@@ -624,7 +654,7 @@ async function applyCloudHydrationResults(userId, generation, {
 
   if (!shouldApplyCloudHydration(userId, generation)) return;
 
-  if (sessionsResult?.ok && shouldApplyCompletionHydration(completionEpochAtStart)) {
+  if (sessionsResult?.ok && shouldApplySprintHydration(sprintEpochAtStart)) {
     const cloudSessions = sessionsResult.value || [];
     const mergedSessions = reconcileSprintSessionsFromCloud(cloudSessions, pendingSessions);
     writeJSON(STORAGE_KEY, mergedSessions);
@@ -632,7 +662,7 @@ async function applyCloudHydrationResults(userId, generation, {
 
   if (!shouldApplyCloudHydration(userId, generation)) return;
 
-  if (mileResult?.ok && shouldApplyCompletionHydration(completionEpochAtStart)) {
+  if (mileResult?.ok && shouldApplyMileHydration(mileEpochAtStart)) {
     const cloudMileTest = mileResult.value ?? null;
     if (cloudMileTest) { writeJSON(MILE_TEST_STORAGE_KEY, cloudMileTest); cacheAssignedMileCompletion(cloudMileTest); }
     else removeStorageKey(MILE_TEST_STORAGE_KEY);
@@ -648,7 +678,7 @@ async function applyCloudHydrationResults(userId, generation, {
     completionsResult,
     sessionsResult,
     mileResult,
-  }, completionEpochAtStart).catch((error) => {
+  }, { completions: completionEpochAtStart }).catch((error) => {
     console.warn('Background cloud hydration maintenance failed', error);
   });
 }
@@ -716,7 +746,11 @@ async function hydrateCloudDataInBackground() {
   if (!isSupabaseConfigured || !getCurrentUser()) return;
   const userId = getCurrentUser().id;
   const generation = hydrationGeneration;
-  const completionEpochAtStart = completionMutationEpoch;
+  const hydrationEpochsAtStart = {
+    completions: completionMutationEpoch,
+    sprints: sprintMutationEpoch,
+    miles: mileMutationEpoch,
+  };
 
   const [
     profileResult,
@@ -738,7 +772,7 @@ async function hydrateCloudDataInBackground() {
     completionsResult,
     sessionsResult,
     mileResult,
-  }, completionEpochAtStart);
+  }, hydrationEpochsAtStart);
 }
 
 function enterSignedInAthleteHome() {
@@ -786,20 +820,21 @@ async function rehydrateWorkoutCompletionFromCloud(record, owner, completionEpoc
 }
 
 async function rehydrateMileTestFromCloud(owner) {
-  const epoch = completionMutationEpoch;
+  const epoch = mileMutationEpoch;
   if (!shouldApplyClientStateMutation(owner)) return false;
 
   const cloudMileTest = await loadCloudMileTest();
   if (!shouldApplyClientStateMutation(owner)) return false;
-  if (!cloudMileTest || !shouldApplyCompletionHydration(epoch)) return false;
+  if (!cloudMileTest || !shouldApplyMileHydration(epoch)) return false;
 
   writeJSON(MILE_TEST_STORAGE_KEY, cloudMileTest);
+  cacheAssignedMileCompletion(cloudMileTest);
   const cloudHR = await loadCloudHRInfo();
   if (!shouldApplyClientStateMutation(owner)) return false;
   if (cloudHR && hasCustomHRInfo(cloudHR)) {
     saveHRInfo(cloudHR, { preserveUpdatedAt: true });
   }
-  return shouldApplyClientStateMutation(owner);
+  return shouldApplyClientStateMutation(owner) && shouldApplyMileHydration(epoch);
 }
 
 function scheduleTargetedWorkoutRehydrate(record) {
@@ -1508,37 +1543,62 @@ function handleDetailNoteInput(event) {
   updateDetailNoteCounter();
 }
 async function saveWorkoutNoteFromDetail(event) {
-  const owner = captureAthleteOperation();
   const button = event.currentTarget;
   const weekIndex = Number(button.dataset.weekIndex);
   const workoutIndex = Number(button.dataset.workoutIndex);
   if (!Number.isFinite(weekIndex) || !Number.isFinite(workoutIndex)) return;
-  const input = document.getElementById('detail-note-input');
-  const note = setStoredWorkoutNote(weekIndex, workoutIndex, sanitizeWorkoutNote(input?.value || ''));
-  const completion = getWorkoutCompletion(weekIndex, workoutIndex);
 
-  button.disabled = true;
-  try {
-    if (!completion) {
-      setDetailNoteStatus(note ? 'Saved on this device. It will attach when the workout is completed.' : 'Note cleared on this device.');
+  return runAssignmentMutation(weekIndex, workoutIndex, 'note-save', async (owner) => {
+    const input = document.getElementById('detail-note-input');
+    const note = setStoredWorkoutNote(weekIndex, workoutIndex, sanitizeWorkoutNote(input?.value || ''));
+    const completion = getWorkoutCompletion(weekIndex, workoutIndex);
+
+    button.disabled = true;
+    try {
+      if (!completion) {
+        setDetailNoteStatus(note ? 'Saved on this device. It will attach when the workout is completed.' : 'Note cleared on this device.');
+        shellHooks?.showToast?.(note ? 'NOTE SAVED' : 'NOTE CLEARED');
+        return;
+      }
+
+      const updated = { ...completion, note };
+      if (completion.workoutLog) {
+        updated.workoutLog = { ...completion.workoutLog, note };
+      }
+
+      if (isSupabaseConfigured && getCurrentUser()) {
+        const cloudResult = await ownedResult(owner, updateCloudWorkoutNoteFields(updated));
+        if (!isAthleteOperationCurrent(owner)) return;
+        if (cloudResult.absent) {
+          markWorkoutCompletionCleared(weekIndex, workoutIndex);
+          removeWorkoutCompletion(weekIndex, workoutIndex);
+          noteCompletionMutation();
+          openWorkoutDetail(weekIndex, workoutIndex);
+          setDetailNoteStatus(note ? 'Workout was cleared elsewhere. Your note is saved on this device.' : 'Note cleared on this device.');
+          shellHooks?.showToast?.(note ? 'NOTE SAVED ON DEVICE' : 'NOTE CLEARED');
+          return;
+        }
+        if (!cloudResult.updated) {
+          shellHooks?.showToast?.('COULD NOT SAVE NOTE');
+          return;
+        }
+      }
+
+      const local = persistWorkoutNoteUpdate(updated);
+      if (!local.record && !local.absent) {
+        shellHooks?.showToast?.('COULD NOT SAVE NOTE');
+        return;
+      }
+      if (local.record) noteCompletionMutation();
+
+      setDetailNoteStatus(note ? 'Saved with this workout and synced to your account.' : 'Note cleared for this workout.');
       shellHooks?.showToast?.(note ? 'NOTE SAVED' : 'NOTE CLEARED');
-      return;
+    } catch (error) {
+      if (isAthleteOperationCurrent(owner)) shellHooks?.showToast?.(athleteFacingWorkoutSaveError(error));
+    } finally {
+      if (isAthleteOperationCurrent(owner)) button.disabled = false;
     }
-
-    const updated = { ...completion, note };
-    if (completion.workoutLog) {
-      updated.workoutLog = { ...completion.workoutLog, note };
-    }
-
-    const saved = saveWorkoutCompletion(updated) || updated;
-    const cloudSaved = await ownedResult(owner, saveWorkoutCompletionToCloud(saved));
-    setDetailNoteStatus(cloudSaved ? 'Saved with this workout and synced to your account.' : 'Saved with this workout on this device.');
-    shellHooks?.showToast?.(note ? 'NOTE SAVED' : 'NOTE CLEARED');
-  } catch (error) {
-    if (isAthleteOperationCurrent(owner)) shellHooks?.showToast?.(athleteFacingWorkoutSaveError(error));
-  } finally {
-    if (isAthleteOperationCurrent(owner)) button.disabled = false;
-  }
+  });
 }
 function getRecordContext(record) {
   return record?.cfg?.workoutContext || record?.workoutContext || null;
@@ -1819,6 +1879,7 @@ function syncAssignmentMutationControls(weekIndex, workoutIndex) {
   const clearBtn = document.getElementById('detail-clear-completion-btn');
   const skipBtn = document.getElementById('detail-skip-workout-btn');
   const skipConfirm = document.getElementById('detail-skip-confirm-btn');
+  const noteSaveBtn = document.getElementById('detail-save-note-btn');
   if (action && action.dataset.action === 'complete-workout'
     && String(action.dataset.weekIndex) === String(weekIndex)
     && String(action.dataset.workoutIndex) === String(workoutIndex)) {
@@ -1835,6 +1896,11 @@ function syncAssignmentMutationControls(weekIndex, workoutIndex) {
     skipBtn.disabled = busy;
   }
   if (skipConfirm) skipConfirm.disabled = busy;
+  if (noteSaveBtn
+    && String(noteSaveBtn.dataset.weekIndex) === String(weekIndex)
+    && String(noteSaveBtn.dataset.workoutIndex) === String(workoutIndex)) {
+    noteSaveBtn.disabled = busy;
+  }
 }
 
 async function runAssignmentMutation(weekIndex, workoutIndex, operation, task) {
@@ -2283,6 +2349,7 @@ function workoutTag(workout) {
 }
 function getActionCopy(workout, completion = null) {
   if (isSkippedCompletion(completion)) return 'SKIPPED';
+  if (completion && workout.action === 'mile-test') return 'VIEW/EDIT MILE RESULT';
   if (completion) return hasSessionResults(completion) ? 'RESULTS' : 'EDIT';
   if (workout.action === 'sprint') return 'OPEN TIMER';
   if (workout.action === 'mile-test') return 'OPEN MILE TEST';
@@ -2399,6 +2466,40 @@ function renderSCPage() {
   const sessions = SC_SESSIONS.filter((session) => session.week === scWeek && session.modality === scMode);
   list.innerHTML = sessions.length ? sessions.map((session) => `<article class="page-panel sc-session-card"><div class="sc-card-head"><div><div class="info-kicker">${escapeHTML(session.day)}</div><h3>${escapeHTML(session.sessionType)}</h3></div><span class="workout-tag">${escapeHTML(session.modality)}</span></div><ul class="exercise-list">${session.exercises.split('|').map((exercise) => `<li>${escapeHTML(exercise.trim())}</li>`).join('')}</ul><div class="sc-metrics"><div><span>Sets x Reps</span><strong>${escapeHTML(session.setsReps)}</strong></div><div><span>Intensity</span><strong>${escapeHTML(session.intensity)}</strong></div><div><span>Rest</span><strong>${escapeHTML(session.rest)}</strong></div></div><p>${escapeHTML(session.notes)}</p></article>`).join('') : '<article class="page-panel"><p>No S&C sessions listed for this week.</p></article>';
 }
+function getAssignedMileCompletion() {
+  const proofContext = getActiveMileProofContext();
+  const weekIndex = Number(proofContext.weekIndex);
+  const workoutIndex = Number(proofContext.workoutIndex);
+  if (!Number.isFinite(weekIndex) || !Number.isFinite(workoutIndex)) return null;
+  return getWorkoutCompletion(weekIndex, workoutIndex);
+}
+
+function getMileMutationKey(proofContext, testKey) {
+  const weekIndex = Number(proofContext.weekIndex);
+  const workoutIndex = Number(proofContext.workoutIndex);
+  if (Number.isFinite(weekIndex) && Number.isFinite(workoutIndex)) {
+    return `${weekIndex}:${workoutIndex}`;
+  }
+  return `mile:${testKey}`;
+}
+
+function mileResultFromCompletion(completion) {
+  if (!completion) return null;
+  const log = completion.workoutLog || {};
+  return {
+    id: completion.id,
+    testKey: completion.testKey || getActiveMileProofContext().testKey,
+    distance: log.distance,
+    totalMinutes: log.totalMinutes,
+    totalSeconds: log.totalSeconds,
+    totalTimeDisplay: log.totalTimeDisplay,
+    avgBpm: log.avgBpm,
+    maxBpm: log.maxBpm,
+    savedAt: completion.completedAt || completion.savedAt,
+    attachment: completion.attachment || null,
+    proofPolicyVersion: completion.proofPolicyVersion,
+  };
+}
 function getActiveMileProofContext() {
   const profile = getAthleteProfile();
   const workoutContext = activeMileTestContext.workoutContext;
@@ -2418,33 +2519,53 @@ function renderMileTestPage() {
   setText('mile-test-warmup', MILE_TEST_INFO.warmup);
   const link = document.getElementById('mile-warmup-link');
   if (link) link.href = MILE_TEST_INFO.warmupLink;
-  const result = getMileTestResult();
   const proofContext = getActiveMileProofContext();
-  const matchesActiveTest = result && String(result.testKey || 'mile-test:baseline') === proofContext.testKey;
+  const assignedCompletion = getAssignedMileCompletion();
+  const storedResult = getMileTestResult();
+  const matchesActiveTest = storedResult && String(storedResult.testKey || 'mile-test:baseline') === proofContext.testKey;
+  const displayResult = assignedCompletion
+    ? mileResultFromCompletion(assignedCompletion)
+    : (matchesActiveTest ? storedResult : null);
   initWorkoutProof('mile', {
     proofKey: proofContext.testKey,
     context: proofContext,
-    existingAttachment: matchesActiveTest ? result.attachment : null,
-    legacy: !!(matchesActiveTest && !result.proofPolicyVersion),
+    existingAttachment: displayResult?.attachment || null,
+    legacy: !!(displayResult && !displayResult.proofPolicyVersion),
   });
-  if (matchesActiveTest) {
-    const savedDuration = formatSavedMileDuration(result);
-    setInputValue('mile-distance-input', result.distance);
-    setInputValue('mile-time-input', savedDuration?.display || result.totalMinutes);
-    setInputValue('mile-avg-bpm-input', result.avgBpm);
-    setInputValue('mile-max-bpm-input', result.maxBpm);
+  if (displayResult) {
+    const savedDuration = formatSavedMileDuration(displayResult);
+    setInputValue('mile-distance-input', displayResult.distance);
+    setInputValue('mile-time-input', savedDuration?.display || displayResult.totalMinutes);
+    setInputValue('mile-avg-bpm-input', displayResult.avgBpm);
+    setInputValue('mile-max-bpm-input', displayResult.maxBpm);
   } else {
     setInputValue('mile-distance-input', '1');
     for (const id of ['mile-time-input', 'mile-avg-bpm-input', 'mile-max-bpm-input']) setInputValue(id, '');
   }
   restoreDraft(readWorkoutDraft(`mile:${proofContext.testKey}`));
   const last = document.getElementById('mile-last-result');
-  const savedDuration = formatSavedMileDuration(result);
-  if (last) last.textContent = result ? `Last saved: ${formatDistance(result.distance)} mi / ${savedDuration?.display || '--'} / ${formatWholeNumber(result.maxBpm)} max bpm / ${formatDashboardDate(result.savedAt)}` : 'No Mile Test saved yet.';
+  const savedDuration = formatSavedMileDuration(displayResult || storedResult);
+  const summaryResult = displayResult || storedResult;
+  if (last) last.textContent = summaryResult ? `Last saved: ${formatDistance(summaryResult.distance)} mi / ${savedDuration?.display || '--'} / ${formatWholeNumber(summaryResult.maxBpm)} max bpm / ${formatDashboardDate(summaryResult.savedAt)}` : 'No Mile Test saved yet.';
   const locations = document.getElementById('mile-location-list');
   if (locations) locations.innerHTML = MILE_TEST_INFO.locations.map((location) => `<div>${escapeHTML(location)}</div>`).join('');
   const guidanceList = document.getElementById('mile-test-guidance-list');
   if (guidanceList) guidanceList.innerHTML = buildGuidanceListHTML(MILE_TEST_GUIDANCE);
+  const saveButton = document.getElementById('save-mile-test-btn');
+  if (saveButton) {
+    saveButton.textContent = assignedCompletion ? 'SAVE MILE RESULT' : 'SAVE MILE TEST';
+  }
+  let clearButton = document.getElementById('clear-mile-test-btn');
+  if (!clearButton) {
+    clearButton = document.createElement('button');
+    clearButton.type = 'button';
+    clearButton.id = 'clear-mile-test-btn';
+    clearButton.className = 'secondary-btn page-save-btn';
+    clearButton.textContent = 'CLEAR MILE RESULT';
+    saveButton?.insertAdjacentElement('afterend', clearButton);
+    clearButton.addEventListener('click', clearAssignedMileResult);
+  }
+  clearButton.hidden = !assignedCompletion;
   updateMileCompletionState();
 }
 function updateMileCompletionState() {
@@ -2457,6 +2578,57 @@ function updateMileCompletionState() {
     hintsId: 'mile-completion-hints',
   });
 }
+async function clearAssignedMileResult() {
+  const proofContext = getActiveMileProofContext();
+  const weekIndex = Number(proofContext.weekIndex);
+  const workoutIndex = Number(proofContext.workoutIndex);
+  if (!Number.isFinite(weekIndex) || !Number.isFinite(workoutIndex)) return;
+  const completion = getWorkoutCompletion(weekIndex, workoutIndex);
+  if (!completion) return;
+  if (!window.confirm('Clear this mile result from this device and your account?')) return;
+
+  const testKey = proofContext.testKey;
+  const mutationKey = getMileMutationKey(proofContext, testKey);
+  try {
+    return await runAthleteMutation(mutationKey, 'mile-clear', async (owner) => {
+      const attachmentId = completion?.attachment?.id || null;
+      if (isSupabaseConfigured && getCurrentUser()) {
+        try {
+          await ownedResult(owner, clearCloudAssignedMileWithProof({
+            testKey,
+            weekIndex,
+            workoutIndex,
+            attachmentId,
+          }));
+        } catch (error) {
+          if (!isAthleteOperationCurrent(owner)) return;
+          shellHooks?.showToast?.(athleteFacingWorkoutSaveError(error).toUpperCase());
+          return;
+        }
+      }
+
+      clearWorkoutDraft(`mile:${testKey}`);
+      window.dispatchEvent(new CustomEvent('ringready:proof-forget', { detail: { surface: 'mile' } }));
+      markWorkoutCompletionCleared(weekIndex, workoutIndex);
+      removeWorkoutCompletion(weekIndex, workoutIndex);
+      noteCompletionMutation();
+      noteMileMutation();
+
+      const stored = getMileTestResult();
+      if (stored && String(stored.testKey || '') === String(testKey)) {
+        removeStorageKey(MILE_TEST_STORAGE_KEY);
+      }
+
+      renderMileTestPage();
+      renderShell();
+      renderAthleteProfileDashboard();
+      shellHooks?.showToast?.('MILE RESULT CLEARED');
+    });
+  } catch (error) {
+    toastIfMutationBusy(error);
+  }
+}
+
 async function saveMileTestResult() {
   const owner = captureAthleteOperation();
   const button = document.getElementById('save-mile-test-btn');
@@ -2470,15 +2642,20 @@ async function saveMileTestResult() {
   if (maxBpm < avgBpm) { shellHooks?.showToast?.('MAX HR SHOULD BE AVG OR HIGHER'); return; }
   const proofContext = getActiveMileProofContext();
   const testKey = proofContext.testKey || 'mile';
+  const mutationKey = getMileMutationKey(proofContext, testKey);
 
   try {
-    return await runAthleteMutation(`mile:${testKey}`, 'mile-save', async () => withSavingButton(button, async () => {
+    return await runAthleteMutation(mutationKey, 'mile-save', async () => withSavingButton(button, async () => {
     const existingMile = getMileTestResult();
+    const assignedCompletion = getAssignedMileCompletion();
     const result = { id: makeWorkoutCompletionId(), testKey: proofContext.testKey, distance, totalMinutes, totalSeconds: duration?.totalSeconds ?? Math.round(totalMinutes * 60), totalTimeDisplay: duration?.display || '', avgBpm, maxBpm, paceMinPerMile: distance > 0 ? totalMinutes / distance : '', savedAt: new Date().toISOString() };
     result.assignedResults = [...(existingMile?.assignedResults || []),
       ...(existingMile?.testKey?.startsWith('program:') ? [{ ...existingMile, assignedResults: [] }] : [])]
       .filter((entry) => entry.testKey !== result.testKey);
-    if (existingMile?.id && existingMile.testKey === proofContext.testKey) {
+    // Prefer the assignment completion identity so resave upserts the same logical test_key/row.
+    if (assignedCompletion?.id) {
+      result.id = assignedCompletion.id;
+    } else if (existingMile?.id && existingMile.testKey === proofContext.testKey) {
       result.id = existingMile.id;
     }
     const testContext = { ...proofContext, weekTab: proofContext.weekIndex == null ? 'Mile Test' : `Week ${Number(proofContext.weekIndex) + 1}`, workoutType: proofContext.workoutType, dayOfWeek: proofContext.dayOfWeek, description: activeMileTestContext.workoutContext?.description || MILE_TEST_INFO.description, warmup: activeMileTestContext.workoutContext?.warmup || MILE_TEST_INFO.warmup };
@@ -2525,7 +2702,7 @@ async function saveMileTestResult() {
     }
 
     if (!isAthleteOperationCurrent(owner)) return;
-    noteCompletionMutation();
+    noteMileMutation();
     clearWorkoutDraft(`mile:${testKey}`);
     localMileCacheFailed = !persistJSON(MILE_TEST_STORAGE_KEY, result);
     cacheAssignedMileCompletion(result, testContext);
@@ -2638,6 +2815,12 @@ function navigateTo(screenId) {
   syncCoachPreviewChrome();
 }
 function openWorkoutDetail(weekIndex, workoutIndex) {
+  if (doesActiveSprintOwnNavigation()) {
+    shellHooks?.showScreen?.(
+      document.getElementById('results')?.classList.contains('active') ? 'results' : 'session',
+    );
+    return;
+  }
   const safeWeekIndex = Number(weekIndex);
   const safeWorkoutIndex = Number(workoutIndex);
   const week = getWeek(safeWeekIndex);
@@ -2714,7 +2897,9 @@ function openWorkoutDetail(weekIndex, workoutIndex) {
       ? 'VIEW RESULTS'
       : isLoggedWorkout
         ? (isCompleted ? 'SAVE CHANGES' : 'COMPLETE WORKOUT')
-        : (isCompleted ? 'WORKOUT COMPLETE' : getActionCopy(workout));
+        : baseActionType === 'mile-test' && isCompleted
+          ? 'VIEW MILE RESULT'
+          : (isCompleted ? 'WORKOUT COMPLETE' : getActionCopy(workout, completion));
     action.disabled = skipped
       ? true
       : actionType === 'view-results'
@@ -2886,7 +3071,7 @@ export async function initAthleteShell(hooks) {
     });
   });
   window.addEventListener('ringready:sprint-session-saved', () => {
-    noteCompletionMutation();
+    noteSprintMutation();
     renderShell();
   });
 
@@ -2922,7 +3107,7 @@ export async function initAthleteShell(hooks) {
   }
 }
 
-export { completeWorkoutFromDetail, saveMileTestResult };
+export { completeWorkoutFromDetail, saveMileTestResult, saveWorkoutNoteFromDetail };
 
 export const cloudHydrationTestHooks = {
   renderShell,
@@ -2935,7 +3120,13 @@ export const cloudHydrationTestHooks = {
   invalidateCloudHydration,
   getHydrationGeneration: () => hydrationGeneration,
   getCompletionMutationEpoch: () => completionMutationEpoch,
+  getSprintMutationEpoch: () => sprintMutationEpoch,
+  getMileMutationEpoch: () => mileMutationEpoch,
   noteCompletionMutation,
+  noteSprintMutation,
+  noteMileMutation,
+  shouldApplySprintHydration,
+  shouldApplyMileHydration,
   boundedCloudLoad,
   applyCloudHydrationResults,
   runCloudHydrationMaintenance,
