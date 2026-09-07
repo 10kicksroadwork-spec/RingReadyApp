@@ -849,11 +849,8 @@ function bindGateEvents() {
 }
 
 export async function enforceAthleteOnboarding({ showScreen }) {
-<<<<<<< HEAD
-  const owner = captureAthleteOperation();
-=======
   if (doesActiveSprintOwnNavigation()) return false;
->>>>>>> 1dad2b1 (fix(sprint): keep active session authoritative across app background)
+  const owner = captureAthleteOperation();
   if (!isSupabaseConfigured || !getCurrentUser() || isCoachUser()) return false;
 
   ensureStyles();

@@ -1,4 +1,4 @@
-import { captureAthleteOperation, isAthleteOperationCurrent, ownedResult, runAthleteMutation } from './athlete-operation.js';
+import { captureAthleteOperation, isAthleteOperationCurrent, ownedResult, runAthleteMutation, AthleteMutationBusyError, isAssignmentBusy } from './athlete-operation.js';
 import { invalidateAthleteOperations } from './athlete-operation.js';
 import { readWorkoutDraft, saveWorkoutDraft, clearWorkoutDraft, clearAthleteDrafts } from './workout-draft.js';
 import {
@@ -295,6 +295,7 @@ function clearAccountLocalData(explicitUserId = '') {
   if (userId) {
     clearSyncQueueForUser(userId);
     clearActiveSessionCheckpoint(userId);
+    clearAthleteDrafts(userId);
   }
   clearSharedLocalState();
   resetAthleteRuntimeState();
@@ -517,6 +518,8 @@ function prepareAccountSwitchSafety() {
   } else {
     const lastUserId = ownerResult.value;
     if (shouldApplyAccountIdentityBoundary(lastUserId, user.id)) {
+      // Clear outgoing athlete drafts before identity boundary wipe.
+      if (lastUserId) clearAthleteDrafts(String(lastUserId));
       applyAccountIdentityBoundary();
     }
   }
@@ -1724,6 +1727,7 @@ function updateDetailCompletionState() {
     clearBtn.hidden = !completion;
     clearBtn.textContent = 'Clear Log';
   }
+  syncAssignmentMutationControls(action.dataset.weekIndex, action.dataset.workoutIndex);
 }
 function normalizeDetailDurationInput() {
   const input = document.getElementById('detail-total-minutes-input');
@@ -1799,6 +1803,56 @@ function flushQueuedEvent(cloudMessage) {
     if (cloudMessage) shellHooks?.showToast?.(cloudMessage);
   });
 }
+
+function toastIfMutationBusy(error) {
+  if (error?.busy || error instanceof AthleteMutationBusyError) {
+    shellHooks?.showToast?.(error.message || 'SAVE IN PROGRESS — TRY AGAIN IN A MOMENT');
+    return true;
+  }
+  return false;
+}
+
+function syncAssignmentMutationControls(weekIndex, workoutIndex) {
+  const key = `${Number(weekIndex)}:${Number(workoutIndex)}`;
+  const busy = isAssignmentBusy(key);
+  const action = document.getElementById('detail-action-btn');
+  const clearBtn = document.getElementById('detail-clear-completion-btn');
+  const skipBtn = document.getElementById('detail-skip-workout-btn');
+  const skipConfirm = document.getElementById('detail-skip-confirm-btn');
+  if (action && action.dataset.action === 'complete-workout'
+    && String(action.dataset.weekIndex) === String(weekIndex)
+    && String(action.dataset.workoutIndex) === String(workoutIndex)) {
+    if (busy) action.disabled = true;
+  }
+  if (clearBtn
+    && String(clearBtn.dataset.weekIndex) === String(weekIndex)
+    && String(clearBtn.dataset.workoutIndex) === String(workoutIndex)) {
+    clearBtn.disabled = busy;
+  }
+  if (skipBtn
+    && String(skipBtn.dataset.weekIndex) === String(weekIndex)
+    && String(skipBtn.dataset.workoutIndex) === String(workoutIndex)) {
+    skipBtn.disabled = busy;
+  }
+  if (skipConfirm) skipConfirm.disabled = busy;
+}
+
+async function runAssignmentMutation(weekIndex, workoutIndex, operation, task) {
+  const key = `${Number(weekIndex)}:${Number(workoutIndex)}`;
+  syncAssignmentMutationControls(weekIndex, workoutIndex);
+  try {
+    return await runAthleteMutation(key, operation, async (owner) => {
+      syncAssignmentMutationControls(weekIndex, workoutIndex);
+      return task(owner);
+    });
+  } catch (error) {
+    if (toastIfMutationBusy(error)) return;
+    throw error;
+  } finally {
+    syncAssignmentMutationControls(weekIndex, workoutIndex);
+  }
+}
+
 async function completeWorkoutFromDetail(weekIndex, workoutIndex) {
   const owner = captureAthleteOperation();
   const safeWeekIndex = Number(weekIndex);
@@ -1810,7 +1864,7 @@ async function completeWorkoutFromDetail(weekIndex, workoutIndex) {
     return;
   }
 
-  return runAthleteMutation(`${safeWeekIndex}:${safeWorkoutIndex}`, async () => withSavingButton(action, async () => {
+  return runAssignmentMutation(safeWeekIndex, safeWorkoutIndex, 'complete', async () => withSavingButton(action, async () => {
     const week = getWeek(safeWeekIndex);
     const workout = week.workouts[safeWorkoutIndex] || week.workouts[0];
     const workoutLog = readDetailWorkoutLog();
@@ -1879,7 +1933,7 @@ async function completeWorkoutFromDetail(weekIndex, workoutIndex) {
   })).finally(() => { if (isAthleteOperationCurrent(owner)) updateDetailCompletionState(); });
 }
 async function clearCompletionFromDetail(weekIndex, workoutIndex) {
-  return runAthleteMutation(`${Number(weekIndex)}:${Number(workoutIndex)}`, (owner) => clearCompletionFromDetailOwned(weekIndex, workoutIndex, owner));
+  return runAssignmentMutation(weekIndex, workoutIndex, 'clear', (owner) => clearCompletionFromDetailOwned(weekIndex, workoutIndex, owner));
 }
 async function clearCompletionFromDetailOwned(weekIndex, workoutIndex, owner) {
   const safeWeekIndex = Number(weekIndex);
@@ -1946,7 +2000,9 @@ function openDetailSkipCard() {
 
 async function confirmSkipWorkoutFromDetail() {
   const action = document.getElementById('detail-action-btn');
-  return runAthleteMutation(`${Number(action?.dataset.weekIndex)}:${Number(action?.dataset.workoutIndex)}`, (owner) => confirmSkipWorkoutOwned(owner));
+  const weekIndex = Number(action?.dataset.weekIndex);
+  const workoutIndex = Number(action?.dataset.workoutIndex);
+  return runAssignmentMutation(weekIndex, workoutIndex, 'skip', (owner) => confirmSkipWorkoutOwned(owner));
 }
 async function confirmSkipWorkoutOwned(owner) {
   const action = document.getElementById('detail-action-btn');
@@ -2415,7 +2471,8 @@ async function saveMileTestResult() {
   const proofContext = getActiveMileProofContext();
   const testKey = proofContext.testKey || 'mile';
 
-  return runAthleteMutation(`mile:${testKey}`, async () => withSavingButton(button, async () => {
+  try {
+    return await runAthleteMutation(`mile:${testKey}`, 'mile-save', async () => withSavingButton(button, async () => {
     const existingMile = getMileTestResult();
     const result = { id: makeWorkoutCompletionId(), testKey: proofContext.testKey, distance, totalMinutes, totalSeconds: duration?.totalSeconds ?? Math.round(totalMinutes * 60), totalTimeDisplay: duration?.display || '', avgBpm, maxBpm, paceMinPerMile: distance > 0 ? totalMinutes / distance : '', savedAt: new Date().toISOString() };
     result.assignedResults = [...(existingMile?.assignedResults || []),
@@ -2510,6 +2567,10 @@ async function saveMileTestResult() {
       shellHooks?.showToast?.(maxBpm > 0 ? 'MILE TEST SAVED + MAX HR UPDATED' : 'MILE TEST SAVED');
     }
   })).finally(() => { if (isAthleteOperationCurrent(owner)) updateMileCompletionState(); });
+  } catch (error) {
+    if (toastIfMutationBusy(error)) return;
+    throw error;
+  }
 }
 function renderDrawerWeeks() {
   const root = document.getElementById('drawer-week-list');
@@ -2689,6 +2750,7 @@ function openWorkoutDetail(weekIndex, workoutIndex) {
     clearBtn.dataset.weekIndex = String(safeWeekIndex);
     clearBtn.dataset.workoutIndex = String(safeWorkoutIndex);
   }
+  syncAssignmentMutationControls(safeWeekIndex, safeWorkoutIndex);
   shellHooks?.showScreen('workout-detail');
   setActiveNavigation('');
 }

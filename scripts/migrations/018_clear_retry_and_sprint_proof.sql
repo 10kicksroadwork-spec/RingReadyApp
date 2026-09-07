@@ -107,15 +107,28 @@ begin
     end if;
   end if;
 
-  -- The result remains recoverable, but a cleared proof must not be restored
-  -- from sprint_sessions on another device or after cold launch.
+  -- Prefer session_id = client_record_id. For legacy rows with a missing/stale
+  -- client_record_id, fall back to the known attachment + assignment only.
+  -- Never broadly clear every historical Sprint in the same week/workout.
   update public.sprint_sessions
   set attachment_id = null,
       proof_policy_version = null,
       session_json = coalesce(session_json, '{}'::jsonb)
         - 'attachment' - 'proofPolicyVersion' - 'completedAt' - 'completionKey',
       updated_at = now()
-  where user_id = v_user_id and session_id = v_client_record_id;
+  where user_id = v_user_id
+    and (
+      (
+        coalesce(v_client_record_id, '') <> ''
+        and session_id = v_client_record_id
+      )
+      or (
+        v_attachment_id is not null
+        and attachment_id = v_attachment_id
+        and week_index = p_week_index
+        and workout_index = p_workout_index
+      )
+    );
 
   delete from public.workout_completions
   where id = v_completion_id

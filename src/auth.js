@@ -544,6 +544,7 @@ export async function clearCloudWorkoutCompletionWithProof(weekIndex, workoutInd
   if (!isSupabaseConfigured || !supabase || !user) return false;
   const week = Number(weekIndex);
   const workout = Number(workoutIndex);
+  const completionKey = `${week}:${workout}`;
   const params = {
     p_week_index: week,
     p_workout_index: workout,
@@ -556,12 +557,19 @@ export async function clearCloudWorkoutCompletionWithProof(weekIndex, workoutInd
     if (error) throw error;
   } catch (error) {
     if (error.accountChanged) throw error;
-    // A missing row after a failed/unknown clear is authoritative success.
-    const { data: remaining, error: readError } = await ownedResult(owner, withOperationTimeout(
-      supabase.from('workout_completions').select('id').eq('user_id', user.id)
-        .eq('week_index', week).eq('workout_index', workout).maybeSingle(),
-      { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_HYDRATION, operation: 'clear_reconcile' }));
-    if (readError || remaining) throw error;
+    // Ambiguous RPC failure: prove absence through BOTH canonical identities.
+    // A legacy row may survive only by completion_key or only by week/workout.
+    const [byKey, byPosition] = await Promise.all([
+      ownedResult(owner, withOperationTimeout(
+        supabase.from('workout_completions').select('id').eq('user_id', user.id)
+          .eq('completion_key', completionKey).maybeSingle(),
+        { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_HYDRATION, operation: 'clear_reconcile_key' })),
+      ownedResult(owner, withOperationTimeout(
+        supabase.from('workout_completions').select('id').eq('user_id', user.id)
+          .eq('week_index', week).eq('workout_index', workout).maybeSingle(),
+        { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_HYDRATION, operation: 'clear_reconcile_position' })),
+    ]);
+    if (byKey.error || byPosition.error || byKey.data || byPosition.data) throw error;
   }
   return true;
 }

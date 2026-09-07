@@ -1,4 +1,4 @@
-import { captureAthleteOperation, isAthleteOperationCurrent, ownedResult, runAthleteMutation } from './athlete-operation.js';
+import { captureAthleteOperation, isAthleteOperationCurrent, ownedResult, runAthleteMutation, AthleteMutationBusyError } from './athlete-operation.js';
 import {
   AUTO_START_NEXT_SPRINT,
   AUTO_START_DELAY_MS,
@@ -1181,14 +1181,9 @@ export async function finishSession() {
     else if (result.status === 'not-configured') showToast('SESSION SAVED LOCALLY');
     else if (result.status === 'offline') showToast('OFFLINE - SAVED LOCALLY');
   });
-<<<<<<< HEAD
+  setActiveSprintOwnsNavigation(false);
   setTimeout(() => { if (isAthleteOperationCurrent(owner)) buildResults(activeResultRecord); }, 600);
   setTimeout(() => { if (isAthleteOperationCurrent(owner)) showScreen('results'); }, 1000);
-=======
-  setActiveSprintOwnsNavigation(false);
-  setTimeout(() => buildResults(activeResultRecord), 600);
-  setTimeout(() => showScreen('results'), 1000);
->>>>>>> 1dad2b1 (fix(sprint): keep active session authoritative across app background)
 }
 
 function getRecordContext(record) {
@@ -1365,7 +1360,8 @@ export async function completeWorkout() {
   const owner = captureAthleteOperation();
   const button = document.getElementById('complete-workout-btn');
 
-  return runAthleteMutation(recordId, async () => withSavingButton(button, async () => {
+  try {
+    return await runAthleteMutation(recordId, 'sprint-complete', async () => withSavingButton(button, async () => {
     const isNewProof = hasPendingWorkoutProof('sprint');
     try {
       if (isSupabaseConfigured && getCurrentUser()) {
@@ -1425,12 +1421,31 @@ export async function completeWorkout() {
     showToast(!local.localCacheOk && isSupabaseConfigured && getCurrentUser()
       ? 'SAVED TO ACCOUNT · LOCAL CACHE WILL REFRESH'
       : 'WORKOUT COMPLETE');
-  })).finally(() => { if (isAthleteOperationCurrent(owner)) updateCompleteWorkoutButton(activeResultRecord); });
+    })).finally(() => { if (isAthleteOperationCurrent(owner)) updateCompleteWorkoutButton(activeResultRecord); });
+  } catch (error) {
+    if (error?.busy || error instanceof AthleteMutationBusyError) {
+      showToast(error.message || 'SAVE IN PROGRESS — TRY AGAIN IN A MOMENT');
+      return;
+    }
+    throw error;
+  }
 }
 
 export async function clearResultWorkoutCompletion() {
   const context = getRecordContext(activeResultRecord);
-  return runAthleteMutation(`${context?.weekIndex}:${context?.workoutIndex}`, (owner) => clearResultWorkoutCompletionOwned(owner));
+  try {
+    return await runAthleteMutation(
+      `${context?.weekIndex}:${context?.workoutIndex}`,
+      'clear',
+      (owner) => clearResultWorkoutCompletionOwned(owner),
+    );
+  } catch (error) {
+    if (error?.busy || error instanceof AthleteMutationBusyError) {
+      showToast(error.message || 'SAVE IN PROGRESS — TRY AGAIN IN A MOMENT');
+      return;
+    }
+    throw error;
+  }
 }
 async function clearResultWorkoutCompletionOwned(owner) {
   const context = getRecordContext(activeResultRecord);
