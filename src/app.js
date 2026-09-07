@@ -80,6 +80,10 @@ import {
   initWorkoutProof,
 } from './proof.js';
 import {
+  doesActiveSprintOwnNavigation,
+  setActiveSprintOwnsNavigation,
+} from './sprint-navigation.js';
+import {
   showScreen,
   setStatus,
   setTimerDisplay,
@@ -178,6 +182,7 @@ export function resetSprintRuntimeForAccountBoundary() {
   finishedSessionDurable = false;
   activeSessionId = '';
   activeSessionOwnerId = '';
+  setActiveSprintOwnsNavigation(false);
   Object.assign(state, {
     phase: 'idle',
     currentRep: 0,
@@ -352,12 +357,18 @@ function resumeActiveSession(checkpoint = loadActiveSessionCheckpoint()) {
   }
   restoreSessionUI();
   resumeActivePhaseUI();
+  setActiveSprintOwnsNavigation(true);
   showScreen('session');
   persistSessionCheckpoint();
   return true;
 }
 
 export function tryAutoResumeActiveSession() {
+  if (doesActiveSprintOwnNavigation() && state.phase !== 'idle' && state.phase !== 'done') {
+    showScreen('session');
+    return true;
+  }
+
   const checkpoint = loadActiveSessionCheckpoint();
   if (!isCheckpointResumable(checkpoint) || !checkpointHasProgress(checkpoint)) {
     if (checkpoint && !isCheckpointResumable(checkpoint)) clearActiveSessionCheckpoint();
@@ -372,7 +383,23 @@ export function tryAutoResumeActiveSession() {
   return true;
 }
 
+export function resumeActiveSprintIfPresent() {
+  return tryAutoResumeActiveSession();
+}
+
+export function restoreActiveSprintScreenIfPresent() {
+  if (state.phase !== 'idle' && state.phase !== 'done') {
+    setActiveSprintOwnsNavigation(true);
+    showScreen('session');
+    return true;
+  }
+  return tryAutoResumeActiveSession();
+}
+
 export function reconcileActiveSessionAfterBackground() {
+  const hadInMemorySession = state.phase !== 'idle' && state.phase !== 'done';
+  restoreActiveSprintScreenIfPresent();
+  if (!hadInMemorySession) return;
   if (state.phase === 'done') return;
   if (!hasActiveSessionCheckpoint()) return;
 
@@ -388,7 +415,7 @@ export function reconcileActiveSessionAfterBackground() {
   }
 }
 
-function bindSessionPersistence() {
+export function bindSessionPersistence() {
   if (sessionPersistenceBound) return;
   sessionPersistenceBound = true;
 
@@ -405,8 +432,7 @@ function bindSessionPersistence() {
     persistSessionCheckpoint();
   });
 
-  window.addEventListener('pageshow', (event) => {
-    if (!event.persisted) return;
+  window.addEventListener('pageshow', () => {
     recoverAudioAfterBackground();
     reconcileActiveSessionAfterBackground();
   });
@@ -596,6 +622,7 @@ function runStartSession({ forceFresh = false } = {}) {
   resetChips();
   setRing(1, false);
   showScreen('session');
+  setActiveSprintOwnsNavigation(true);
   syncHoldToCancelLabels();
   persistSessionCheckpoint();
 }
@@ -1096,6 +1123,7 @@ export function cancelSession() {
 
   activeSessionId = '';
   activeSessionOwnerId = '';
+  setActiveSprintOwnsNavigation(false);
   showScreen('home');
   showToast('SESSION CANCELLED');
 }
@@ -1153,8 +1181,14 @@ export async function finishSession() {
     else if (result.status === 'not-configured') showToast('SESSION SAVED LOCALLY');
     else if (result.status === 'offline') showToast('OFFLINE - SAVED LOCALLY');
   });
+<<<<<<< HEAD
   setTimeout(() => { if (isAthleteOperationCurrent(owner)) buildResults(activeResultRecord); }, 600);
   setTimeout(() => { if (isAthleteOperationCurrent(owner)) showScreen('results'); }, 1000);
+=======
+  setActiveSprintOwnsNavigation(false);
+  setTimeout(() => buildResults(activeResultRecord), 600);
+  setTimeout(() => showScreen('results'), 1000);
+>>>>>>> 1dad2b1 (fix(sprint): keep active session authoritative across app background)
 }
 
 function getRecordContext(record) {
@@ -1541,6 +1575,7 @@ export function newSession() {
     capturedRestHR: null,
   });
 
+  setActiveSprintOwnsNavigation(false);
   showScreen('home');
 }
 
@@ -1552,6 +1587,10 @@ export const sprintLifecycleTestHooks = {
   resetSprintRuntimeForAccountBoundary,
   canMutateCheckpointForCurrentUser,
   bindActiveSessionOwner,
+  bindSessionPersistence,
+  tryAutoResumeActiveSession,
+  resumeActiveSprintIfPresent,
+  restoreActiveSprintScreenIfPresent,
   getTimerCheckpoint: () => ({ ...timerCheckpoint }),
   seedTimerCheckpointForTest(partial = {}) {
     Object.assign(timerCheckpoint, partial);

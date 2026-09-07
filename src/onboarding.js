@@ -16,6 +16,7 @@ import {
 import { isSupabaseConfigured, supabase } from './supabase-client.js';
 import { getAthleteProfile, saveAthleteProfile } from './sync.js';
 import { readJSONValue, writeJSON } from './safe-storage.js';
+import { doesActiveSprintOwnNavigation } from './sprint-navigation.js';
 
 const ONBOARDING_SCREEN_ID = 'onboarding-gate';
 const ONBOARDING_STYLE_ID = 'ring-ready-onboarding-styles';
@@ -848,7 +849,11 @@ function bindGateEvents() {
 }
 
 export async function enforceAthleteOnboarding({ showScreen }) {
+<<<<<<< HEAD
   const owner = captureAthleteOperation();
+=======
+  if (doesActiveSprintOwnNavigation()) return false;
+>>>>>>> 1dad2b1 (fix(sprint): keep active session authoritative across app background)
   if (!isSupabaseConfigured || !getCurrentUser() || isCoachUser()) return false;
 
   ensureStyles();

@@ -89,6 +89,7 @@ import {
   syncCoachPreviewChrome,
 } from './coach-preview.js';
 import { beginAccountBoundaryHRDisconnect, hrState } from './hr-service.js';
+import { doesActiveSprintOwnNavigation } from './sprint-navigation.js';
 import {
   archiveAndResetCamp,
   clearAuthRedirectParams,
@@ -489,6 +490,7 @@ function renderAllPages() {
 }
 function enterAppHome() {
   renderAllPages();
+  if (doesActiveSprintOwnNavigation()) return;
   if (openCoachPreviewIfRequested()) return;
   shellHooks?.showScreen('home');
   setActiveNavigation('home');
@@ -738,6 +740,7 @@ async function hydrateCloudDataInBackground() {
 
 function enterSignedInAthleteHome() {
   prepareAccountSwitchSafety();
+  shellHooks?.resumeActiveSprintIfPresent?.();
   enterAppHome();
   hydrateCloudDataInBackground().catch((error) => {
     console.warn('Background cloud hydration failed', error);
@@ -2563,6 +2566,9 @@ function maybeShowOnboarding() {
 }
 function navigateTo(screenId) {
   closeWeekDrawer();
+  if (doesActiveSprintOwnNavigation() && screenId !== 'session' && screenId !== 'results' && screenId !== 'auth') {
+    screenId = 'session';
+  }
   if (isCoachScreen(screenId) && !canAccessCoachScreens()) screenId = 'home';
   if (isCoachUser() && !isCoachScreen(screenId)) screenId = 'coach-dashboard';
   renderPage(screenId);
@@ -2826,8 +2832,8 @@ export async function initAthleteShell(hooks) {
   renderAuthUI();
 
   if (!isSupabaseConfigured) {
+    shellHooks?.resumeActiveSprintIfPresent?.();
     enterAppHome();
-    openCoachPreviewIfRequested();
     return;
   }
 
@@ -2846,7 +2852,7 @@ export async function initAthleteShell(hooks) {
     }
     if (!isCoachUser()) enterSignedInAthleteHome();
     else enterSignedInCoachHome();
-    openCoachPreviewIfRequested();
+    if (!doesActiveSprintOwnNavigation()) openCoachPreviewIfRequested();
   } catch (error) {
     console.warn('Supabase auth init failed', error);
     showAuthScreen('Could not connect to accounts. Try refreshing in a moment.');
@@ -2873,6 +2879,7 @@ export const cloudHydrationTestHooks = {
   runCloudHydrationMaintenance,
   hydrateCloudDataInBackground,
   enterSignedInAthleteHome,
+  enterAppHome,
   rehydrateWorkoutCompletionFromCloud,
   scheduleTargetedWorkoutRehydrate,
   prepareAccountSwitchSafety,
