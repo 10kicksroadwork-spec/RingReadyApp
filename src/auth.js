@@ -247,7 +247,7 @@ export async function loadCoachRosterPayload() {
     loadCoachTable('hr_info', 'user_id,max_hr,resting_hr,goal_weight,target_date,updated_at'),
     loadCoachTable('workout_completions', 'user_id,completion_key,week_index,workout_index,week_label,week_title,day_of_week,workout_type,description,warmup,target_zone,target_bpm,total_minutes,total_seconds,avg_bpm,max_bpm,distance,modality,output_type,output_value,avg_watts,completed_at,attachment_id,proof_pending,record_json,updated_at'),
     loadCoachTable('sprint_sessions', 'user_id,session_id,session_at,week_index,workout_index,workout_type,avg_drop,peak_hr,intervals_completed,attachment_id,session_json,updated_at'),
-    loadCoachTable('mile_tests', 'user_id,test_key,saved_at,distance,total_minutes,avg_bpm,max_bpm,attachment_id,proof_pending,result_json,updated_at'),
+    loadCoachTable('mile_tests', 'user_id,test_key,saved_at,distance,total_minutes,total_seconds,avg_bpm,max_bpm,attachment_id,proof_pending,result_json,test_context_json,updated_at'),
     loadCoachTable('coach_notes', 'athlete_user_id,note,updated_at'),
     client.rpc('coach_roster_identities').then(({ data, error }) => {
       if (error) throw error;
@@ -277,6 +277,18 @@ export async function loadCoachRosterPayload() {
   if (identitiesResult.status === 'rejected') sourceErrors.identities = settledError(identitiesResult);
   if (attachmentsResult.status === 'rejected') sourceErrors.attachments = settledError(attachmentsResult);
   if (profilesResult.status === 'rejected') throw profilesResult.reason;
+  const sources = {
+    profiles: profilesResult.status === 'fulfilled',
+    hrRows: hrResult.status === 'fulfilled',
+    completions: completionsResult.status === 'fulfilled',
+    sprints: sprintsResult.status === 'fulfilled',
+    mileTests: mileTestsResult.status === 'fulfilled',
+    notes: notesResult.status === 'fulfilled',
+    identities: identitiesResult.status === 'fulfilled',
+    exclusions: exclusionsResult.status === 'fulfilled',
+    meta: metaResult.status === 'fulfilled',
+    attachments: attachmentsResult.status === 'fulfilled',
+  };
   return {
     profiles: settledRows(profilesResult),
     hrRows: settledRows(hrResult),
@@ -289,6 +301,7 @@ export async function loadCoachRosterPayload() {
     meta: settledRows(metaResult),
     attachments: settledRows(attachmentsResult),
     sourceErrors,
+    sources,
   };
 }
 
