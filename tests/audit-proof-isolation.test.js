@@ -128,4 +128,22 @@ describe('Bravo completion integration', () => {
     expect(document.body.textContent).not.toContain('athlete-a-private-proof.png');
     mockUser.id = 'user-a';
   });
+
+  it('preserves pending local proof when explicit existingAttachment:null is passed on same key', async () => {
+    const proof = await import('../src/proof.js');
+    proof.__resetProofStateForTest();
+    document.body.innerHTML = '<div data-proof-host="detail"></div>';
+    proof.initWorkoutProof('detail', { proofKey: 'program:7:0:1', context: {} });
+    const stateBefore = proof.__getProofStateForTest('detail');
+    stateBefore.processed = { blob: new Blob(['pending']), width: 10, height: 10, mimeType: 'image/png' };
+    stateBefore.filename = 'pending-proof.png';
+    stateBefore.previewUrl = 'blob:pending';
+    proof.initWorkoutProof('detail', {
+      proofKey: 'program:7:0:1',
+      context: {},
+      existingAttachment: null,
+    });
+    expect(proof.hasPendingWorkoutProof('detail')).toBe(true);
+    expect(proof.__getProofStateForTest('detail').existingAttachment).toBeNull();
+  });
 });

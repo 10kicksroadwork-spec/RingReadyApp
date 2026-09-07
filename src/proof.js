@@ -484,7 +484,11 @@ export function initWorkoutProof(surface, options = {}) {
 
   if (sameProofKey && previous) {
     if (options.context) previous.context = options.context;
-    if (options.existingAttachment) previous.existingAttachment = options.existingAttachment;
+    // Explicit null clears authoritative cloud attachment without wiping a
+    // genuine local pending processed proof still staged on this surface.
+    if ('existingAttachment' in options) {
+      previous.existingAttachment = options.existingAttachment;
+    }
     if ('legacy' in options) previous.legacy = !!options.legacy;
     render(surface);
     emitState(surface);
@@ -496,7 +500,7 @@ export function initWorkoutProof(surface, options = {}) {
     ownerId,
     proofKey: options.proofKey,
     context: options.context || {},
-    existingAttachment: options.existingAttachment || null,
+    existingAttachment: ('existingAttachment' in options) ? (options.existingAttachment || null) : null,
     legacy: !!options.legacy,
     processed: null,
     filename: '',
@@ -509,7 +513,10 @@ export function initWorkoutProof(surface, options = {}) {
     error: '',
   });
   restoreProofDraft(states.get(surface));
-  if (options.existingAttachment) states.get(surface).existingAttachment = options.existingAttachment;
+  const nextState = states.get(surface);
+  if ('existingAttachment' in options) {
+    nextState.existingAttachment = options.existingAttachment;
+  }
   render(surface);
   emitState(surface);
 }
