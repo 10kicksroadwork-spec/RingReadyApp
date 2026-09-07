@@ -1,3 +1,5 @@
+import { captureAthleteOperation, ownedResult } from './athlete-operation.js';
+import { withOperationTimeout, OPERATION_TIMEOUT_MS } from './operation-timeout.js';
 import { isCoachEmail } from './coach-access.js';
 import {
   buildMileTestCloudPayload,
@@ -547,8 +549,20 @@ export async function clearCloudWorkoutCompletionWithProof(weekIndex, workoutInd
     p_workout_index: workout,
     p_attachment_id: attachmentId || null,
   };
-  const { error } = await supabase.rpc('clear_workout_completion_with_proof', params);
-  if (error) throw error;
+  const owner = captureAthleteOperation();
+  try {
+    const { error } = await ownedResult(owner, withOperationTimeout(supabase.rpc('clear_workout_completion_with_proof', params),
+      { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_COMPLETION, operation: 'clear_completion' }));
+    if (error) throw error;
+  } catch (error) {
+    if (error.accountChanged) throw error;
+    // A missing row after a failed/unknown clear is authoritative success.
+    const { data: remaining, error: readError } = await ownedResult(owner, withOperationTimeout(
+      supabase.from('workout_completions').select('id').eq('user_id', user.id)
+        .eq('week_index', week).eq('workout_index', workout).maybeSingle(),
+      { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_HYDRATION, operation: 'clear_reconcile' }));
+    if (readError || remaining) throw error;
+  }
   return true;
 }
 
@@ -589,22 +603,13 @@ export async function saveCloudSprintSession(record) {
 export async function loadCloudMileTest(testKey = '') {
   const user = getCurrentUser();
   if (!isSupabaseConfigured || !supabase || !user) return null;
-
-  let query = supabase
-    .from('mile_tests')
-    .select('*')
-    .eq('user_id', user.id);
-
+  let query = supabase.from('mile_tests').select('*').eq('user_id', user.id);
   if (testKey) query = query.eq('test_key', testKey);
-
-  const { data, error } = await query
-    .order('saved_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
+  const { data, error } = await query.order('saved_at', { ascending: false }).limit(50);
   if (error) throw error;
-  if (!isVisibleCompletionRow(data)) return null;
-  return mapCloudMileTest(data);
+  const results = (data || []).filter(isVisibleCompletionRow).map(mapCloudMileTest);
+  if (!results.length) return null;
+  return { ...results[0], assignedResults: results.filter((row) => /^program:/.test(row.testKey)) };
 }
 
 export async function ensureCloudMileTestIdentity(result, hrInfo, testContext) {

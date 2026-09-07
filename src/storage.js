@@ -63,7 +63,7 @@ export function buildSessionRecord(cfg, data, sessionId = '') {
 
 export function persistSessionRecord(record, { cloudPending = false } = {}) {
   try {
-    const sessions = readJSON(STORAGE_KEY, []);
+    const sessions = readJSON(STORAGE_KEY, []).filter((entry) => entry.id !== record.id);
     const nextRecord = cloudPending ? { ...record, cloudPending: true } : record;
     sessions.unshift(nextRecord);
     if (sessions.length > MAX_STORED_SESSIONS) sessions.length = MAX_STORED_SESSIONS;

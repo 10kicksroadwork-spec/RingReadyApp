@@ -1,4 +1,5 @@
-﻿import {
+﻿import { captureAthleteOperation, isAthleteOperationCurrent } from './athlete-operation.js';
+import {
   CIRCUMFERENCE,
   REST_LOG_ALERT_HZ,
   REST_LOG_ALERT_MS,
@@ -656,6 +657,7 @@ export function setRing(progress, isSprint) {
 let toastTimer = null;
 
 export async function withSavingButton(button, task, { savingLabel = 'SAVING...' } = {}) {
+  const owner = captureAthleteOperation();
   if (!button) return task();
   const previousText = button.textContent;
   const wasDisabled = button.disabled;
@@ -665,9 +667,11 @@ export async function withSavingButton(button, task, { savingLabel = 'SAVING...'
   try {
     return await task();
   } finally {
-    button.removeAttribute('aria-busy');
-    button.textContent = previousText;
-    button.disabled = wasDisabled;
+    if (isAthleteOperationCurrent(owner)) {
+      button.removeAttribute('aria-busy');
+      button.textContent = previousText;
+      button.disabled = wasDisabled;
+    }
   }
 }
 

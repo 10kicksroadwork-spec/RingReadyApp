@@ -30,6 +30,7 @@ Auth-touching migrations: `000`–`006`, `009`, `012`–`013`, `015`–`016`.
 | 16 | [015_clear_workout_completion_with_proof.sql](./migrations/015_clear_workout_completion_with_proof.sql) | Transactional completion clear + proof attachment reconcile RPC |
 | 17 | [016_idempotent_proof_attachment.sql](./migrations/016_idempotent_proof_attachment.sql) | Same-path proof RPC idempotency for safe mobile retries |
 | 18 | [017_workout_completion_position_unique.sql](./migrations/017_workout_completion_position_unique.sql) | Document/ensure UNIQUE(user_id, week_index, workout_index) matching production |
+| 19 | [018_clear_retry_and_sprint_proof.sql](./migrations/018_clear_retry_and_sprint_proof.sql) | Idempotent clear and atomic removal of cleared proof from Sprint recovery |
 
 ## Fresh database
 
@@ -41,9 +42,10 @@ These migrations use `if not exists` / `drop policy if exists` patterns and are 
 
 For the Sprint proof-gap hotfix on an existing database that already ran 000–007, run **008** then **009** in the Supabase SQL editor before deploying the coach hotfix client.
 
+
 ## Production deployment procedure
 
-1. Apply Supabase migrations **000–017** in the table above (required through attachment write revoke, modality output columns, transactional clear RPC, idempotent proof RPC, and positional workout uniqueness).
+1. Apply Supabase migrations **000–018** in the table above (required through attachment write revoke, modality output columns, transactional clear RPC, idempotent proof RPC, and positional workout uniqueness).
 2. Configure production Apps Script Script Property `RING_READY_SYNC_RELAY_SECRET` matching the Vercel relay environment.
 3. Deploy the compatible client to Vercel with client-side:
    - `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY`
@@ -75,3 +77,5 @@ This job is a **production deploy gate**, not a PR merge gate. Configure Vercel 
 ## Legacy scripts
 
 Older ad-hoc files live in [../legacy/](../legacy/) for reference only.
+
+Athlete recovery release requires **018_clear_retry_and_sprint_proof.sql** before client promotion. The live contract gate now checks a repeated clear. Do not promote before this passes.

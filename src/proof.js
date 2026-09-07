@@ -1,3 +1,5 @@
+import { captureAthleteOperation, isAthleteOperationCurrent, ownedResult } from './athlete-operation.js';
+import { readJSONValue, writeJSON, removeStorageKey } from './safe-storage.js';
 import './proof.css';
 import { getCurrentUser } from './auth.js';
 import { isSupabaseConfigured, supabase } from './supabase-client.js';
@@ -33,6 +35,55 @@ const IMAGE_EXTENSION_PATTERN = /\.(jpe?g|png|webp|heic|heif)$/i;
 const states = new Map();
 let listenersBound = false;
 let cachedCanvasOutputMimeType = '';
+
+function proofDraftKey(state) { return `ringReadyProofDraft:${state.ownerId}:${state.proofKey}`; }
+function saveProofDraft(state) {
+  if (state.ownerId !== (getCurrentUser()?.id || 'local-athlete')) return;
+  const result = writeJSON(proofDraftKey(state), {
+    dataUrl: state.dataUrl || '', filename: state.filename, uploadId: state.uploadId,
+    storagePath: state.storagePath, ambiguousRpcPending: state.ambiguousRpcPending,
+    ambiguousLinkedRecordId: state.ambiguousLinkedRecordId, existingAttachment: state.existingAttachment,
+    width: state.processed?.width, height: state.processed?.height, mimeType: state.processed?.mimeType,
+  });
+  if (!result.persisted) state.recoveryWarning = 'Keep this tab open until saved. This device could not keep a recovery copy of the screenshot.';
+}
+function restoreProofDraft(state) {
+  const saved = readJSONValue(proofDraftKey(state), null);
+  if (!saved) return;
+  try {
+    Object.assign(state, saved);
+    if (saved.dataUrl) {
+      const bytes = Uint8Array.from(atob(saved.dataUrl.split(',')[1]), (c) => c.charCodeAt(0));
+      const blob = new Blob([bytes], { type: saved.mimeType || 'image/jpeg' });
+      state.processed = { blob, width: saved.width, height: saved.height, mimeType: blob.type };
+      state.previewUrl = URL.createObjectURL(blob);
+    }
+  } catch {
+    removeStorageKey(proofDraftKey(state));
+    state.processed = null;
+    state.error = 'Choose the screenshot again. Its recovery copy could not be read.';
+  }
+}
+function blobDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error('Could not keep a recovery copy of this screenshot.'));
+    reader.readAsDataURL(blob);
+  });
+}
+window.addEventListener('ringready:account-boundary', () => {
+  for (const state of states.values()) revokePreview(state);
+  states.clear();
+  document.querySelectorAll('[data-proof-host]').forEach((host) => { host.innerHTML = ''; });
+});
+window.addEventListener('ringready:proof-forget', (event) => {
+  const state = states.get(event.detail?.surface);
+  if (!state) return;
+  removeStorageKey(proofDraftKey(state));
+  revokePreview(state);
+  states.delete(event.detail.surface);
+});
 
 function resolveImageMimeType(file) {
   const type = String(file?.type || '').toLowerCase();
@@ -105,7 +156,7 @@ function emitState(surface) {
 }
 
 function revokePreview(state) {
-  if (state?.previewUrl?.startsWith('blob:')) URL.revokeObjectURL(state.previewUrl);
+  if (state?.previewUrl?.startsWith('blob:')) URL.revokeObjectURL?.(state.previewUrl);
 }
 
 function clearStagedUploadIdentity(state) {
@@ -144,6 +195,7 @@ function createProofAttempt(state, linkedRecordId = '') {
   return Object.freeze({
     uploadId: state.uploadId,
     storagePath: state.storagePath,
+    owner: captureAthleteOperation(),
     processed: snapshotProcessed(state.processed),
     filename: state.filename,
     proofKey: state.proofKey,
@@ -173,9 +225,11 @@ function reconcileAttemptSuccess(state, attempt) {
   state.ambiguousRpcPending = null;
   state.ambiguousLinkedRecordId = null;
   state.processed = null;
+  state.dataUrl = '';
   clearStagedUploadIdentity(state);
   revokePreview(state);
   state.previewUrl = '';
+  saveProofDraft(state);
   return true;
 }
 
@@ -250,7 +304,7 @@ function render(surface) {
   const legacy = state.legacy && !existing && !selected;
   const replacementBlocked = isProofReplacementBlocked(state);
   const statusClass = state.error ? 'error' : state.uploading ? 'uploading' : (existing || selected) ? 'ready' : '';
-  const statusText = state.error
+  const statusText = state.error || state.recoveryWarning
     || (state.ambiguousRpcPending ? 'Save is still confirming. Tap Save again before replacing this screenshot.'
       : state.uploading ? 'Uploading proof securely...'
         : selected ? 'Screenshot ready to upload.'
@@ -359,6 +413,7 @@ async function processImage(file) {
 }
 
 async function handleFile(surface, file) {
+  const owner = captureAthleteOperation();
   const state = states.get(surface);
   if (!state || !file) return;
   if (isProofReplacementBlocked(state)) return;
@@ -368,6 +423,8 @@ async function handleFile(surface, file) {
   state.ambiguousLinkedRecordId = null;
   Object.assign(state, {
     processed: null,
+    dataUrl: '',
+    recoveryWarning: '',
     filename: file.name,
     previewUrl: '',
     error: '',
@@ -376,15 +433,23 @@ async function handleFile(surface, file) {
   render(surface);
   emitState(surface);
   try {
-    state.processed = await processImage(file);
+    const processed = await ownedResult(owner, processImage(file));
+    if (states.get(surface) !== state) return;
+    state.processed = processed;
     state.previewUrl = URL.createObjectURL(state.processed.blob);
     assignStagedUploadIdentity(state, state.processed.mimeType || getCanvasOutputMimeType());
+    state.dataUrl = await ownedResult(owner, blobDataUrl(state.processed.blob));
+    if (states.get(surface) !== state) return;
+    saveProofDraft(state);
   } catch (error) {
-    state.error = String(error?.message || error);
+    if (!isAthleteOperationCurrent(owner) || states.get(surface) !== state) return;
+    state.error = error.accountChanged ? '' : 'Could not read the screenshot. Choose a PNG, JPEG or WebP image and try again.';
   } finally {
+    if (isAthleteOperationCurrent(owner) && states.get(surface) === state) {
     state.uploading = false;
     render(surface);
     emitState(surface);
+    }
   }
 }
 
@@ -414,11 +479,12 @@ export function canReplaceWorkoutProof(surface) {
 export function initWorkoutProof(surface, options = {}) {
   bindListeners();
   const previous = states.get(surface);
-  const sameProofKey = previous?.proofKey === options.proofKey;
+  const ownerId = getCurrentUser()?.id || 'local-athlete';
+  const sameProofKey = previous?.proofKey === options.proofKey && previous?.ownerId === ownerId;
 
   if (sameProofKey && previous) {
     if (options.context) previous.context = options.context;
-    if ('existingAttachment' in options) previous.existingAttachment = options.existingAttachment || null;
+    if (options.existingAttachment) previous.existingAttachment = options.existingAttachment;
     if ('legacy' in options) previous.legacy = !!options.legacy;
     render(surface);
     emitState(surface);
@@ -427,6 +493,7 @@ export function initWorkoutProof(surface, options = {}) {
 
   if (previous?.proofKey !== options.proofKey) revokePreview(previous);
   states.set(surface, {
+    ownerId,
     proofKey: options.proofKey,
     context: options.context || {},
     existingAttachment: options.existingAttachment || null,
@@ -441,6 +508,8 @@ export function initWorkoutProof(surface, options = {}) {
     uploading: false,
     error: '',
   });
+  restoreProofDraft(states.get(surface));
+  if (options.existingAttachment) states.get(surface).existingAttachment = options.existingAttachment;
   render(surface);
   emitState(surface);
 }
@@ -464,6 +533,7 @@ export function getProofUploadIdentity(surface) {
 }
 
 async function executeProofAttempt(attempt) {
+  if (!isAthleteOperationCurrent(attempt.owner)) throw Object.assign(new Error('Account changed'), { accountChanged: true });
   const uploadResult = await runProofTransportOperation(
     withOperationTimeout(
       supabase.storage.from(PROOF_BUCKET).upload(attempt.storagePath, attempt.processed.blob, {
@@ -478,6 +548,7 @@ async function executeProofAttempt(attempt) {
     ),
     'proof_storage_upload',
   );
+  if (!isAthleteOperationCurrent(attempt.owner)) throw Object.assign(new Error('Account changed'), { accountChanged: true });
   const { error: uploadError } = uploadResult;
   if (uploadError) throw createProofUploadError(uploadError, PROOF_UPLOAD_PHASE.STORAGE);
 
@@ -505,6 +576,7 @@ async function executeProofAttempt(attempt) {
     ),
     'proof_rpc',
   );
+  if (!isAthleteOperationCurrent(attempt.owner)) throw Object.assign(new Error('Account changed'), { accountChanged: true });
   const { data, error: rowError } = rpcResult;
 
   if (rowError) {
@@ -517,7 +589,27 @@ async function executeProofAttempt(attempt) {
 async function ensureWorkoutProofUploadedInner(surface, linkedRecordId = '') {
   const state = states.get(surface);
   if (!state) throw new Error('Workout proof is not ready.');
-  if (state.existingAttachment && !state.processed) return state.existingAttachment;
+  if (state.existingAttachment && !state.processed) {
+    if (isSupabaseConfigured && supabase) {
+      const owner = captureAthleteOperation();
+      if (!owner.userId) throw new Error('Sign in before submitting workout proof.');
+      const { data, error } = await ownedResult(owner, withOperationTimeout(
+        supabase.from('workout_attachments').select('id,is_current,completion_cleared')
+          .eq('user_id', owner.userId).eq('id', state.existingAttachment.id).maybeSingle(),
+        { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_HYDRATION, operation: 'proof_revalidate' },
+      ));
+      if (error) throw createProofUploadError(error, PROOF_UPLOAD_PHASE.RPC);
+      if (!data || data.is_current !== true || data.completion_cleared === true) {
+        state.existingAttachment = null;
+        state.error = 'Proof was cleared or replaced. Choose your screenshot again.';
+        saveProofDraft(state);
+        render(surface);
+        emitState(surface);
+        throw new Error(state.error);
+      }
+    }
+    return state.existingAttachment;
+  }
   if (state.legacy && !state.processed) return null;
   // Intentional local-athlete mode when Supabase is not configured.
   if (!isSupabaseConfigured || !supabase) {
@@ -533,6 +625,7 @@ async function ensureWorkoutProofUploadedInner(surface, linkedRecordId = '') {
   if (!state.processed) throw new Error('Choose a workout screenshot first.');
 
   const attempt = createProofAttempt(state, linkedRecordId);
+  saveProofDraft(state);
   const hadUnresolvedAmbiguity = state.ambiguousRpcPending === attempt.uploadId;
   if (
     state.ambiguousRpcPending === attempt.uploadId
@@ -575,17 +668,22 @@ async function ensureWorkoutProofUploadedInner(surface, linkedRecordId = '') {
       });
     }
 
-    const attachment = await executeProofAttempt(attempt);
+    const attachment = await ownedResult(attempt.owner, executeProofAttempt(attempt));
     state.existingAttachment = attachment;
     reconcileAttemptSuccess(state, attempt);
     return attachment;
   } catch (error) {
+    if (!isAthleteOperationCurrent(attempt.owner)) throw error;
     await maybeRemoveStagedStorageAfterProofFailure(attempt, error, hadUnresolvedAmbiguity);
+    if (!isAthleteOperationCurrent(attempt.owner)) throw error;
     finalizeProofFailure(state, attempt, error, hadUnresolvedAmbiguity);
   } finally {
+    if (isAthleteOperationCurrent(attempt.owner) && states.get(surface) === state) {
+    saveProofDraft(state);
     state.uploading = false;
     render(surface);
     emitState(surface);
+    }
   }
 }
 
@@ -607,7 +705,8 @@ export async function markWorkoutProofCleared(attachmentId, isCleared = true) {
   return true;
 }
 
-export function __resetProofStateForTest() {
+export function __resetProofStateForTest({ keepDrafts = false } = {}) {
+  if (!keepDrafts) for (const state of states.values()) removeStorageKey(proofDraftKey(state));
   states.clear();
   listenersBound = false;
 }

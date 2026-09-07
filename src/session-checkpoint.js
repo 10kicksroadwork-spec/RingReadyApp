@@ -18,6 +18,7 @@ const RESUMABLE_PHASES = new Set([
   'sprinting',
   'resting',
   'manual-entry',
+  'done',
 ]);
 
 function readJSON(key, fallback) {
@@ -145,10 +146,6 @@ export function loadActiveSessionCheckpoint(userId = resolveCheckpointUserId()) 
 export function saveActiveSessionCheckpoint(cfg, state, timer = null, sessionId = '') {
   const userId = resolveCheckpointUserId();
   if (!userId || !cfg || !state) return null;
-  if (state.phase === 'done') {
-    clearActiveSessionCheckpoint(userId);
-    return null;
-  }
 
   const existing = readJSON(activeSessionStorageKey(userId), null);
   const resolvedSessionId = String(sessionId || existing?.sessionId || '').trim();

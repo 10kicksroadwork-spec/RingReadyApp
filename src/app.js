@@ -1,3 +1,4 @@
+import { captureAthleteOperation, isAthleteOperationCurrent, ownedResult, runAthleteMutation } from './athlete-operation.js';
 import {
   AUTO_START_NEXT_SPRINT,
   AUTO_START_DELAY_MS,
@@ -97,7 +98,6 @@ import {
   syncHoldToCancelLabels,
   withSavingButton,
 } from './ui.js';
-import { runSingleFlight } from './single-flight.js';
 import { OPERATION_TIMEOUT_MS, withOperationTimeout } from './operation-timeout.js';
 
 export const cfg = { reps: null, rest: null, maxHR: 183, targetPct: 90, workoutContext: null };
@@ -116,6 +116,7 @@ export const state = {
 
 let activeResultRecord = null;
 let activeSessionId = '';
+let finishedSessionDurable = false;
 /** Athlete id that owns the in-memory Sprint runtime. Persistence is gated on this. */
 let activeSessionOwnerId = '';
 const STRIDES_VIDEO_URL = 'https://www.youtube.com/watch?v=YA_u3F5aCdU';
@@ -161,10 +162,7 @@ function clearTimerCheckpoint() {
 function persistSessionCheckpoint() {
   // Stale Athlete A runtime must never write or clear Athlete B's checkpoint.
   if (!canMutateCheckpointForCurrentUser()) return;
-  if (state.phase === 'done') {
-    clearActiveSessionCheckpoint();
-    return;
-  }
+  if (state.phase === 'done' && finishedSessionDurable) return;
   saveActiveSessionCheckpoint(cfg, state, timerCheckpoint.kind ? { ...timerCheckpoint } : null, activeSessionId);
 }
 
@@ -177,6 +175,7 @@ export function resetSprintRuntimeForAccountBoundary() {
   stopRestLogAlert();
   clearTimerCheckpoint();
   activeResultRecord = null;
+  finishedSessionDurable = false;
   activeSessionId = '';
   activeSessionOwnerId = '';
   Object.assign(state, {
@@ -347,6 +346,10 @@ function resumeActiveSession(checkpoint = loadActiveSessionCheckpoint()) {
   clearSessionTimer();
   stopRestLogAlert();
   applyCheckpoint(checkpoint);
+  if (state.phase === 'done') {
+    void finishSession();
+    return true;
+  }
   restoreSessionUI();
   resumeActivePhaseUI();
   showScreen('session');
@@ -1098,6 +1101,8 @@ export function cancelSession() {
 }
 
 export async function finishSession() {
+  const owner = captureAthleteOperation();
+  finishedSessionDurable = false;
   clearSessionTimer();
   stopRestLogAlert();
   clearTimerCheckpoint();
@@ -1110,6 +1115,12 @@ export async function finishSession() {
 
   activeResultRecord = buildSessionRecord(cfg, state.data, activeSessionId || createSessionId());
   if (!activeSessionId) activeSessionId = activeResultRecord.id;
+  // Write the finished result before yielding to the network or a phone interruption.
+  const pending = !!(isSupabaseConfigured && getCurrentUser());
+  const initialPersist = persistSessionRecord(activeResultRecord, { cloudPending: pending });
+  finishedSessionDurable = initialPersist.persisted;
+  if (finishedSessionDurable) clearActiveSessionCheckpoint();
+  else persistSessionCheckpoint();
   let cloudSessionSaved = false;
   if (isSupabaseConfigured && getCurrentUser()) {
     try {
@@ -1122,10 +1133,12 @@ export async function finishSession() {
       console.warn('Cloud sprint session save failed', error);
     }
   }
+  if (!isAthleteOperationCurrent(owner)) return;
   const needsCloudPending = !cloudSessionSaved && isSupabaseConfigured && getCurrentUser();
   const sessionPersist = persistSessionRecord(activeResultRecord, { cloudPending: !!needsCloudPending });
   const pendingIntentDurable = !needsCloudPending || (sessionPersist.persisted && !!sessionPersist.record?.cloudPending);
-  if (cloudSessionSaved || (sessionPersist.localCacheOk && pendingIntentDurable)) {
+  finishedSessionDurable = cloudSessionSaved || (sessionPersist.localCacheOk && pendingIntentDurable);
+  if (finishedSessionDurable) {
     if (canMutateCheckpointForCurrentUser()) clearActiveSessionCheckpoint();
   } else {
     console.warn('Sprint session could not be saved to cloud or local history');
@@ -1135,12 +1148,13 @@ export async function finishSession() {
   window.dispatchEvent(new CustomEvent('ringready:sprint-session-saved', { detail: activeResultRecord }));
   enqueueSessionForSync(cfg, state.data, activeResultRecord);
   flushSyncQueue().then((result) => {
+    if (!isAthleteOperationCurrent(owner)) return;
     if (result.dispatched > 0) showToast('SHEETS REQUEST DISPATCHED');
     else if (result.status === 'not-configured') showToast('SESSION SAVED LOCALLY');
     else if (result.status === 'offline') showToast('OFFLINE - SAVED LOCALLY');
   });
-  setTimeout(() => buildResults(activeResultRecord), 600);
-  setTimeout(() => showScreen('results'), 1000);
+  setTimeout(() => { if (isAthleteOperationCurrent(owner)) buildResults(activeResultRecord); }, 600);
+  setTimeout(() => { if (isAthleteOperationCurrent(owner)) showScreen('results'); }, 1000);
 }
 
 function getRecordContext(record) {
@@ -1312,30 +1326,33 @@ export async function completeWorkout() {
     return;
   }
 
-  const recordId = activeResultRecord.id || 'sprint';
+  const context = getRecordContext(activeResultRecord);
+  const recordId = `${context?.weekIndex}:${context?.workoutIndex}`;
+  const owner = captureAthleteOperation();
   const button = document.getElementById('complete-workout-btn');
 
-  return runSingleFlight(`completion:sprint:${recordId}`, async () => withSavingButton(button, async () => {
+  return runAthleteMutation(recordId, async () => withSavingButton(button, async () => {
     const isNewProof = hasPendingWorkoutProof('sprint');
     try {
       if (isSupabaseConfigured && getCurrentUser()) {
-        await withOperationTimeout(
+        await ownedResult(owner, withOperationTimeout(
           saveCloudSprintSession(activeResultRecord),
           { timeoutMs: OPERATION_TIMEOUT_MS.IDENTITY_STAGING, operation: 'identity_staging' },
-        );
+        ));
       }
-      const attachment = await ensureWorkoutProofUploaded('sprint', activeResultRecord.id);
+      const attachment = await ownedResult(owner, ensureWorkoutProofUploaded('sprint', activeResultRecord.id));
       if (attachment) {
         activeResultRecord = { ...activeResultRecord, proofPolicyVersion: PROOF_POLICY_VERSION, attachment };
         if (isNewProof) enqueueWorkoutProofForSync(attachment);
       }
       if (isSupabaseConfigured && getCurrentUser()) {
-        await withOperationTimeout(
+        await ownedResult(owner, withOperationTimeout(
           saveCloudSprintSession(activeResultRecord),
           { timeoutMs: OPERATION_TIMEOUT_MS.IDENTITY_STAGING, operation: 'identity_staging' },
-        );
+        ));
       }
     } catch (error) {
+      if (!isAthleteOperationCurrent(owner)) return;
       console.warn('Sprint proof upload failed', error);
       showToast(athleteFacingWorkoutSaveError(error).toUpperCase());
       return;
@@ -1349,11 +1366,12 @@ export async function completeWorkout() {
 
     if (isSupabaseConfigured && getCurrentUser()) {
       try {
-        await withOperationTimeout(
+        await ownedResult(owner, withOperationTimeout(
           saveCloudWorkoutCompletion(completed),
           { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_COMPLETION, operation: 'cloud_completion' },
-        );
+        ));
       } catch (error) {
+      if (!isAthleteOperationCurrent(owner)) return;
         console.warn('Cloud sprint workout completion save failed', error);
         showToast(athleteFacingWorkoutSaveError(error));
         return;
@@ -1373,10 +1391,14 @@ export async function completeWorkout() {
     showToast(!local.localCacheOk && isSupabaseConfigured && getCurrentUser()
       ? 'SAVED TO ACCOUNT · LOCAL CACHE WILL REFRESH'
       : 'WORKOUT COMPLETE');
-  })).finally(() => updateCompleteWorkoutButton(activeResultRecord));
+  })).finally(() => { if (isAthleteOperationCurrent(owner)) updateCompleteWorkoutButton(activeResultRecord); });
 }
 
 export async function clearResultWorkoutCompletion() {
+  const context = getRecordContext(activeResultRecord);
+  return runAthleteMutation(`${context?.weekIndex}:${context?.workoutIndex}`, (owner) => clearResultWorkoutCompletionOwned(owner));
+}
+async function clearResultWorkoutCompletionOwned(owner) {
   const context = getRecordContext(activeResultRecord);
   if (!context) {
     showToast('NO WORKOUT TO CLEAR');
@@ -1388,8 +1410,9 @@ export async function clearResultWorkoutCompletion() {
   const attachmentId = activeResultRecord?.attachment?.id || null;
   if (isSupabaseConfigured && getCurrentUser()) {
     try {
-      await clearCloudWorkoutCompletionWithProof(context.weekIndex, context.workoutIndex, attachmentId);
+      await ownedResult(owner, clearCloudWorkoutCompletionWithProof(context.weekIndex, context.workoutIndex, attachmentId));
     } catch (error) {
+      if (!isAthleteOperationCurrent(owner)) return;
       console.warn('Could not clear sprint workout from cloud', error);
       showToast(athleteFacingWorkoutSaveError(error).toUpperCase());
       return;
@@ -1406,6 +1429,11 @@ export async function clearResultWorkoutCompletion() {
   activeResultRecord = { ...activeResultRecord };
   delete activeResultRecord.completedAt;
   delete activeResultRecord.completionKey;
+  delete activeResultRecord.attachment;
+  delete activeResultRecord.proofPolicyVersion;
+  window.dispatchEvent(new CustomEvent('ringready:proof-forget', { detail: { surface: 'sprint' } }));
+  persistSessionRecord(activeResultRecord);
+  buildResults(activeResultRecord);
   updateCompleteWorkoutButton(activeResultRecord);
   window.dispatchEvent(new CustomEvent('ringready:workout-completion-cleared', {
     detail: {
