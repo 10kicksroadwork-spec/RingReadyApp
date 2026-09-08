@@ -49,6 +49,12 @@ describe('athlete/coach authorization matrix', () => {
     expect(functionBody(AUTH_SRC, 'saveCloudAssignedMileResult')).toMatch(/save_assigned_mile_result/);
     expect(functionBody(AUTH_SRC, 'skipCloudAssignedMile')).toMatch(/skip_assigned_mile/);
   });
+
+  it('reconciles ambiguous assigned Mile Save before reporting failure', () => {
+    const body = functionBody(AUTH_SRC, 'saveCloudAssignedMileResult');
+    expect(body).toMatch(/reconcileAssignedMileSaveOutcome/);
+    expect(body).toMatch(/if \(reconciled\) return reconciled/);
+  });
   it('does not grant athletes coach identity via email helper', () => {
     expect(isCoachEmail('athlete@example.com')).toBe(false);
     expect(isCoachEmail(COACH_EMAILS[0])).toBe(true);
