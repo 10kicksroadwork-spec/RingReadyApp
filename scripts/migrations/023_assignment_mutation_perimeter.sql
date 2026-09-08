@@ -10,7 +10,7 @@
 -- This migration makes the assignment state machine mandatory at the DML boundary. Direct
 -- writes join the same advisory lock and converge server-side into the only legal states:
 --
---   COMPLETED: canonical workout_completions + matching program:* mile_tests + agreed proof
+--   COMPLETED: canonical workout_completions + matching program:* mile_tests + agreed CURRENT proof
 --   SKIPPED:   canonical workout_completions + NO program:* mile_tests + retired proof
 --   CLEARED:   no canonical workout_completions + no program:* mile_tests
 --
@@ -18,11 +18,18 @@
 -- instead of a dead-end failure. The only fail-closed case is an ambiguous assignment identity,
 -- where guessing would destroy or move the wrong authoritative completion.
 --
+-- Proof freshness is part of the same perimeter: a non-null incoming attachment_id is trusted
+-- only when workout_attachments still shows it as current, not completion-cleared, owned by the
+-- athlete, and belonging to the assignment/proof identity. A stale client that resaves a
+-- retired proof keeps the current canonical proof and still saves metrics. Relational columns
+-- and JSON mirrors (record_json / result_json attachment + proofPolicyVersion) stay synchronized.
+--
 -- Deliberately preserved:
 --   * standalone mile-test:baseline rows (never assignment-scoped)
 --   * proof_pending = true provisional identity staging and its rollback delete
 --   * every existing SECURITY DEFINER RPC path (019-022) — triggers are idempotent there
 --   * athlete RLS policies; nothing is revoked
+--   * legitimate old-client proof replacement (incoming current attachment is accepted)
 
 -- program:<camp>:<week>:<workout> -> [week, workout]; null for any non-assignment test key.
 create or replace function public.assigned_mile_slot(p_test_key text)
@@ -99,8 +106,177 @@ $$;
 
 revoke all on function public.assignment_has_mile_detail(uuid, integer, integer) from public;
 
+-- Client-shaped attachment mirror used by athlete mappers (result_json / record_json).
+create or replace function public.assigned_mile_attachment_mirror(p_attachment_id uuid)
+returns jsonb
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select case
+    when p_attachment_id is null then null
+    else (
+      select jsonb_build_object(
+        'id', wa.id,
+        'proofKey', wa.proof_key,
+        'storagePath', wa.storage_path,
+        'originalFilename', wa.original_filename,
+        'mimeType', wa.mime_type,
+        'fileSize', wa.file_size,
+        'width', wa.width,
+        'height', wa.height,
+        'transferStatus', wa.transfer_status,
+        'driveFileId', coalesce(wa.drive_file_id, ''),
+        'driveUrl', coalesce(wa.drive_url, ''),
+        'uploadedAt', wa.uploaded_at
+      )
+      from public.workout_attachments wa
+      where wa.id = p_attachment_id
+    )
+  end;
+$$;
+
+revoke all on function public.assigned_mile_attachment_mirror(uuid) from public;
+
+-- True when the attachment is still the athlete's authoritative current proof for this
+-- assignment identity (proof_key and/or week/workout and/or linked record id).
+create or replace function public.is_authoritative_assigned_mile_attachment(
+  p_user_id uuid,
+  p_attachment_id uuid,
+  p_test_key text,
+  p_week_index integer,
+  p_workout_index integer,
+  p_client_record_id text
+)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1
+    from public.workout_attachments wa
+    where wa.id = p_attachment_id
+      and wa.user_id = p_user_id
+      and wa.is_current = true
+      and wa.completion_cleared = false
+      and (
+        wa.proof_key = p_test_key
+        or (
+          wa.week_index is not distinct from p_week_index
+          and wa.workout_index is not distinct from p_workout_index
+        )
+        or (
+          coalesce(trim(coalesce(p_client_record_id, '')), '') <> ''
+          and wa.linked_record_id = trim(p_client_record_id)
+        )
+      )
+  );
+$$;
+
+revoke all on function public.is_authoritative_assigned_mile_attachment(uuid, uuid, text, integer, integer, text) from public;
+
+-- Resolve which attachment_id may become canonical for a final assigned Mile write.
+-- Prefer a legitimate current incoming replacement; otherwise preserve the current canonical
+-- proof. Never resurrect a retired/non-current attachment merely because a stale client sent it.
+create or replace function public.resolve_assigned_mile_attachment_id(
+  p_user_id uuid,
+  p_incoming_attachment_id uuid,
+  p_canonical_attachment_id uuid,
+  p_test_key text,
+  p_week_index integer,
+  p_workout_index integer,
+  p_client_record_id text
+)
+returns uuid
+language plpgsql
+stable
+security definer
+set search_path = public
+as $function$
+begin
+  if p_incoming_attachment_id is not null
+     and public.is_authoritative_assigned_mile_attachment(
+       p_user_id,
+       p_incoming_attachment_id,
+       p_test_key,
+       p_week_index,
+       p_workout_index,
+       p_client_record_id
+     )
+  then
+    return p_incoming_attachment_id;
+  end if;
+
+  if p_canonical_attachment_id is not null
+     and public.is_authoritative_assigned_mile_attachment(
+       p_user_id,
+       p_canonical_attachment_id,
+       p_test_key,
+       p_week_index,
+       p_workout_index,
+       p_client_record_id
+     )
+  then
+    return p_canonical_attachment_id;
+  end if;
+
+  -- Incoming was null or retired, and canonical is missing or also retired: do not invent
+  -- proof linkage from a stale id.
+  if p_incoming_attachment_id is null then
+    return p_canonical_attachment_id;
+  end if;
+
+  return p_canonical_attachment_id;
+end;
+$function$;
+
+revoke all on function public.resolve_assigned_mile_attachment_id(uuid, uuid, uuid, text, integer, integer, text) from public;
+
+-- Keep relational proof columns and JSON mirrors on one attachment id / policy version.
+create or replace function public.sync_assigned_mile_proof_mirrors(
+  p_result_json jsonb,
+  p_attachment_id uuid,
+  p_proof_policy_version integer
+)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = public
+as $function$
+declare
+  v_next jsonb := coalesce(p_result_json, '{}'::jsonb);
+  v_mirror jsonb;
+begin
+  if p_attachment_id is null then
+    v_next := v_next - 'attachment';
+  else
+    v_mirror := public.assigned_mile_attachment_mirror(p_attachment_id);
+    if v_mirror is null then
+      v_next := v_next - 'attachment';
+    else
+      v_next := v_next || jsonb_build_object('attachment', v_mirror);
+    end if;
+  end if;
+
+  if p_proof_policy_version is null then
+    v_next := v_next - 'proofPolicyVersion';
+  else
+    v_next := v_next || jsonb_build_object('proofPolicyVersion', p_proof_policy_version);
+  end if;
+
+  return v_next;
+end;
+$function$;
+
+revoke all on function public.sync_assigned_mile_proof_mirrors(jsonb, uuid, integer) from public;
+
 -- BEFORE on mile_tests: join the assignment lock before the detail row lands, fail closed on
--- ambiguous identity, and never let subordinate detail contradict canonical proof linkage.
+-- ambiguous identity, and never let subordinate detail contradict canonical CURRENT proof
+-- linkage (or resurrect a retired attachment).
 --
 -- Known narrow tradeoff: a legacy upsert that takes the ON CONFLICT update path holds the
 -- mile_tests row lock before this trigger fires, while the RPCs take the advisory lock first.
@@ -122,6 +298,9 @@ declare
   v_wc_client_record_id text;
   v_wc_attachment_id uuid;
   v_wc_policy_version integer;
+  v_incoming_attachment_id uuid;
+  v_resolved_attachment_id uuid;
+  v_client_record_id text;
 begin
   if not public.is_final_assigned_mile_detail(new.test_key, new.proof_pending, new.saved_at) then
     return new;
@@ -129,6 +308,7 @@ begin
 
   v_week := v_slot[1];
   v_workout := v_slot[2];
+  v_incoming_attachment_id := new.attachment_id;
 
   perform public.lock_assigned_workout_transition_for(new.user_id, v_week, v_workout);
 
@@ -138,36 +318,62 @@ begin
     v_workout
   );
 
-  if v_completion_id is null then
-    return new;
+  if v_completion_id is not null then
+    select wc.client_record_id, wc.attachment_id, wc.proof_policy_version
+    into v_wc_client_record_id, v_wc_attachment_id, v_wc_policy_version
+    from public.workout_completions wc
+    where wc.id = v_completion_id
+      and wc.user_id = new.user_id;
+
+    if coalesce(trim(coalesce(new.client_record_id, '')), '') = ''
+       and coalesce(trim(coalesce(v_wc_client_record_id, '')), '') <> ''
+    then
+      new.client_record_id := v_wc_client_record_id;
+    end if;
   end if;
 
-  select wc.client_record_id, wc.attachment_id, wc.proof_policy_version
-  into v_wc_client_record_id, v_wc_attachment_id, v_wc_policy_version
-  from public.workout_completions wc
-  where wc.id = v_completion_id
-    and wc.user_id = new.user_id;
+  v_client_record_id := coalesce(
+    nullif(trim(coalesce(new.client_record_id, '')), ''),
+    nullif(trim(coalesce(v_wc_client_record_id, '')), '')
+  );
 
-  -- Only ever upgrade missing proof linkage; a direct write must not erase canonical proof.
-  if new.attachment_id is null and v_wc_attachment_id is not null then
-    new.attachment_id := v_wc_attachment_id;
-  end if;
+  v_resolved_attachment_id := public.resolve_assigned_mile_attachment_id(
+    new.user_id,
+    v_incoming_attachment_id,
+    v_wc_attachment_id,
+    new.test_key,
+    v_week,
+    v_workout,
+    v_client_record_id
+  );
 
-  if new.proof_policy_version is null and v_wc_policy_version is not null then
-    new.proof_policy_version := v_wc_policy_version;
-  end if;
+  new.attachment_id := v_resolved_attachment_id;
 
-  if coalesce(trim(coalesce(new.client_record_id, '')), '') = ''
-     and coalesce(trim(coalesce(v_wc_client_record_id, '')), '') <> ''
+  -- Policy version follows the proof we kept: preserve WC when we refused a stale id,
+  -- otherwise keep a legitimate incoming/current policy (or inherit WC).
+  if v_resolved_attachment_id is null then
+    new.proof_policy_version := null;
+  elsif v_resolved_attachment_id is not distinct from v_wc_attachment_id
+        and v_resolved_attachment_id is distinct from v_incoming_attachment_id
   then
-    new.client_record_id := v_wc_client_record_id;
+    new.proof_policy_version := coalesce(v_wc_policy_version, new.proof_policy_version);
+  else
+    new.proof_policy_version := coalesce(new.proof_policy_version, v_wc_policy_version);
   end if;
+
+  new.result_json := public.sync_assigned_mile_proof_mirrors(
+    new.result_json,
+    new.attachment_id,
+    new.proof_policy_version
+  );
 
   return new;
 end;
 $function$;
 
--- AFTER on mile_tests: canonical workout_completions must prove the saved Mile.
+-- AFTER on mile_tests already resolved attachment authority + Mile result_json mirrors.
+-- This AFTER trigger makes the canonical workout_completions prove the same Mile metrics
+-- AND the same current proof (relational columns + record_json mirrors together).
 create or replace function public.tg_assigned_mile_detail_after()
 returns trigger
 language plpgsql
@@ -198,6 +404,7 @@ declare
   v_wc_policy_version integer;
   v_wc_proof_pending boolean;
   v_wc_client_record_id text;
+  v_wc_json_attachment_id text;
 begin
   if not public.is_final_assigned_mile_detail(new.test_key, new.proof_pending, new.saved_at) then
     return null;
@@ -293,15 +500,19 @@ begin
       new.proof_policy_version,
       new.attachment_id,
       false,
-      jsonb_build_object(
-        'id', v_client_record_id,
-        'testKey', new.test_key,
-        'status', 'completed',
-        'type', 'daily-workout-completion',
-        'completedAt', v_saved_at,
-        'workoutContext', v_context,
-        'cfg', jsonb_build_object('workoutContext', v_context),
-        'workoutLog', v_workout_log
+      public.sync_assigned_mile_proof_mirrors(
+        jsonb_build_object(
+          'id', v_client_record_id,
+          'testKey', new.test_key,
+          'status', 'completed',
+          'type', 'daily-workout-completion',
+          'completedAt', v_saved_at,
+          'workoutContext', v_context,
+          'cfg', jsonb_build_object('workoutContext', v_context),
+          'workoutLog', v_workout_log
+        ),
+        new.attachment_id,
+        new.proof_policy_version
       ),
       now()
     );
@@ -341,7 +552,10 @@ begin
     and wc.user_id = new.user_id
   for update;
 
-  -- Canonical row already proves this Mile (the 019-022 RPC path); leave it alone.
+  v_wc_json_attachment_id := nullif(trim(coalesce(v_record->'attachment'->>'id', '')), '');
+
+  -- Canonical row already proves this Mile (the 019-022 RPC path); leave it alone only when
+  -- relational proof AND JSON mirrors already agree with the resolved Mile proof.
   if not public.assigned_workout_is_skipped(v_record)
      and v_wc_total_minutes is not distinct from new.total_minutes
      and v_wc_total_seconds is not distinct from new.total_seconds
@@ -353,6 +567,11 @@ begin
      and v_wc_output_value is not distinct from new.distance
      and v_wc_attachment_id is not distinct from new.attachment_id
      and v_wc_policy_version is not distinct from new.proof_policy_version
+     and v_wc_json_attachment_id is not distinct from (new.attachment_id::text)
+     and (
+       new.proof_policy_version is null
+       or nullif(v_record->>'proofPolicyVersion', '')::integer is not distinct from new.proof_policy_version
+     )
      -- Proof linkage resolves through client_record_id, so the pair may not drift.
      and v_wc_client_record_id is not distinct from v_client_record_id
      and coalesce(v_wc_proof_pending, false) = false
@@ -361,23 +580,27 @@ begin
   end if;
 
   v_next_record :=
-    (coalesce(v_record, '{}'::jsonb) - 'skipReason' - 'skipReasonLabel' - 'coachApproved')
-    || jsonb_build_object(
-      'id', v_client_record_id,
-      'testKey', new.test_key,
-      'status', 'completed',
-      'type', 'daily-workout-completion',
-      'completedAt', v_saved_at,
-      'workoutContext', coalesce(v_record->'workoutContext', '{}'::jsonb) || v_context,
-      'cfg', jsonb_build_object(
-        'workoutContext',
-        coalesce(v_record->'cfg'->'workoutContext', '{}'::jsonb) || v_context
+    public.sync_assigned_mile_proof_mirrors(
+      (coalesce(v_record, '{}'::jsonb) - 'skipReason' - 'skipReasonLabel' - 'coachApproved')
+      || jsonb_build_object(
+        'id', v_client_record_id,
+        'testKey', new.test_key,
+        'status', 'completed',
+        'type', 'daily-workout-completion',
+        'completedAt', v_saved_at,
+        'workoutContext', coalesce(v_record->'workoutContext', '{}'::jsonb) || v_context,
+        'cfg', jsonb_build_object(
+          'workoutContext',
+          coalesce(v_record->'cfg'->'workoutContext', '{}'::jsonb) || v_context
+        ),
+        'workoutLog',
+          (
+            coalesce(v_record->'workoutLog', '{}'::jsonb)
+            - 'status' - 'skipReason' - 'skipReasonLabel' - 'coachApproved'
+          ) || v_workout_log
       ),
-      'workoutLog',
-        (
-          coalesce(v_record->'workoutLog', '{}'::jsonb)
-          - 'status' - 'skipReason' - 'skipReasonLabel' - 'coachApproved'
-        ) || v_workout_log
+      new.attachment_id,
+      new.proof_policy_version
     );
 
   update public.workout_completions
@@ -396,8 +619,9 @@ begin
     avg_watts = null,
     distance = new.distance,
     completed_at = new.saved_at,
-    attachment_id = coalesce(new.attachment_id, attachment_id),
-    proof_policy_version = coalesce(new.proof_policy_version, proof_policy_version),
+    -- BEFORE already chose the authoritative attachment; do not prefer a stale incoming id.
+    attachment_id = new.attachment_id,
+    proof_policy_version = new.proof_policy_version,
     proof_pending = false,
     record_json = v_next_record,
     updated_at = now()

@@ -35,7 +35,7 @@ Auth-touching migrations: `000`–`006`, `009`, `012`–`013`, `015`–`016`.
 | 21 | [020_assigned_mile_save_authority.sql](./migrations/020_assigned_mile_save_authority.sql) | Assigned Mile save + skip RPCs — canonical `workout_completions` + subordinate `mile_tests` (staging only; superseded serialization in 021) |
 | 22 | [021_assigned_mile_serialized_transitions.sql](./migrations/021_assigned_mile_serialized_transitions.sql) | Shared per-assignment advisory lock + position-canonical identity resolve for Save/Skip/Clear (staging only; **do not apply to production** yet) |
 | 23 | [022_generic_clear_assignment_authority.sql](./migrations/022_generic_clear_assignment_authority.sql) | Generic clear joins assignment lock and removes subordinate Mile detail (staging only; protects stale clients) |
-| 24 | [023_assignment_mutation_perimeter.sql](./migrations/023_assignment_mutation_perimeter.sql) | Assigned Mile mutation perimeter — direct table writes from already-loaded clients join the assignment lock and converge to a legal state (staging only; **do not apply to production** yet) |
+| 24 | [023_assignment_mutation_perimeter.sql](./migrations/023_assignment_mutation_perimeter.sql) | Assigned Mile mutation perimeter — direct table writes from already-loaded clients join the assignment lock and converge to a legal state; current-proof authority + JSON/relational proof mirrors (staging only; **do not apply to production** yet) |
 
 ## Fresh database
 

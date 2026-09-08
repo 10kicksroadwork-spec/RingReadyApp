@@ -396,12 +396,24 @@ describe('assigned mile save source contract', () => {
     const beforeBody = migration.slice(beforeIdx, migration.indexOf('$function$;', beforeIdx));
     expect(beforeBody).toMatch(/lock_assigned_workout_transition_for/);
     expect(beforeBody).toMatch(/resolve_assigned_workout_completion_id_for/);
+    expect(beforeBody).toMatch(/resolve_assigned_mile_attachment_id/);
+    expect(beforeBody).toMatch(/sync_assigned_mile_proof_mirrors/);
+
+    // Proof freshness: never trust a non-null incoming attachment without workout_attachments authority.
+    expect(migration).toMatch(/create or replace function public\.resolve_assigned_mile_attachment_id/);
+    expect(migration).toMatch(/create or replace function public\.is_authoritative_assigned_mile_attachment/);
+    expect(migration).toMatch(/wa\.is_current = true/);
+    expect(migration).toMatch(/wa\.completion_cleared = false/);
 
     // Legacy Mile-only saves gain a canonical completion instead of standing alone.
     const afterIdx = migration.indexOf('create or replace function public.tg_assigned_mile_detail_after');
     const afterBody = migration.slice(afterIdx, migration.indexOf('$function$;', afterIdx));
     expect(afterBody).toMatch(/insert into public\.workout_completions/);
     expect(afterBody).toMatch(/update public\.workout_completions/);
+    // Relational + JSON proof mirrors must stay synchronized; do not coalesce a stale id back in.
+    expect(afterBody).toMatch(/attachment_id = new\.attachment_id/);
+    expect(afterBody).toMatch(/sync_assigned_mile_proof_mirrors/);
+    expect(afterBody).toMatch(/v_wc_json_attachment_id is not distinct from \(new\.attachment_id::text\)/);
 
     // Skipped or cleared assignments must not keep subordinate Mile detail or proof.
     const skipIdx = migration.indexOf('create or replace function public.tg_assigned_workout_after');

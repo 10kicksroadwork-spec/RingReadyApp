@@ -259,6 +259,12 @@ async function legacySaveMileDetail(client, userId, slot, values = {}) {
     paceMinPerMile: totalMinutes / distance,
     savedAt,
   };
+  if (values.attachmentId) {
+    result.attachment = values.attachment || { id: values.attachmentId };
+    result.proofPolicyVersion = values.proofPolicyVersion ?? 1;
+  } else if (Object.prototype.hasOwnProperty.call(values, 'attachmentId') && values.attachmentId === null) {
+    // Explicit null means "no attachment in the stale payload".
+  }
   return client.from('mile_tests').upsert({
     user_id: userId,
     client_record_id: clientRecordId,
@@ -270,7 +276,7 @@ async function legacySaveMileDetail(client, userId, slot, values = {}) {
     pace_min_per_mile: result.paceMinPerMile,
     avg_bpm: result.avgBpm,
     max_bpm: result.maxBpm,
-    proof_policy_version: values.proofPolicyVersion ?? null,
+    proof_policy_version: values.proofPolicyVersion ?? (values.attachmentId ? 1 : null),
     attachment_id: values.attachmentId ?? null,
     proof_pending: false,
     result_json: result,
@@ -369,12 +375,113 @@ async function readKeyRow(client, userId, completionKey) {
 
 async function readMileRow(client, userId, slot) {
   const { data, error } = await client.from('mile_tests')
-    .select('id,test_key,client_record_id,attachment_id,total_minutes,avg_bpm')
+    .select('id,test_key,client_record_id,attachment_id,total_minutes,avg_bpm,proof_policy_version,result_json')
     .eq('user_id', userId)
     .eq('test_key', slot.testKey)
     .maybeSingle();
   if (error) throw new Error(`mile read failed: ${error.message}`);
   return data;
+}
+
+async function uploadProofBlob(client, storagePath) {
+  const blob = new Blob([new Uint8Array(1024)], { type: 'image/webp' });
+  const { error } = await client.storage.from('workout-proof-staging').upload(storagePath, blob, { upsert: true });
+  if (error) throw new Error(`proof storage upload failed: ${error.message}`);
+}
+
+async function createAssignedMileProof(client, userId, slot, linkedRecordId, label) {
+  const storagePath = `${userId}/${slot.testKey}/${label}-${randomUUID()}.webp`;
+  await uploadProofBlob(client, storagePath);
+  const { data, error } = await client.rpc('create_workout_proof_attachment', {
+    p_proof_key: slot.testKey,
+    p_linked_record_id: linkedRecordId,
+    p_storage_path: storagePath,
+    p_original_filename: `${label}.webp`,
+    p_mime_type: 'image/webp',
+    p_file_size: 1024,
+    p_width: 64,
+    p_height: 64,
+    p_camp_length: 7,
+    p_week_index: slot.weekIndex,
+    p_workout_index: slot.workoutIndex,
+    p_workout_type: 'Mile Re-Test',
+    p_day_of_week: 'Saturday/Sunday',
+  });
+  if (error) throw new Error(`create proof ${label} failed: ${error.message}`);
+  return { proof: data, storagePath };
+}
+
+async function cleanupProofArtifacts(client, attachmentIds = [], storagePaths = []) {
+  if (attachmentIds.length) {
+    await client.rpc('cleanup_test_workout_proof_attachments', {
+      p_attachment_ids: [...new Set(attachmentIds)],
+    });
+  }
+  if (storagePaths.length) {
+    await client.storage.from('workout-proof-staging').remove([...new Set(storagePaths)]);
+  }
+}
+
+function assertProofMirrorsAgree(truth, expectedAttachmentId, label) {
+  assert(!!truth.completion, `${label}: missing completion`);
+  assert(!!truth.mile, `${label}: missing mile detail`);
+  assert(
+    truth.completion.attachment_id === expectedAttachmentId,
+    `${label}: WC attachment_id expected ${expectedAttachmentId}, got ${truth.completion.attachment_id}`,
+  );
+  assert(
+    truth.mile.attachment_id === expectedAttachmentId,
+    `${label}: Mile attachment_id expected ${expectedAttachmentId}, got ${truth.mile.attachment_id}`,
+  );
+  const wcJsonId = truth.completion.record_json?.attachment?.id || null;
+  const mileJsonId = truth.mile.result_json?.attachment?.id || null;
+  assert(wcJsonId === expectedAttachmentId, `${label}: WC record_json.attachment must be ${expectedAttachmentId}`);
+  assert(mileJsonId === expectedAttachmentId, `${label}: Mile result_json.attachment must be ${expectedAttachmentId}`);
+  assert(
+    truth.completion.proof_policy_version === truth.mile.proof_policy_version,
+    `${label}: proof_policy_version must agree across WC/Mile`,
+  );
+  assert(
+    Number(truth.completion.record_json?.proofPolicyVersion) === Number(truth.completion.proof_policy_version),
+    `${label}: WC record_json.proofPolicyVersion must match relational`,
+  );
+  assert(
+    Number(truth.mile.result_json?.proofPolicyVersion) === Number(truth.mile.proof_policy_version),
+    `${label}: Mile result_json.proofPolicyVersion must match relational`,
+  );
+}
+
+async function assertFinalAssignedProofInvariants(client, userId, slot, label) {
+  const truth = await readCanonical(client, userId, slot);
+  if (!truth.completion && !truth.mile) return truth;
+  assertConsistentTruth(truth, label);
+  if (truth.status === 'completed') {
+    assert(
+      truth.completion.attachment_id === truth.mile.attachment_id,
+      `${label}: WC/Mile attachment disagreement`,
+    );
+    const wcJsonId = truth.completion.record_json?.attachment?.id || null;
+    const mileJsonId = truth.mile.result_json?.attachment?.id || null;
+    assert(
+      (wcJsonId || null) === (truth.completion.attachment_id || null),
+      `${label}: WC relational / record_json proof disagreement`,
+    );
+    assert(
+      (mileJsonId || null) === (truth.mile.attachment_id || null),
+      `${label}: Mile relational / result_json proof disagreement`,
+    );
+    if (truth.completion.attachment_id) {
+      const { data: proof, error } = await client.from('workout_attachments')
+        .select('id,is_current,completion_cleared')
+        .eq('user_id', userId)
+        .eq('id', truth.completion.attachment_id)
+        .maybeSingle();
+      assert(!error, `${label}: proof read failed: ${error?.message}`);
+      assert(proof?.is_current === true, `${label}: final assigned Mile references non-current proof`);
+      assert(proof?.completion_cleared === false, `${label}: final assigned Mile references completion_cleared proof`);
+    }
+  }
+  return truth;
 }
 
 const WRONG_WORKOUT_INDEX = 7;
@@ -1085,6 +1192,229 @@ async function main() {
     assertConsistentTruth(truth, `legacySave||newSkip#${round}`);
     console.log(`PASS cross-version legacySave||newSkip#${round}: canonical=${truth.status || 'cleared'}`);
     await cleanupSlot(a.client, a.userId, slot);
+  }
+
+  // --- B6 / Review B6: stale proof freshness authority ---
+  {
+    const slot = allocSlot();
+    await cleanupSlot(a.client, a.userId, slot);
+    const recordId = randomUUID();
+    const storagePaths = [];
+    const attachmentIds = [];
+    try {
+      assert(!(await saveAssigned(a.client, slot, recordId, { totalMinutes: 7.11 })).error, 'seed save failed');
+
+      const proofA = await createAssignedMileProof(a.client, a.userId, slot, recordId, 'stale-a');
+      storagePaths.push(proofA.storagePath);
+      attachmentIds.push(proofA.proof.id);
+      assert(!(await saveAssigned(a.client, slot, recordId, {
+        totalMinutes: 7.11,
+        attachmentId: proofA.proof.id,
+        proofPolicyVersion: 1,
+      })).error, 'link proof A failed');
+
+      const proofB = await createAssignedMileProof(a.client, a.userId, slot, recordId, 'current-b');
+      storagePaths.push(proofB.storagePath);
+      attachmentIds.push(proofB.proof.id);
+      assert(!(await saveAssigned(a.client, slot, recordId, {
+        totalMinutes: 7.11,
+        attachmentId: proofB.proof.id,
+        proofPolicyVersion: 1,
+      })).error, 'link proof B failed');
+
+      const seeded = await assertFinalAssignedProofInvariants(third.client, third.userId, slot, 'seed-current-b');
+      assertProofMirrorsAgree(seeded, proofB.proof.id, 'seed-current-b');
+
+      const { data: retiredA, error: retiredErr } = await third.client.from('workout_attachments')
+        .select('id,is_current,completion_cleared')
+        .eq('user_id', third.userId)
+        .eq('id', proofA.proof.id)
+        .maybeSingle();
+      assert(!retiredErr, retiredErr?.message);
+      assert(retiredA?.is_current === false, 'proof A must be non-current after replacement');
+
+      // Exact e85-shaped legacy resave still carries retired attachment A.
+      const { error: staleErr } = await legacySaveMileDetail(a.client, a.userId, slot, {
+        clientRecordId: recordId,
+        totalMinutes: 6.91,
+        avgBpm: 158,
+        attachmentId: proofA.proof.id,
+        proofPolicyVersion: 1,
+        attachment: { id: proofA.proof.id },
+      });
+      assert(!staleErr, `stale-proof legacy resave failed: ${staleErr?.message}`);
+
+      const truth = await assertFreshClientsAgree(a, b, third, slot, 'stale-proof-cannot-resurrect');
+      assert(truth.status === 'completed', 'stale-proof resave must remain COMPLETED');
+      assert(Number(truth.completion.total_minutes) === 6.91, 'metrics from stale resave must still apply');
+      assertProofMirrorsAgree(truth, proofB.proof.id, 'stale-proof-cannot-resurrect');
+      await assertFinalAssignedProofInvariants(third.client, third.userId, slot, 'stale-proof-cannot-resurrect');
+
+      const { data: stillRetired, error: stillErr } = await third.client.from('workout_attachments')
+        .select('is_current')
+        .eq('user_id', third.userId)
+        .eq('id', proofA.proof.id)
+        .maybeSingle();
+      assert(!stillErr, stillErr?.message);
+      assert(stillRetired?.is_current === false, 'proof A must stay retired');
+      console.log('PASS stale retired proof cannot resurrect over current canonical proof');
+    } finally {
+      await cleanupSlot(a.client, a.userId, slot);
+      await cleanupProofArtifacts(a.client, attachmentIds, storagePaths);
+    }
+  }
+
+  {
+    const slot = allocSlot();
+    await cleanupSlot(a.client, a.userId, slot);
+    const recordId = randomUUID();
+    const storagePaths = [];
+    const attachmentIds = [];
+    try {
+      assert(!(await saveAssigned(a.client, slot, recordId, { totalMinutes: 7.22 })).error, 'seed save failed');
+      const proofB = await createAssignedMileProof(a.client, a.userId, slot, recordId, 'old-b');
+      storagePaths.push(proofB.storagePath);
+      attachmentIds.push(proofB.proof.id);
+      assert(!(await saveAssigned(a.client, slot, recordId, {
+        totalMinutes: 7.22,
+        attachmentId: proofB.proof.id,
+        proofPolicyVersion: 1,
+      })).error, 'link proof B failed');
+
+      const proofC = await createAssignedMileProof(a.client, a.userId, slot, recordId, 'new-c');
+      storagePaths.push(proofC.storagePath);
+      attachmentIds.push(proofC.proof.id);
+      // Replacement RPC already made B non-current; WC/Mile still point at B until the save.
+      const mid = await readCanonical(third.client, third.userId, slot);
+      assert(mid.completion.attachment_id === proofB.proof.id, 'pre-replacement WC still points at B');
+
+      const { error: replaceErr } = await legacySaveMileDetail(a.client, a.userId, slot, {
+        clientRecordId: recordId,
+        totalMinutes: 6.84,
+        avgBpm: 163,
+        attachmentId: proofC.proof.id,
+        proofPolicyVersion: 1,
+        attachment: { id: proofC.proof.id },
+      });
+      assert(!replaceErr, `legacy proof replacement failed: ${replaceErr?.message}`);
+
+      const truth = await assertFreshClientsAgree(a, b, third, slot, 'legacy-proof-replacement');
+      assert(truth.status === 'completed', 'legacy proof replacement must stay COMPLETED');
+      assert(Number(truth.completion.total_minutes) === 6.84, 'replacement must apply new metrics');
+      assertProofMirrorsAgree(truth, proofC.proof.id, 'legacy-proof-replacement');
+      await assertFinalAssignedProofInvariants(third.client, third.userId, slot, 'legacy-proof-replacement');
+      console.log('PASS legitimate old-client current proof replacement is accepted');
+    } finally {
+      await cleanupSlot(a.client, a.userId, slot);
+      await cleanupProofArtifacts(a.client, attachmentIds, storagePaths);
+    }
+  }
+
+  {
+    const slot = allocSlot();
+    await cleanupSlot(a.client, a.userId, slot);
+    const recordId = randomUUID();
+    const storagePaths = [];
+    const attachmentIds = [];
+    try {
+      assert(!(await saveAssigned(a.client, slot, recordId, { totalMinutes: 7.33 })).error, 'seed save failed');
+      const proofA = await createAssignedMileProof(a.client, a.userId, slot, recordId, 'race-a');
+      storagePaths.push(proofA.storagePath);
+      attachmentIds.push(proofA.proof.id);
+      const proofB = await createAssignedMileProof(a.client, a.userId, slot, recordId, 'race-b');
+      storagePaths.push(proofB.storagePath);
+      attachmentIds.push(proofB.proof.id);
+      assert(!(await saveAssigned(a.client, slot, recordId, {
+        totalMinutes: 7.33,
+        attachmentId: proofB.proof.id,
+        proofPolicyVersion: 1,
+      })).error, 'link proof B failed');
+
+      const settled = await Promise.allSettled([
+        legacySaveMileDetail(a.client, a.userId, slot, {
+          clientRecordId: recordId,
+          totalMinutes: 6.77,
+          attachmentId: proofA.proof.id,
+          proofPolicyVersion: 1,
+          attachment: { id: proofA.proof.id },
+        }),
+        clearAssigned(b.client, slot),
+      ]);
+      // One side may lose to serialization/deadlock; authoritative end state must still be legal.
+      const truth = await assertFreshClientsAgree(a, b, third, slot, 'staleA||newClear');
+      if (truth.status === 'cleared' || (!truth.completion && !truth.mile)) {
+        assert(!truth.completion && !truth.mile, 'cleared race must leave no WC/Mile');
+      } else {
+        assert(truth.status === 'completed', 'non-cleared race winner must be COMPLETED');
+        await assertFinalAssignedProofInvariants(third.client, third.userId, slot, 'staleA||newClear');
+        assert(
+          truth.completion.attachment_id === proofB.proof.id,
+          'COMPLETED race winner must keep current proof B, never retired A',
+        );
+        assertProofMirrorsAgree(truth, proofB.proof.id, 'staleA||newClear');
+      }
+      const failed = settled.filter((entry) => entry.status === 'rejected'
+        || (entry.status === 'fulfilled' && entry.value?.error));
+      console.log(
+        `PASS concurrent stale-A legacy resave || new Clear → ${truth.status || 'cleared'}`
+        + (failed.length ? ` (${failed.length} request error tolerated)` : ''),
+      );
+    } finally {
+      await cleanupSlot(a.client, a.userId, slot);
+      await cleanupProofArtifacts(a.client, attachmentIds, storagePaths);
+    }
+  }
+
+  // P2: quantify the documented same-row lock inversion. One transaction may abort with
+  // 40P01; nothing partial may commit; a retry must land in a legal state.
+  {
+    let sawDeadlock = false;
+    let sawSuccessPair = false;
+    for (let round = 0; round < 12; round += 1) {
+      const slot = allocSlot();
+      await cleanupSlot(a.client, a.userId, slot);
+      const recordId = randomUUID();
+      assert(!(await saveAssigned(a.client, slot, recordId, { totalMinutes: 7.41 })).error, 'deadlock seed failed');
+
+      const settled = await Promise.allSettled([
+        legacySaveMileDetail(a.client, a.userId, slot, {
+          clientRecordId: recordId,
+          totalMinutes: 6.66,
+        }),
+        clearAssigned(b.client, slot),
+      ]);
+      const errors = settled
+        .map((entry) => {
+          if (entry.status === 'rejected') return String(entry.reason?.message || entry.reason || '');
+          if (entry.value?.error) return String(entry.value.error.message || entry.value.error);
+          return '';
+        })
+        .filter(Boolean);
+      if (errors.some((message) => /40P01|deadlock detected/i.test(message))) {
+        sawDeadlock = true;
+      }
+      if (errors.length === 0) sawSuccessPair = true;
+
+      const truth = await assertFreshClientsAgree(a, b, third, slot, `deadlock-quant#${round}`);
+      assertConsistentTruth(truth, `deadlock-quant#${round}`);
+      assert(
+        truth.status === 'completed' || truth.status === 'skipped' || (!truth.completion && !truth.mile),
+        `deadlock-quant#${round}: illegal status ${truth.status}`,
+      );
+
+      // Retry the failed side (or a no-op clear) and confirm recovery.
+      if (errors.length) {
+        const { error: retryErr } = await clearAssigned(b.client, slot);
+        assert(!retryErr, `deadlock retry clear failed: ${retryErr?.message}`);
+        const retried = await assertFreshClientsAgree(a, b, third, slot, `deadlock-retry#${round}`);
+        assert(!retried.completion && !retried.mile, 'deadlock retry clear must leave CLEARED');
+      }
+      await cleanupSlot(a.client, a.userId, slot);
+    }
+    console.log(
+      `PASS documented legacy-upsert||clear deadlock quantification`
+      + ` (observedDeadlock=${sawDeadlock}, observedCleanPair=${sawSuccessPair})`,
+    );
   }
 
   console.log('\nPASS: assigned mile concurrent multi-context authority races');
