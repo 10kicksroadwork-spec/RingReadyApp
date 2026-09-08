@@ -10,7 +10,12 @@ import {
 
 async function goToWeek(page, weekIndex) {
   await expect(page.locator('#home.screen.active')).toBeVisible();
+  // Always rewind to week 0 first — callers may already be mid-camp.
+  while (await page.locator('#week-prev-btn').isEnabled()) {
+    await page.locator('#week-prev-btn').click();
+  }
   for (let i = 0; i < weekIndex; i += 1) {
+    await expect(page.locator('#week-next-btn')).toBeEnabled();
     await page.locator('#week-next-btn').click();
   }
   await expect(
