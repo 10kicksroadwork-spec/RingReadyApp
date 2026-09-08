@@ -323,6 +323,62 @@ export async function rollbackWorkoutIdentityIfOwned(client, userId, record, sta
   return true;
 }
 
+function mergeNoteIntoRecordJson(existingJson, record) {
+  const base = existingJson && typeof existingJson === 'object' ? existingJson : {};
+  const note = String(record?.note || '').trim();
+  const workoutLog = record?.workoutLog
+    ? { ...(base.workoutLog || {}), ...record.workoutLog, note }
+    : (base.workoutLog ? { ...base.workoutLog, note } : undefined);
+  const updated = { ...base, ...record, note };
+  if (workoutLog) updated.workoutLog = workoutLog;
+  return updated;
+}
+
+/**
+ * Update-only note mutation. Never inserts or upserts a completion row.
+ * Cleared/missing cloud rows must not be recreated from a stale note save.
+ */
+export async function updateWorkoutNoteFieldsReconciled(client, userId, record) {
+  if (!client || !userId || !record) {
+    return { updated: false, absent: true, record: null };
+  }
+
+  const existing = await findWorkoutCompletionIdentity(
+    client,
+    userId,
+    record,
+    `${WORKOUT_IDENTITY_COLUMNS}, record_json`,
+  );
+  if (!existing) {
+    return { updated: false, absent: true, record: null };
+  }
+
+  const existingJson = existing.record_json && typeof existing.record_json === 'object'
+    ? existing.record_json
+    : {};
+  const updatedRecord = mergeNoteIntoRecordJson(existingJson, record);
+  const payload = {
+    record_json: updatedRecord,
+    updated_at: new Date().toISOString(),
+  };
+
+  const { data, error } = await client
+    .from('workout_completions')
+    .update(payload)
+    .eq('id', existing.id)
+    .select('id, completion_key, record_json')
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) return { updated: false, absent: true, record: null };
+
+  return {
+    updated: true,
+    absent: false,
+    record: updatedRecord,
+    rowId: data.id,
+  };
+}
+
 export async function saveWorkoutCompletionReconciled(client, userId, record) {
   if (!client || !userId || !record) return null;
   const payload = buildWorkoutCloudPayload(record, userId);

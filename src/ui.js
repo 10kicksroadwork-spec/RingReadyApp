@@ -1,4 +1,5 @@
-﻿import {
+﻿import { captureAthleteOperation, isAthleteOperationCurrent } from './athlete-operation.js';
+import {
   CIRCUMFERENCE,
   REST_LOG_ALERT_HZ,
   REST_LOG_ALERT_MS,
@@ -8,6 +9,7 @@
   CANCEL_HOLD_MS,
   SPRINT_DONE_HOLD_MS,
 } from './constants.js';
+import { screenIdForSprintNavigation } from './sprint-navigation.js';
 
 let audioCtx = null;
 let restLogAlertTimer = null;
@@ -557,16 +559,20 @@ function ensureMainBtnStructure(btn) {
 }
 
 export function showScreen(id) {
-  const screen = document.getElementById(id);
+  const requestedId = id;
+  const resolvedId = screenIdForSprintNavigation(requestedId);
+  const screen = document.getElementById(resolvedId);
   if (!screen) {
-    console.warn(`Screen not found: ${id}`);
-    showToast(`SCREEN NOT FOUND: ${String(id).toUpperCase()}`);
+    console.warn(`Screen not found: ${resolvedId}`);
+    showToast(`SCREEN NOT FOUND: ${String(resolvedId).toUpperCase()}`);
     return false;
   }
 
   document.querySelectorAll('.screen').forEach((s) => s.classList.remove('active'));
   screen.classList.add('active');
-  document.dispatchEvent(new CustomEvent('ringready:screen-changed', { detail: { screenId: id } }));
+  document.dispatchEvent(new CustomEvent('ringready:screen-changed', {
+    detail: { screenId: resolvedId, requestedScreenId: requestedId },
+  }));
   return true;
 }
 export function setStatus(s) {
@@ -656,6 +662,7 @@ export function setRing(progress, isSprint) {
 let toastTimer = null;
 
 export async function withSavingButton(button, task, { savingLabel = 'SAVING...' } = {}) {
+  const owner = captureAthleteOperation();
   if (!button) return task();
   const previousText = button.textContent;
   const wasDisabled = button.disabled;
@@ -665,9 +672,11 @@ export async function withSavingButton(button, task, { savingLabel = 'SAVING...'
   try {
     return await task();
   } finally {
-    button.removeAttribute('aria-busy');
-    button.textContent = previousText;
-    button.disabled = wasDisabled;
+    if (isAthleteOperationCurrent(owner)) {
+      button.removeAttribute('aria-busy');
+      button.textContent = previousText;
+      button.disabled = wasDisabled;
+    }
   }
 }
 

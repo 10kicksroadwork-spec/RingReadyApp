@@ -147,6 +147,7 @@ export function buildSprintCloudPayload(record, userId) {
 export function buildMileTestCloudPayload(result, hrInfo, testContext, userId) {
   const testKey = String(testContext?.testKey || result.testKey || 'mile-test:baseline');
   const resultWithContext = { ...result, testKey };
+  delete resultWithContext.assignedResults;
   return {
     user_id: userId,
     client_record_id: textOrEmpty(result.id),

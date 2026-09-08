@@ -1,3 +1,5 @@
+import { captureAthleteOperation, ownedResult } from './athlete-operation.js';
+import { withOperationTimeout, OPERATION_TIMEOUT_MS } from './operation-timeout.js';
 import { isCoachEmail } from './coach-access.js';
 import {
   buildMileTestCloudPayload,
@@ -13,11 +15,13 @@ import {
   planMileTestIdentityStaging,
 } from './proof-staging.js';
 import { MODALITY_RUNNING, normalizeModality } from './modality.js';
+import { keyRowDisagreesWithCanonicalPosition } from './workout-completion-identity.js';
 import { isSupabaseConfigured, supabase } from './supabase-client.js';
 import {
   ensureWorkoutIdentityReconciled,
   rollbackWorkoutIdentityIfOwned,
   saveWorkoutCompletionReconciled,
+  updateWorkoutNoteFieldsReconciled,
 } from './workout-completion-reconcile.js';
 
 let currentSession = null;
@@ -40,6 +44,7 @@ function numberOrNull(value) {
 }
 
 function integerOrNull(value) {
+  if (value === null || value === undefined || value === '') return null;
   const parsed = numberOrNull(value);
   return parsed === null ? null : Math.round(parsed);
 }
@@ -510,6 +515,414 @@ export async function saveCloudWorkoutCompletion(record) {
   return result?.record || null;
 }
 
+export async function updateCloudWorkoutNoteFields(record) {
+  const user = getCurrentUser();
+  if (!isSupabaseConfigured || !supabase || !user || !record) {
+    return { updated: false, absent: true, record: null };
+  }
+  return updateWorkoutNoteFieldsReconciled(supabase, user.id, record);
+}
+
+export async function clearCloudAssignedMileWithProof({
+  testKey,
+  weekIndex,
+  workoutIndex,
+  attachmentId = null,
+} = {}) {
+  const user = getCurrentUser();
+  if (!isSupabaseConfigured || !supabase || !user) return false;
+  const owner = captureAthleteOperation();
+  const week = Number(weekIndex);
+  const workout = Number(workoutIndex);
+  if (!Number.isFinite(week) || !Number.isFinite(workout)) {
+    throw new Error('Assigned mile clear requires week and workout index');
+  }
+
+  const params = {
+    p_test_key: String(testKey || '').trim() || null,
+    p_week_index: week,
+    p_workout_index: workout,
+    p_attachment_id: attachmentId || null,
+  };
+
+  try {
+    const { error } = await ownedResult(owner, withOperationTimeout(
+      supabase.rpc('clear_assigned_mile_with_proof', params),
+      { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_COMPLETION, operation: 'clear_assigned_mile' },
+    ));
+    if (error) throw error;
+  } catch (error) {
+    if (error.accountChanged) throw error;
+    // Ambiguous RPC failure: prove absence of both assignment identities + mile detail.
+    const key = String(testKey || '').trim();
+    const [byKey, byPosition, mileRow] = await Promise.all([
+      ownedResult(owner, withOperationTimeout(
+        supabase.from('workout_completions').select('id').eq('user_id', user.id)
+          .eq('completion_key', `${week}:${workout}`).maybeSingle(),
+        { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_HYDRATION, operation: 'clear_mile_reconcile_key' },
+      )),
+      ownedResult(owner, withOperationTimeout(
+        supabase.from('workout_completions').select('id').eq('user_id', user.id)
+          .eq('week_index', week).eq('workout_index', workout).maybeSingle(),
+        { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_HYDRATION, operation: 'clear_mile_reconcile_position' },
+      )),
+      key
+        ? ownedResult(owner, withOperationTimeout(
+          supabase.from('mile_tests').select('id').eq('user_id', user.id).eq('test_key', key).maybeSingle(),
+          { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_HYDRATION, operation: 'clear_mile_reconcile_test' },
+        ))
+        : Promise.resolve({ data: null, error: null }),
+    ]);
+    if (byKey.error || byPosition.error || mileRow.error || byKey.data || byPosition.data || mileRow.data) {
+      throw error;
+    }
+  }
+  return true;
+}
+
+function isSkippedAssignmentRow(row) {
+  if (!row) return false;
+  const record = safeJSON(row.record_json, row.record_json || {});
+  return record?.status === 'skipped'
+    || record?.workoutLog?.status === 'skipped'
+    || record?.type === 'daily-workout-skip';
+}
+
+function isTransportTypeError(error) {
+  if (!error || error.name !== 'TypeError') return false;
+  return /fetch|network|failed to load|load failed|abort|socket|econn|timed out|timeout/i.test(
+    String(error.message || ''),
+  );
+}
+
+function isAmbiguousCloudError(error) {
+  return !!error && (
+    error.ambiguous === true
+    || error.name === 'OperationTimeoutError'
+    || isTransportTypeError(error)
+    || /timeout|timed out|network|failed to fetch|load failed|econn|socket|abort/i.test(String(error.message || ''))
+  );
+}
+
+/** Postgres serialization deadlock from legacy Mile upsert vs new Clear lock-order inversion. */
+function isSerializedTransitionDeadlockError(error) {
+  if (!error) return false;
+  const code = String(error.code || error?.cause?.code || '');
+  if (code === '40P01') return true;
+  return /40P01|deadlock detected/i.test(String(error.message || ''));
+}
+
+function assignedMileMetricsMatch(row, {
+  distance,
+  totalMinutes,
+  totalSeconds,
+  avgBpm,
+  maxBpm,
+  requireMileSemantics = false,
+} = {}) {
+  if (!row) return false;
+  if (Number.isFinite(Number(distance)) && Number(row.distance) !== Number(distance)) {
+    return false;
+  }
+  if (Number.isFinite(Number(totalMinutes))
+    && Math.abs(Number(row.total_minutes) - Number(totalMinutes)) > 0.001) {
+    return false;
+  }
+  if (totalSeconds != null && totalSeconds !== ''
+    && Number.isFinite(Number(totalSeconds))
+    && integerOrNull(row.total_seconds) !== Math.round(Number(totalSeconds))) {
+    return false;
+  }
+  if (Number.isFinite(Number(avgBpm)) && Number(row.avg_bpm) !== Number(avgBpm)) {
+    return false;
+  }
+  if (Number.isFinite(Number(maxBpm)) && Number(row.max_bpm) !== Number(maxBpm)) {
+    return false;
+  }
+  if (requireMileSemantics) {
+    if (String(row.modality || '') !== 'running') return false;
+    if (String(row.output_type || '') !== 'distance') return false;
+    if (Number.isFinite(Number(distance))
+      && Number(row.output_value) !== Number(distance)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * After an ambiguous assigned-Mile save (timeout / lost response), prove whether
+ * the requested logical save already committed as COMPLETED + matching Mile detail.
+ * When proof was requested, both WC and Mile must carry the requested attachment and
+ * policy version, and neither may still be pending. Returns a success payload only
+ * when the full authoritative postcondition is proven.
+ */
+export async function reconcileAssignedMileSaveOutcome({
+  owner,
+  userId,
+  testKey,
+  weekIndex,
+  workoutIndex,
+  clientRecordId,
+  distance,
+  totalMinutes,
+  totalSeconds = null,
+  avgBpm,
+  maxBpm,
+  attachmentId = null,
+  proofPolicyVersion = null,
+} = {}) {
+  const week = Number(weekIndex);
+  const workout = Number(workoutIndex);
+  const key = String(testKey || '').trim();
+  const completionKey = `${week}:${workout}`;
+  if (!owner || !userId || !key || !Number.isFinite(week) || !Number.isFinite(workout)) {
+    return null;
+  }
+
+  const [byKey, byPosition, mileRow] = await Promise.all([
+    ownedResult(owner, withOperationTimeout(
+      supabase.from('workout_completions').select('*')
+        .eq('user_id', userId).eq('completion_key', completionKey).maybeSingle(),
+      { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_HYDRATION, operation: 'save_mile_reconcile_key' },
+    )),
+    ownedResult(owner, withOperationTimeout(
+      supabase.from('workout_completions').select('*')
+        .eq('user_id', userId).eq('week_index', week).eq('workout_index', workout).maybeSingle(),
+      { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_HYDRATION, operation: 'save_mile_reconcile_position' },
+    )),
+    ownedResult(owner, withOperationTimeout(
+      supabase.from('mile_tests').select('*')
+        .eq('user_id', userId).eq('test_key', key).maybeSingle(),
+      { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_HYDRATION, operation: 'save_mile_reconcile_test' },
+    )),
+  ]);
+
+  if (byKey.error || byPosition.error || mileRow.error) return null;
+
+  const completion = byKey.data || byPosition.data;
+  if (byKey.data && byPosition.data && byKey.data.id !== byPosition.data.id) return null;
+  // Position is canonical: a key hit stored at another assignment proves nothing here.
+  if (keyRowDisagreesWithCanonicalPosition(byKey.data, {
+    source: 'week_workout',
+    weekIndex: week,
+    workoutIndex: workout,
+  })) {
+    return null;
+  }
+  if (!completion || isSkippedAssignmentRow(completion) || !mileRow.data) return null;
+
+  const expectedClientId = String(clientRecordId || '').trim();
+  if (expectedClientId) {
+    const completionClient = String(completion.client_record_id || '').trim();
+    const mileClient = String(mileRow.data.client_record_id || '').trim();
+    if (completionClient && completionClient !== expectedClientId) return null;
+    if (mileClient && mileClient !== expectedClientId) return null;
+  }
+
+  const metricRequest = {
+    distance,
+    totalMinutes,
+    totalSeconds,
+    avgBpm,
+    maxBpm,
+  };
+  if (!assignedMileMetricsMatch(completion, { ...metricRequest, requireMileSemantics: true })) {
+    return null;
+  }
+  if (!assignedMileMetricsMatch(mileRow.data, metricRequest)) {
+    return null;
+  }
+
+  const requestedAttachmentId = attachmentId ? String(attachmentId) : null;
+  const requestedPolicyVersion = integerOrNull(proofPolicyVersion);
+  if (requestedAttachmentId) {
+    if (String(completion.attachment_id || '') !== requestedAttachmentId) return null;
+    if (String(mileRow.data.attachment_id || '') !== requestedAttachmentId) return null;
+  }
+  if (requestedPolicyVersion !== null) {
+    if (integerOrNull(completion.proof_policy_version) !== requestedPolicyVersion) return null;
+    if (integerOrNull(mileRow.data.proof_policy_version) !== requestedPolicyVersion) return null;
+  }
+  if (completion.proof_pending || mileRow.data.proof_pending) return null;
+
+  return {
+    completion_id: completion.id,
+    mile_id: mileRow.data.id,
+    client_record_id: completion.client_record_id || mileRow.data.client_record_id || expectedClientId,
+    test_key: key,
+    completion_key: completionKey,
+    status: 'completed',
+    reconciled: true,
+  };
+}
+
+export async function saveCloudAssignedMileResult(result, hrInfo, testContext, completionRecord) {
+  const user = getCurrentUser();
+  if (!isSupabaseConfigured || !supabase || !user || !result) return null;
+  const owner = captureAthleteOperation();
+  const weekIndex = Number(testContext?.weekIndex ?? completionRecord?.workoutContext?.weekIndex);
+  const workoutIndex = Number(testContext?.workoutIndex ?? completionRecord?.workoutContext?.workoutIndex);
+  const testKey = String(testContext?.testKey || result.testKey || '').trim();
+  if (!testKey || !Number.isFinite(weekIndex) || !Number.isFinite(workoutIndex)) {
+    throw new Error('Assigned mile save requires test_key and week/workout identity');
+  }
+
+  const context = completionRecord?.workoutContext
+    || completionRecord?.cfg?.workoutContext
+    || testContext
+    || {};
+  const workoutLog = completionRecord?.workoutLog || {
+    distance: result.distance,
+    totalMinutes: result.totalMinutes,
+    totalSeconds: result.totalSeconds,
+    totalTimeDisplay: result.totalTimeDisplay,
+    avgBpm: result.avgBpm,
+    maxBpm: result.maxBpm,
+    completedAt: result.savedAt,
+  };
+  const clientRecordId = String(result.id || completionRecord?.id || '').trim();
+  const params = {
+    p_test_key: testKey,
+    p_week_index: weekIndex,
+    p_workout_index: workoutIndex,
+    p_client_record_id: clientRecordId,
+    p_distance: Number(result.distance),
+    p_total_minutes: Number(result.totalMinutes),
+    p_total_seconds: Number.isFinite(Number(result.totalSeconds))
+      ? Math.round(Number(result.totalSeconds))
+      : Math.round(Number(result.totalMinutes) * 60),
+    p_avg_bpm: Math.round(Number(result.avgBpm)),
+    p_max_bpm: Math.round(Number(result.maxBpm)),
+    p_pace_min_per_mile: numberOrNull(result.paceMinPerMile),
+    p_saved_at: result.savedAt || new Date().toISOString(),
+    p_attachment_id: result.attachment?.id || completionRecord?.attachment?.id || null,
+    p_proof_policy_version: integerOrNull(result.proofPolicyVersion || completionRecord?.proofPolicyVersion),
+    p_result_json: (() => {
+      const clone = { ...result };
+      delete clone.assignedResults;
+      return clone;
+    })(),
+    p_hr_info_json: hrInfo || null,
+    p_test_context_json: testContext || null,
+    p_record_json: completionRecord || {
+      id: result.id,
+      testKey,
+      status: 'completed',
+      type: 'daily-workout-completion',
+      completedAt: result.savedAt,
+      workoutContext: context,
+      cfg: { workoutContext: context },
+      workoutLog,
+      attachment: result.attachment || null,
+      proofPolicyVersion: result.proofPolicyVersion || null,
+    },
+    p_week_label: textOrEmpty(context.weekLabel),
+    p_week_title: textOrEmpty(context.weekTitle),
+    p_day_of_week: textOrEmpty(context.dayOfWeek),
+    p_workout_type: textOrEmpty(context.workoutType),
+    p_description: textOrEmpty(context.description),
+    p_warmup: textOrEmpty(context.warmup),
+    p_target_zone: textOrEmpty(context.targetZone),
+    p_target_bpm: integerOrNull(context.targetBPM),
+    p_modality: 'running',
+    p_output_type: 'distance',
+    p_output_value: numberOrNull(result.distance),
+  };
+
+  try {
+    const { data, error } = await ownedResult(owner, withOperationTimeout(
+      supabase.rpc('save_assigned_mile_result', params),
+      { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_COMPLETION, operation: 'save_assigned_mile' },
+    ));
+    if (error) throw error;
+    return data || result;
+  } catch (error) {
+    if (error?.accountChanged) throw error;
+
+    if (isSerializedTransitionDeadlockError(error)) {
+      const reconciledAfterDeadlock = await reconcileAssignedMileSaveOutcome({
+        owner,
+        userId: user.id,
+        testKey,
+        weekIndex,
+        workoutIndex,
+        clientRecordId,
+        distance: params.p_distance,
+        totalMinutes: params.p_total_minutes,
+        totalSeconds: params.p_total_seconds,
+        avgBpm: params.p_avg_bpm,
+        maxBpm: params.p_max_bpm,
+        attachmentId: params.p_attachment_id,
+        proofPolicyVersion: params.p_proof_policy_version,
+      });
+      if (reconciledAfterDeadlock) return reconciledAfterDeadlock;
+
+      const { data: retryData, error: retryError } = await ownedResult(owner, withOperationTimeout(
+        supabase.rpc('save_assigned_mile_result', params),
+        { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_COMPLETION, operation: 'save_assigned_mile_retry' },
+      ));
+      if (retryError) throw retryError;
+      return retryData || result;
+    }
+
+    if (!isAmbiguousCloudError(error)) throw error;
+    const reconciled = await reconcileAssignedMileSaveOutcome({
+      owner,
+      userId: user.id,
+      testKey,
+      weekIndex,
+      workoutIndex,
+      clientRecordId,
+      distance: params.p_distance,
+      totalMinutes: params.p_total_minutes,
+      totalSeconds: params.p_total_seconds,
+      avgBpm: params.p_avg_bpm,
+      maxBpm: params.p_max_bpm,
+      attachmentId: params.p_attachment_id,
+      proofPolicyVersion: params.p_proof_policy_version,
+    });
+    if (reconciled) return reconciled;
+    throw error;
+  }
+}
+
+export async function skipCloudAssignedMile(record, testKey = '') {
+  const user = getCurrentUser();
+  if (!isSupabaseConfigured || !supabase || !user || !record) return null;
+  const owner = captureAthleteOperation();
+  const context = record.workoutContext || record.cfg?.workoutContext || {};
+  const weekIndex = Number(context.weekIndex);
+  const workoutIndex = Number(context.workoutIndex);
+  if (!Number.isFinite(weekIndex) || !Number.isFinite(workoutIndex)) {
+    throw new Error('Assigned mile skip requires week/workout identity');
+  }
+
+  const params = {
+    p_test_key: String(testKey || '').trim() || null,
+    p_week_index: weekIndex,
+    p_workout_index: workoutIndex,
+    p_client_record_id: String(record.id || '').trim(),
+    p_record_json: record,
+    p_week_label: textOrEmpty(context.weekLabel),
+    p_week_title: textOrEmpty(context.weekTitle),
+    p_day_of_week: textOrEmpty(context.dayOfWeek),
+    p_workout_type: textOrEmpty(context.workoutType),
+    p_description: textOrEmpty(context.description),
+    p_warmup: textOrEmpty(context.warmup),
+    p_target_zone: textOrEmpty(context.targetZone),
+    p_target_bpm: integerOrNull(context.targetBPM),
+    p_completed_at: record.completedAt || record.workoutLog?.completedAt || new Date().toISOString(),
+  };
+
+  const { data, error } = await ownedResult(owner, withOperationTimeout(
+    supabase.rpc('skip_assigned_mile', params),
+    { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_COMPLETION, operation: 'skip_assigned_mile' },
+  ));
+  if (error) throw error;
+  return data || record;
+}
+
 export async function deleteCloudWorkoutCompletion(weekIndex, workoutIndex) {
   const user = getCurrentUser();
   if (!isSupabaseConfigured || !supabase || !user) return false;
@@ -542,13 +955,33 @@ export async function clearCloudWorkoutCompletionWithProof(weekIndex, workoutInd
   if (!isSupabaseConfigured || !supabase || !user) return false;
   const week = Number(weekIndex);
   const workout = Number(workoutIndex);
+  const completionKey = `${week}:${workout}`;
   const params = {
     p_week_index: week,
     p_workout_index: workout,
     p_attachment_id: attachmentId || null,
   };
-  const { error } = await supabase.rpc('clear_workout_completion_with_proof', params);
-  if (error) throw error;
+  const owner = captureAthleteOperation();
+  try {
+    const { error } = await ownedResult(owner, withOperationTimeout(supabase.rpc('clear_workout_completion_with_proof', params),
+      { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_COMPLETION, operation: 'clear_completion' }));
+    if (error) throw error;
+  } catch (error) {
+    if (error.accountChanged) throw error;
+    // Ambiguous RPC failure: prove absence through BOTH canonical identities.
+    // A legacy row may survive only by completion_key or only by week/workout.
+    const [byKey, byPosition] = await Promise.all([
+      ownedResult(owner, withOperationTimeout(
+        supabase.from('workout_completions').select('id').eq('user_id', user.id)
+          .eq('completion_key', completionKey).maybeSingle(),
+        { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_HYDRATION, operation: 'clear_reconcile_key' })),
+      ownedResult(owner, withOperationTimeout(
+        supabase.from('workout_completions').select('id').eq('user_id', user.id)
+          .eq('week_index', week).eq('workout_index', workout).maybeSingle(),
+        { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_HYDRATION, operation: 'clear_reconcile_position' })),
+    ]);
+    if (byKey.error || byPosition.error || byKey.data || byPosition.data) throw error;
+  }
   return true;
 }
 
@@ -589,22 +1022,13 @@ export async function saveCloudSprintSession(record) {
 export async function loadCloudMileTest(testKey = '') {
   const user = getCurrentUser();
   if (!isSupabaseConfigured || !supabase || !user) return null;
-
-  let query = supabase
-    .from('mile_tests')
-    .select('*')
-    .eq('user_id', user.id);
-
+  let query = supabase.from('mile_tests').select('*').eq('user_id', user.id);
   if (testKey) query = query.eq('test_key', testKey);
-
-  const { data, error } = await query
-    .order('saved_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
+  const { data, error } = await query.order('saved_at', { ascending: false }).limit(50);
   if (error) throw error;
-  if (!isVisibleCompletionRow(data)) return null;
-  return mapCloudMileTest(data);
+  const results = (data || []).filter(isVisibleCompletionRow).map(mapCloudMileTest);
+  if (!results.length) return null;
+  return { ...results[0], assignedResults: results.filter((row) => /^program:/.test(row.testKey)) };
 }
 
 export async function ensureCloudMileTestIdentity(result, hrInfo, testContext) {
@@ -717,10 +1141,20 @@ export async function saveCloudMileTest(result, hrInfo, testContext) {
   const user = getCurrentUser();
   if (!isSupabaseConfigured || !supabase || !user || !result) return null;
 
-  const { error } = await supabase
-    .from('mile_tests')
-    .upsert(buildMileTestCloudPayload(result, hrInfo, testContext, user.id), { onConflict: 'user_id,test_key' });
+  const payload = buildMileTestCloudPayload(result, hrInfo, testContext, user.id);
+  const attemptUpsert = async () => {
+    const { error } = await supabase
+      .from('mile_tests')
+      .upsert(payload, { onConflict: 'user_id,test_key' });
+    if (error) throw error;
+    return result;
+  };
 
-  if (error) throw error;
-  return result;
+  try {
+    return await attemptUpsert();
+  } catch (error) {
+    // Known lock-order inversion with new Clear: abort commits nothing; one retry is safe.
+    if (!isSerializedTransitionDeadlockError(error)) throw error;
+    return await attemptUpsert();
+  }
 }

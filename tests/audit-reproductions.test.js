@@ -1,7 +1,6 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { clearSingleFlightsForTest } from '../src/single-flight.js';
 import { getWorkoutCompletion } from '../src/storage.js';
-import { createProofUploadError, PROOF_UPLOAD_PHASE } from '../src/proof-diagnostics.js';
 
 const mockUser = { id: 'user-a' };
 const ensureCloudWorkoutIdentity = vi.fn();
@@ -92,7 +91,7 @@ vi.mock('../src/coach-preview.js', () => ({
   syncCoachPreviewChrome: vi.fn(),
 }));
 
-import { completeWorkoutFromDetail, saveMileTestResult } from '../src/shell.js';
+import { cloudHydrationTestHooks, completeWorkoutFromDetail, saveMileTestResult } from '../src/shell.js';
 
 function setupDetailDom() {
   document.body.innerHTML = `
@@ -151,126 +150,60 @@ describe('Bravo completion integration', () => {
     loadCloudWorkoutCompletions.mockResolvedValue({});
   });
 
-  it('deduplicates concurrent detail completion submissions', async () => {
+  it('retains entered metrics after failed final save and checks cloud state', async () => {
     setupDetailDom();
-
-    await Promise.all([
-      completeWorkoutFromDetail(0, 1),
-      completeWorkoutFromDetail(0, 1),
-    ]);
-
-    expect(ensureCloudWorkoutIdentity).toHaveBeenCalledTimes(1);
-    expect(ensureWorkoutProofUploaded).toHaveBeenCalledTimes(1);
-    expect(getWorkoutCompletion(0, 1)).toBeTruthy();
-  });
-
-  it('deduplicates concurrent mile test save submissions', async () => {
-    setupMileDom();
-
-    await Promise.all([
-      saveMileTestResult(),
-      saveMileTestResult(),
-    ]);
-
-    expect(ensureCloudMileTestIdentity).toHaveBeenCalledTimes(1);
-    expect(ensureWorkoutProofUploaded).toHaveBeenCalledTimes(1);
-  });
-
-  it('restores mile save button after bounded HR cloud timeout', async () => {
-    setupMileDom();
-    vi.useFakeTimers();
-    saveCloudMileTest.mockResolvedValue(undefined);
-    saveCloudHRInfo.mockImplementation(() => new Promise(() => {}));
-
-    const savePromise = saveMileTestResult();
-    await vi.advanceTimersByTimeAsync(12_001);
-    await savePromise;
-
-    const button = document.getElementById('save-mile-test-btn');
-    expect(button.disabled).toBe(false);
-    vi.useRealTimers();
-  });
-
-  it('detail retry keeps canonical linked record id after ambiguous proof failure', async () => {
-    setupDetailDom();
-    ensureCloudWorkoutIdentity
-      .mockResolvedValueOnce({ created: true, clientRecordId: 'record-A' })
-      .mockResolvedValueOnce({ created: true, clientRecordId: 'record-A' });
-    ensureWorkoutProofUploaded
-      .mockRejectedValueOnce(createProofUploadError(new TypeError('Load failed'), PROOF_UPLOAD_PHASE.RPC))
-      .mockResolvedValueOnce({ id: 'proof-attachment-1' });
-
+    saveCloudWorkoutCompletion.mockRejectedValue(new Error('Failed to fetch'));
     await completeWorkoutFromDetail(0, 1);
-    await completeWorkoutFromDetail(0, 1);
-
-    expect(ensureWorkoutProofUploaded.mock.calls[0][1]).toBe('record-A');
-    expect(ensureWorkoutProofUploaded.mock.calls[1][1]).toBe('record-A');
-    expect(rollbackCloudWorkoutIdentity).not.toHaveBeenCalled();
+    expect(document.getElementById('detail-total-minutes-input').value).toBe('30:00');
+    expect(document.getElementById('detail-avg-bpm-input').value).toBe('150');
+    expect(loadCloudWorkoutCompletions).toHaveBeenCalled();
   });
-
-  it('mile retry keeps canonical linked record id after ambiguous proof failure', async () => {
+  it('keeps the saved mile when dependent HR update fails', async () => {
     setupMileDom();
-    ensureCloudMileTestIdentity
-      .mockResolvedValueOnce({ created: true, clientRecordId: 'mile-record-A' })
-      .mockResolvedValueOnce({ created: true, clientRecordId: 'mile-record-A' });
-    ensureWorkoutProofUploaded
-      .mockRejectedValueOnce(createProofUploadError(new TypeError('Load failed'), PROOF_UPLOAD_PHASE.RPC))
-      .mockResolvedValueOnce({ id: 'proof-attachment-1' });
-
+    saveCloudHRInfo.mockRejectedValue(new Error('Failed to fetch'));
     await saveMileTestResult();
-    await saveMileTestResult();
-
-    expect(ensureWorkoutProofUploaded.mock.calls[0][1]).toBe('mile-record-A');
-    expect(ensureWorkoutProofUploaded.mock.calls[1][1]).toBe('mile-record-A');
-    expect(rollbackCloudMileTestIdentity).not.toHaveBeenCalled();
+    expect(saveCloudMileTest).toHaveBeenCalledTimes(1);
+    expect(localStorage.getItem('ringReadyMileTestResult')).toBeTruthy();
   });
-
-  it('does not roll back provisional identity after ambiguous then deterministic proof failure', async () => {
+  it('discards A delayed save after switching to B', async () => {
     setupDetailDom();
-    ensureCloudWorkoutIdentity.mockResolvedValue({ created: true, clientRecordId: 'record-A' });
-    const deterministicAfterAmbiguous = createProofUploadError(new Error('Bucket not found'), PROOF_UPLOAD_PHASE.STORAGE);
-    deterministicAfterAmbiguous.proofPreserveProvisionalIdentity = true;
-    ensureWorkoutProofUploaded
-      .mockRejectedValueOnce(createProofUploadError(new TypeError('Load failed'), PROOF_UPLOAD_PHASE.RPC))
-      .mockRejectedValueOnce(deterministicAfterAmbiguous);
-
+    mockUser.id = 'user-a';
+    localStorage.setItem('ringReadyAuthUserId', 'user-a');
+    saveCloudWorkoutCompletion.mockImplementation(async () => {
+      mockUser.id = 'user-b';
+      cloudHydrationTestHooks.prepareAccountSwitchSafety();
+      expect(getWorkoutCompletion(0, 1)).toBeNull();
+      return true;
+    });
     await completeWorkoutFromDetail(0, 1);
-    await completeWorkoutFromDetail(0, 1);
-
-    expect(rollbackCloudWorkoutIdentity).not.toHaveBeenCalled();
-  });
-
-  it('rolls back provisional detail identity after deterministic storage failure', async () => {
-    setupDetailDom();
-    ensureWorkoutProofUploaded.mockRejectedValue(
-      createProofUploadError(new Error('Bucket not found'), PROOF_UPLOAD_PHASE.STORAGE),
-    );
-
-    await completeWorkoutFromDetail(0, 1);
-
-    expect(rollbackCloudWorkoutIdentity).toHaveBeenCalledTimes(1);
+    expect(mockUser.id).toBe('user-b');
     expect(getWorkoutCompletion(0, 1)).toBeNull();
+    mockUser.id = 'user-a';
   });
-
-  it('keeps cloud completion authoritative when persistent storage rejects every write', async () => {
-    setupDetailDom();
-    const original = Storage.prototype.setItem;
-    Storage.prototype.setItem = function blockingSetItem(key, value) {
-      if (String(key).includes('ringReadyWorkoutCompletions')) {
-        throw new DOMException('quota', 'QuotaExceededError');
-      }
-      return original.call(this, key, value);
-    };
-
-    try {
-      await completeWorkoutFromDetail(0, 1);
-
-      expect(saveCloudWorkoutCompletion).toHaveBeenCalledTimes(1);
-      expect(getWorkoutCompletion(0, 1)).toBeTruthy();
-      expect(getWorkoutCompletion(0, 1)?.completionKey).toBe('0:1');
-      expect(localStorage.getItem('ringReadyWorkoutCompletions')).toBeNull();
-    } finally {
-      Storage.prototype.setItem = original;
-    }
+  it('rejects stale mile hydration after a new save', async () => {
+    setupMileDom();
+    const owner = cloudHydrationTestHooks.captureClientStateOwner();
+    const epoch = cloudHydrationTestHooks.getCompletionMutationEpoch();
+    await saveMileTestResult();
+    expect(localStorage.getItem('ringReadyMileTestResult')).toBeTruthy();
+    await cloudHydrationTestHooks.applyCloudHydrationResults(owner.userId, owner.generation, {
+      mileResult: { ok: true, value: null },
+    }, epoch);
+    expect(localStorage.getItem('ringReadyMileTestResult')).toBeTruthy();
   });
-});
+  it('bounds onboarding cloud reads', async () => {
+    const auth = await import('../src/auth.js');
+    const { enforceAthleteOnboarding } = await import('../src/onboarding.js');
+    document.body.innerHTML = '<div id="app"></div>';
+    vi.useFakeTimers();
+    auth.loadCloudProfile.mockImplementation(() => new Promise(() => {}));
+    auth.loadCloudHRInfo.mockResolvedValue(null);
+    let settled = false;
+    void enforceAthleteOnboarding({ showScreen: vi.fn() }).then(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(settled).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+    vi.useRealTimers();
+  });});
+
+

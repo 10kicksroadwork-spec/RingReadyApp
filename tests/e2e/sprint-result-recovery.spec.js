@@ -1,7 +1,10 @@
 import { test, expect } from './fixtures.js';
 import {
   attachProof,
+  installScreenTrace,
+  readScreenTrace,
   saveAthleteProfile,
+  seedDoneSessionCheckpoint,
   seedFinishedSprintSession,
   waitForHome,
   weekWorkoutCard,
@@ -162,6 +165,71 @@ test.describe('sprint result recovery', () => {
     await expect(weekWorkoutCard(page, 3, 0).locator('.workout-tag')).toHaveText('Proof Needed');
     await expect(weekWorkoutCard(page, 3, 0).locator('.workout-action')).toHaveText('RESULTS');
 
+    consoleGate.assertClean();
+  });
+
+  test('recovers a done checkpoint to results without flashing Home or Setup', async ({
+    localAthletePage,
+    consoleGate,
+  }) => {
+    const page = localAthletePage;
+    await seedDoneSessionCheckpoint(page, { sessionId: 'done-checkpoint-trace' });
+    await installScreenTrace(page);
+    await page.reload();
+
+    await expect(page.locator('#results.screen.active')).toBeVisible({ timeout: 15000 });
+    await expect(page.locator('#results-body .result-card')).toHaveCount(5);
+    await expect(page.locator('#home.screen.active')).toHaveCount(0);
+    await expect(page.locator('#setup.screen.active')).toHaveCount(0);
+
+    const screenTrace = await readScreenTrace(page);
+    expect(screenTrace).not.toContain('home');
+    expect(screenTrace).not.toContain('setup');
+    expect(screenTrace).not.toContain('workout-detail');
+
+    consoleGate.assertClean();
+  });
+
+  test('keeps done-checkpoint recovery when history storage write fails', async ({
+    localAthletePage,
+    consoleGate,
+  }) => {
+    const page = localAthletePage;
+    await seedDoneSessionCheckpoint(page, { sessionId: 'done-checkpoint-history-fail' });
+    await page.addInitScript(() => {
+      const originalSetItem = Storage.prototype.setItem;
+      Storage.prototype.setItem = function patchedSetItem(key, value) {
+        if (String(key) === 'sprintTrainerHistory') {
+          throw new Error('forced history storage failure');
+        }
+        return originalSetItem.call(this, key, value);
+      };
+    });
+    await installScreenTrace(page);
+    await page.reload();
+
+    await expect(page.locator('#results.screen.active, #session.screen.active')).toBeVisible({
+      timeout: 15000,
+    });
+    await expect(page.locator('#home.screen.active')).toHaveCount(0);
+    await expect(page.locator('#setup.screen.active')).toHaveCount(0);
+    const checkpoint = await page.evaluate(() => {
+      try {
+        return JSON.parse(localStorage.getItem('ringReadyActiveSession:local-athlete') || 'null');
+      } catch {
+        return null;
+      }
+    });
+    // Either Results rendered from an in-memory finish, or the durable done
+    // checkpoint remains so a later resume can recover.
+    const onResults = await page.locator('#results.screen.active').count();
+    if (!onResults) {
+      expect(checkpoint?.state?.phase).toBe('done');
+    }
+
+    const screenTrace = await readScreenTrace(page);
+    expect(screenTrace).not.toContain('home');
+    expect(screenTrace).not.toContain('setup');
     consoleGate.assertClean();
   });
 });

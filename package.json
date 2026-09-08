@@ -14,6 +14,7 @@
     "test:e2e": "playwright test",
     "test:e2e:report": "playwright show-report",
     "test:proof-auth": "node scripts/test-proof-authorization.mjs",
+    "test:mile-authority-live": "node scripts/test-assigned-mile-authority.mjs",
     "test:sprint-recovery-live": "node scripts/test-sprint-session-recovery.mjs",
     "lint": "eslint src tests scripts api --ext .js,.mjs",
     "cap:sync": "npm run build && node node_modules/@capacitor/cli/bin/capacitor sync",

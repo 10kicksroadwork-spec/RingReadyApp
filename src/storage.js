@@ -63,7 +63,7 @@ export function buildSessionRecord(cfg, data, sessionId = '') {
 
 export function persistSessionRecord(record, { cloudPending = false } = {}) {
   try {
-    const sessions = readJSON(STORAGE_KEY, []);
+    const sessions = readJSON(STORAGE_KEY, []).filter((entry) => entry.id !== record.id);
     const nextRecord = cloudPending ? { ...record, cloudPending: true } : record;
     sessions.unshift(nextRecord);
     if (sessions.length > MAX_STORED_SESSIONS) sessions.length = MAX_STORED_SESSIONS;
@@ -202,6 +202,31 @@ export function clearWorkoutCompletionClearedMarker(weekIndex, workoutIndex) {
 
 export function saveWorkoutCompletion(record) {
   return persistWorkoutCompletion(record).record;
+}
+
+/** Update note fields on an existing local completion without finalizing a new row. */
+export function persistWorkoutNoteUpdate(record) {
+  const key = getCompletionKeyFromRecord(record);
+  if (!key) return { record: null, localCacheOk: false, absent: true };
+
+  const completions = getWorkoutCompletions();
+  const existing = completions[key];
+  if (!existing) return { record: null, localCacheOk: false, absent: true };
+
+  const updated = {
+    ...existing,
+    note: record.note,
+    workoutLog: record.workoutLog
+      ? { ...(existing.workoutLog || {}), ...record.workoutLog }
+      : existing.workoutLog,
+  };
+  completions[key] = updated;
+  const cache = persistJSON(WORKOUT_COMPLETIONS_STORAGE_KEY, completions);
+  return {
+    record: updated,
+    localCacheOk: cache.persisted,
+    absent: false,
+  };
 }
 
 export function removeWorkoutCompletion(weekIndex, workoutIndex) {

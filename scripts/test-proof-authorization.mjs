@@ -210,6 +210,7 @@ async function run() {
   const createdAttachmentIds = [];
   const createdMileTestIds = [];
   const createdWorkoutIds = [];
+  const createdSprintIds = [];
   const storagePaths = [];
   let cleanupErrors = [];
 
@@ -535,6 +536,15 @@ async function run() {
       .eq('id', clearCompletionRow.id);
     assert(!linkClearProofError, `Could not link clear-test proof: ${linkClearProofError?.message || 'unknown'}`);
 
+    const { data: clearSprint, error: clearSprintError } = await client.from('sprint_sessions').insert({
+      user_id: user.id, session_id: clearClientId, attachment_id: clearProof.id,
+      week_index: clearWeek, workout_index: clearWorkout,
+      session_json: { id: clearClientId, attachment: { id: clearProof.id }, completedAt: new Date().toISOString(),
+        data: [{ sprintHR: 170, restHR: 120, drop: 50 }] },
+    }).select('id').single();
+    assert(!clearSprintError && clearSprint?.id, 'Could not seed Sprint clear recovery contract');
+    createdSprintIds.push(clearSprint.id);
+
     const { error: transactionalClearError } = await client.rpc('clear_workout_completion_with_proof', {
       p_week_index: clearWeek,
       p_workout_index: clearWorkout,
@@ -553,6 +563,17 @@ async function run() {
       .eq('id', clearProof.id)
       .single();
     assert(!clearedAttachmentError && clearedAttachment?.completion_cleared === true, 'Migration 015 must mark proof completion_cleared = true');
+    const { error: repeatedClearError } = await client.rpc('clear_workout_completion_with_proof', {
+      p_week_index: clearWeek, p_workout_index: clearWorkout, p_attachment_id: null,
+    });
+    assert(!repeatedClearError, 'Migration 018: repeating a completed clear must converge successfully');
+    const { data: recoveredSprint, error: recoveredSprintError } = await client.from('sprint_sessions')
+      .select('attachment_id,session_json').eq('id', clearSprint.id).single();
+    assert(!recoveredSprintError && recoveredSprint?.attachment_id === null,
+      'Migration 018: cleared Sprint must not restore a cleared proof');
+    assert(!recoveredSprint.session_json.attachment && !recoveredSprint.session_json.completedAt,
+      'Migration 018: Sprint recovery JSON must match cleared relational state');
+    assert(recoveredSprint.session_json.data?.length === 1, 'Clear must preserve recorded Sprint interval data');
     const clearedIndex = createdWorkoutIds.indexOf(clearCompletionRow.id);
     if (clearedIndex >= 0) createdWorkoutIds.splice(clearedIndex, 1);
 
@@ -1350,12 +1371,16 @@ async function run() {
     console.log('PASS: proof authorization matrix');
   } finally {
     // Cleanup only IDs created by this run. Never delete real-program rows.
-    cleanupErrors = await runCleanup(client, {
+    for (const id of createdSprintIds) {
+      const { error } = await client.from('sprint_sessions').delete().eq('id', id);
+      if (error) cleanupErrors.push(`Sprint test cleanup failed: ${error.message}`);
+    }
+    cleanupErrors.push(...await runCleanup(client, {
       attachmentIds: createdAttachmentIds,
       mileTestIds: createdMileTestIds,
       workoutIds: createdWorkoutIds,
       storagePaths,
-    });
+    }));
   }
 
   if (cleanupErrors.length) {

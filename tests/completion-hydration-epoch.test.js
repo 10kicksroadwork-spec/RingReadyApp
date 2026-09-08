@@ -16,6 +16,9 @@ vi.mock('../src/auth.js', () => ({
   saveCloudWorkoutCompletion: vi.fn(),
   saveCloudSprintSession: vi.fn(),
   saveCloudMileTest: vi.fn(),
+  saveCloudAssignedMileResult: vi.fn(),
+  skipCloudAssignedMile: vi.fn(),
+  clearCloudAssignedMileWithProof: vi.fn(),
   saveCloudHRInfo: vi.fn(),
   saveCloudProfile: vi.fn(),
   loadCloudWorkoutCompletions: vi.fn(),
@@ -333,5 +336,40 @@ describe('completion mutation epoch vs stale hydration', () => {
 
     expect(getWorkoutCompletion(0, 1)?.id).toBe('local-during-hydrate');
     expect(getWorkoutCompletions()['0:1']).toBeTruthy();
+  });
+
+  it('does not discard sprint hydration when only a completion mutation occurs', async () => {
+    const generation = cloudHydrationTestHooks.getHydrationGeneration();
+    const sprintEpochAtStart = cloudHydrationTestHooks.getSprintMutationEpoch();
+
+    loadCloudSprintSessions.mockResolvedValue([{
+      id: 'cloud-sprint-1',
+      date: '2026-09-07T12:00:00.000Z',
+      cfg: { workoutContext: { weekIndex: 0, workoutIndex: 0 } },
+      data: [{ sprintHR: 170, restHR: 120, drop: 50, suspicious: false }],
+    }]);
+    cloudHydrationTestHooks.noteCompletionMutation();
+
+    await cloudHydrationTestHooks.applyCloudHydrationResults(
+      'user-a',
+      generation,
+      {
+        profileResult: { ok: true, value: null },
+        hrResult: { ok: true, value: null },
+        completionsResult: { ok: true, value: {} },
+        sessionsResult: { ok: true, value: [{
+          id: 'cloud-sprint-1',
+          date: '2026-09-07T12:00:00.000Z',
+          cfg: { workoutContext: { weekIndex: 0, workoutIndex: 0 } },
+          data: [{ sprintHR: 170, restHR: 120, drop: 50, suspicious: false }],
+        }] },
+        mileResult: { ok: true, value: null },
+      },
+      { completions: cloudHydrationTestHooks.getCompletionMutationEpoch(), sprints: sprintEpochAtStart, miles: cloudHydrationTestHooks.getMileMutationEpoch() },
+    );
+
+    const sessions = JSON.parse(localStorage.getItem('sprintTrainerHistory') || '[]');
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].id).toBe('cloud-sprint-1');
   });
 });

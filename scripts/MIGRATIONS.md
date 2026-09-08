@@ -30,10 +30,18 @@ Auth-touching migrations: `000`–`006`, `009`, `012`–`013`, `015`–`016`.
 | 16 | [015_clear_workout_completion_with_proof.sql](./migrations/015_clear_workout_completion_with_proof.sql) | Transactional completion clear + proof attachment reconcile RPC |
 | 17 | [016_idempotent_proof_attachment.sql](./migrations/016_idempotent_proof_attachment.sql) | Same-path proof RPC idempotency for safe mobile retries |
 | 18 | [017_workout_completion_position_unique.sql](./migrations/017_workout_completion_position_unique.sql) | Document/ensure UNIQUE(user_id, week_index, workout_index) matching production |
+| 19 | [018_clear_retry_and_sprint_proof.sql](./migrations/018_clear_retry_and_sprint_proof.sql) | Idempotent clear and atomic removal of cleared proof from Sprint recovery |
+| 20 | [019_assigned_mile_clear_lifecycle.sql](./migrations/019_assigned_mile_clear_lifecycle.sql) | Assigned Mile clear RPC (staging/testable; **do not apply to production** until code-clean review promotes) |
+| 21 | [020_assigned_mile_save_authority.sql](./migrations/020_assigned_mile_save_authority.sql) | Assigned Mile save + skip RPCs — canonical `workout_completions` + subordinate `mile_tests` (staging only; superseded serialization in 021) |
+| 22 | [021_assigned_mile_serialized_transitions.sql](./migrations/021_assigned_mile_serialized_transitions.sql) | Shared per-assignment advisory lock + position-canonical identity resolve for Save/Skip/Clear (staging only; **do not apply to production** yet) |
+| 23 | [022_generic_clear_assignment_authority.sql](./migrations/022_generic_clear_assignment_authority.sql) | Generic clear joins assignment lock and removes subordinate Mile detail (staging only; protects stale clients) |
+| 24 | [023_assignment_mutation_perimeter.sql](./migrations/023_assignment_mutation_perimeter.sql) | Assigned Mile mutation perimeter — direct table writes from already-loaded clients join the assignment lock and converge to a legal state; current-proof authority + JSON/relational proof mirrors (staging only; **do not apply to production** yet) |
 
 ## Fresh database
 
-Paste and run each file in the Supabase SQL editor in order. Follow this table for the current canonical sequence.
+Paste and run each file in the Supabase SQL editor in order. Follow this table for the current canonical sequence. Migration **019–023** are staging-only until a code-clean review promotes them. Do not apply to production while PR #70 remains below certification.
+
+**Deployment ordering constraint for 019–023.** The assignment perimeter in **023** is deliberately backward-compatible with already-loaded clients: an `e85e989` client that writes `mile_tests` / `workout_completions` directly still converges server-side to a legal assigned-Mile state instead of being rejected. That is what makes it safe to apply the DB contract *before* the new frontend ships, and it is also what keeps a Vercel rollback to `e85e989` usable while the new schema is live. Do not replace the convergence triggers with write revocations without first moving every baseline-Mile and proof-staging caller.
 
 ## Upgrade from existing production
 
@@ -41,9 +49,10 @@ These migrations use `if not exists` / `drop policy if exists` patterns and are 
 
 For the Sprint proof-gap hotfix on an existing database that already ran 000–007, run **008** then **009** in the Supabase SQL editor before deploying the coach hotfix client.
 
+
 ## Production deployment procedure
 
-1. Apply Supabase migrations **000–017** in the table above (required through attachment write revoke, modality output columns, transactional clear RPC, idempotent proof RPC, and positional workout uniqueness).
+1. Apply Supabase migrations **000–018** in the table above (required through attachment write revoke, modality output columns, transactional clear RPC, idempotent proof RPC, and positional workout uniqueness).
 2. Configure production Apps Script Script Property `RING_READY_SYNC_RELAY_SECRET` matching the Vercel relay environment.
 3. Deploy the compatible client to Vercel with client-side:
    - `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY`
@@ -75,3 +84,5 @@ This job is a **production deploy gate**, not a PR merge gate. Configure Vercel 
 ## Legacy scripts
 
 Older ad-hoc files live in [../legacy/](../legacy/) for reference only.
+
+Athlete recovery release requires **018_clear_retry_and_sprint_proof.sql** before client promotion. The live contract gate now checks a repeated clear. Do not promote before this passes.

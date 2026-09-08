@@ -1,3 +1,5 @@
+import { captureAthleteOperation, isAthleteOperationCurrent, ownedResult } from './athlete-operation.js';
+import { withOperationTimeout, OPERATION_TIMEOUT_MS } from './operation-timeout.js';
 import {
   getCurrentUser,
   isCoachUser,
@@ -14,6 +16,7 @@ import {
 import { isSupabaseConfigured, supabase } from './supabase-client.js';
 import { getAthleteProfile, saveAthleteProfile } from './sync.js';
 import { readJSONValue, writeJSON } from './safe-storage.js';
+import { doesActiveSprintOwnNavigation } from './sprint-navigation.js';
 
 const ONBOARDING_SCREEN_ID = 'onboarding-gate';
 const ONBOARDING_STYLE_ID = 'ring-ready-onboarding-styles';
@@ -149,12 +152,13 @@ function isHRComplete(hrInfo, cloudHR, metadata) {
 }
 
 async function updateMetadata(patch) {
+  const owner = captureAthleteOperation();
   if (!supabase) return null;
   const user = getCurrentUser();
   const current = getUserMetadata(user);
-  const { data, error } = await supabase.auth.updateUser({
+  const { data, error } = await ownedResult(owner, withOperationTimeout(supabase.auth.updateUser({
     data: { ...current, ...patch },
-  });
+  }), { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_COMPLETION, operation: 'onboarding_metadata' }));
   if (error) throw error;
   return data.user || null;
 }
@@ -666,6 +670,7 @@ function fillGateInputs(state) {
 }
 
 async function saveProfileStep() {
+  const owner = captureAthleteOperation();
   if (!gateState) return;
 
   const athleteName = text(
@@ -727,7 +732,7 @@ async function saveProfileStep() {
       campLength,
     });
 
-    const cloudProfile = await saveCloudProfile(profile);
+    const cloudProfile = await ownedResult(owner, withOperationTimeout(saveCloudProfile(profile), { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_COMPLETION, operation: 'onboarding_profile' }));
     await updateMetadata({
       full_name: athleteName,
       athlete_name: athleteName,
@@ -744,14 +749,16 @@ async function saveProfileStep() {
 
     setStep('hr');
   } catch (error) {
+    if (!isAthleteOperationCurrent(owner)) return;
     console.warn('Required profile save failed', error);
     setStatus('Could not save your profile. Check your connection and try again.', true);
   } finally {
-    if (button) button.disabled = false;
+    if (button && isAthleteOperationCurrent(owner)) button.disabled = false;
   }
 }
 
 async function finishOnboarding() {
+  const owner = captureAthleteOperation();
   if (!gateState) return;
 
   const maxHr = number(document.getElementById('onboarding-max-hr-input')?.value);
@@ -796,7 +803,7 @@ async function finishOnboarding() {
     };
 
     persistJSON(HR_INFO_STORAGE_KEY, nextHR);
-    await saveCloudHRInfo(nextHR);
+    await ownedResult(owner, withOperationTimeout(saveCloudHRInfo(nextHR), { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_COMPLETION, operation: 'onboarding_hr' }));
     await updateMetadata({
       max_hr_source: maxHrSource,
       onboarding_completed_at: new Date().toISOString(),
@@ -804,12 +811,13 @@ async function finishOnboarding() {
 
     gateLocked = false;
     setStatus('Setup complete. Opening Ring Ready...');
-    window.setTimeout(() => window.location.reload(), 250);
+    window.setTimeout(() => { if (isAthleteOperationCurrent(owner)) window.location.reload(); }, 250);
   } catch (error) {
+    if (!isAthleteOperationCurrent(owner)) return;
     console.warn('Required HR setup save failed', error);
     setStatus('Could not finish setup. Check your connection and try again.', true);
   } finally {
-    if (button) button.disabled = false;
+    if (button && isAthleteOperationCurrent(owner)) button.disabled = false;
   }
 }
 
@@ -841,6 +849,8 @@ function bindGateEvents() {
 }
 
 export async function enforceAthleteOnboarding({ showScreen }) {
+  if (doesActiveSprintOwnNavigation()) return false;
+  const owner = captureAthleteOperation();
   if (!isSupabaseConfigured || !getCurrentUser() || isCoachUser()) return false;
 
   ensureStyles();
@@ -853,10 +863,11 @@ export async function enforceAthleteOnboarding({ showScreen }) {
   const localHR = getStoredHRInfo();
 
   const [profileResult, hrResult] = await Promise.allSettled([
-    loadCloudProfile(),
-    loadCloudHRInfo(),
+    withOperationTimeout(loadCloudProfile(), { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_HYDRATION, operation: 'onboarding_profile_read' }),
+    withOperationTimeout(loadCloudHRInfo(), { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_HYDRATION, operation: 'onboarding_hr_read' }),
   ]);
 
+  if (!isAthleteOperationCurrent(owner)) return false;
   const cloudProfile =
     profileResult.status === 'fulfilled' ? profileResult.value : null;
   const cloudHR = hrResult.status === 'fulfilled' ? hrResult.value : null;
