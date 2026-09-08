@@ -101,6 +101,13 @@ revoke all on function public.assignment_has_mile_detail(uuid, integer, integer)
 
 -- BEFORE on mile_tests: join the assignment lock before the detail row lands, fail closed on
 -- ambiguous identity, and never let subordinate detail contradict canonical proof linkage.
+--
+-- Known narrow tradeoff: a legacy upsert that takes the ON CONFLICT update path holds the
+-- mile_tests row lock before this trigger fires, while the RPCs take the advisory lock first.
+-- A stale client resaving the exact same assignment at the exact same moment a new client
+-- clears it can therefore deadlock. PostgreSQL aborts one transaction (SQLSTATE 40P01) with
+-- nothing committed, so the outcome stays legal and the athlete's retry succeeds. That is
+-- strictly preferable to letting the unlocked write commit an illegal state.
 create or replace function public.tg_assigned_mile_detail_before()
 returns trigger
 language plpgsql
@@ -144,9 +151,10 @@ begin
   -- Only ever upgrade missing proof linkage; a direct write must not erase canonical proof.
   if new.attachment_id is null and v_wc_attachment_id is not null then
     new.attachment_id := v_wc_attachment_id;
-    if new.proof_policy_version is null then
-      new.proof_policy_version := v_wc_policy_version;
-    end if;
+  end if;
+
+  if new.proof_policy_version is null and v_wc_policy_version is not null then
+    new.proof_policy_version := v_wc_policy_version;
   end if;
 
   if coalesce(trim(coalesce(new.client_record_id, '')), '') = ''
@@ -345,6 +353,8 @@ begin
      and v_wc_output_value is not distinct from new.distance
      and v_wc_attachment_id is not distinct from new.attachment_id
      and v_wc_policy_version is not distinct from new.proof_policy_version
+     -- Proof linkage resolves through client_record_id, so the pair may not drift.
+     and v_wc_client_record_id is not distinct from v_client_record_id
      and coalesce(v_wc_proof_pending, false) = false
   then
     return null;

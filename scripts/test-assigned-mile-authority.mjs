@@ -152,8 +152,8 @@ async function saveAssigned(client, slot, clientRecordId, values = {}) {
     p_max_bpm: values.maxBpm ?? 170,
     p_pace_min_per_mile: values.totalMinutes ?? 7.5,
     p_saved_at: savedAt,
-    p_attachment_id: null,
-    p_proof_policy_version: 1,
+    p_attachment_id: values.attachmentId ?? null,
+    p_proof_policy_version: values.proofPolicyVersion ?? 1,
     p_result_json: {
       id: clientRecordId,
       testKey: slot.testKey,
@@ -786,6 +786,131 @@ async function main() {
     await cleanupSlot(a.client, a.userId, slot);
   }
 
+  // Standalone baseline Mile is never assignment-scoped and must stay outside the
+  // perimeter: no canonical completion is invented for it.
+  {
+    const baselineKey = 'mile-test:baseline';
+    await a.client.from('mile_tests').delete().eq('user_id', a.userId).eq('test_key', baselineKey);
+    const baselineId = randomUUID();
+    const savedAt = new Date().toISOString();
+    const { error } = await a.client.from('mile_tests').upsert({
+      user_id: a.userId,
+      client_record_id: baselineId,
+      test_key: baselineKey,
+      saved_at: savedAt,
+      distance: 1,
+      total_minutes: 7.9,
+      total_seconds: 474,
+      pace_min_per_mile: 7.9,
+      avg_bpm: 148,
+      max_bpm: 168,
+      proof_pending: false,
+      result_json: { id: baselineId, testKey: baselineKey, distance: 1, totalMinutes: 7.9, savedAt },
+      test_context_json: { testKey: baselineKey },
+      updated_at: savedAt,
+    }, { onConflict: 'user_id,test_key' });
+    assert(!error, `baseline Mile save failed: ${error?.message}`);
+
+    const { data: baselineRow, error: readErr } = await third.client.from('mile_tests')
+      .select('id,test_key,total_minutes')
+      .eq('user_id', third.userId)
+      .eq('test_key', baselineKey)
+      .maybeSingle();
+    assert(!readErr, readErr?.message);
+    assert(baselineRow?.id, 'baseline Mile row must survive');
+    assert(Number(baselineRow.total_minutes) === 7.9, 'baseline Mile metrics must survive');
+    const { count: inventedCount, error: countErr } = await third.client.from('workout_completions')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', third.userId)
+      .is('week_index', null);
+    assert(!countErr, countErr?.message);
+    assert(inventedCount === 0, 'baseline Mile must not invent a canonical completion');
+    console.log('PASS standalone baseline Mile stays outside the assignment perimeter');
+    await a.client.from('mile_tests').delete().eq('user_id', a.userId).eq('test_key', baselineKey);
+  }
+
+  // proof_pending identity staging must remain a no-op for the state machine, and
+  // its rollback delete must still work.
+  {
+    const slot = allocSlot();
+    await cleanupSlot(a.client, a.userId, slot);
+    const stagingId = randomUUID();
+    const { error: stageErr } = await a.client.from('mile_tests').insert({
+      user_id: a.userId,
+      client_record_id: stagingId,
+      test_key: slot.testKey,
+      saved_at: null,
+      distance: null,
+      total_minutes: null,
+      proof_pending: true,
+      result_json: { id: stagingId, testKey: slot.testKey, status: 'pending_proof' },
+      test_context_json: { testKey: slot.testKey, weekIndex: slot.weekIndex, workoutIndex: slot.workoutIndex },
+      updated_at: new Date().toISOString(),
+    });
+    assert(!stageErr, `provisional staging insert failed: ${stageErr?.message}`);
+    assert(
+      !(await readPositionRow(third.client, third.userId, slot.weekIndex, slot.workoutIndex)),
+      'provisional staging must not invent a canonical completion',
+    );
+
+    const { error: rollbackErr } = await a.client.from('mile_tests')
+      .delete()
+      .eq('user_id', a.userId)
+      .eq('test_key', slot.testKey)
+      .eq('proof_pending', true);
+    assert(!rollbackErr, `provisional staging rollback failed: ${rollbackErr?.message}`);
+    assert(!(await readMileRow(third.client, third.userId, slot)), 'provisional rollback must remove the row');
+    console.log('PASS proof_pending identity staging stays outside the assignment perimeter');
+    await cleanupSlot(a.client, a.userId, slot);
+  }
+
+  // First-time assigned Mile with proof, then a stale-client Skip: the proof must be
+  // retired rather than left current against a skipped assignment.
+  {
+    const slot = allocSlot();
+    await cleanupSlot(a.client, a.userId, slot);
+    const recordId = randomUUID();
+    const attachmentId = randomUUID();
+    const { error: proofErr } = await a.client.from('workout_attachments').insert({
+      id: attachmentId,
+      user_id: a.userId,
+      linked_record_id: recordId,
+      is_current: true,
+      completion_cleared: false,
+    });
+    if (proofErr) {
+      console.log(`SKIP proof retirement contract (cannot seed attachment: ${proofErr.message})`);
+    } else {
+      const { error: saveErr } = await saveAssigned(a.client, slot, recordId, {
+        totalMinutes: 7.05,
+        attachmentId,
+        proofPolicyVersion: 1,
+      });
+      assert(!saveErr, `assigned Save with proof failed: ${saveErr?.message}`);
+      const saved = await readCanonical(third.client, third.userId, slot);
+      assert(saved.status === 'completed', 'assigned Save with proof must complete');
+      assert(saved.completion.attachment_id === attachmentId, 'completion must link the proof');
+      assert(saved.mile.attachment_id === attachmentId, 'mile detail must link the same proof');
+
+      const { error: skipErr } = await legacySkipWorkout(b.client, b.userId, slot, randomUUID());
+      assert(!skipErr, `legacy-client Skip with proof failed: ${skipErr?.message}`);
+      const truth = await assertFreshClientsAgree(a, b, third, slot, 'legacy-skip-retires-proof');
+      assert(truth.status === 'skipped', 'legacy-client Skip must converge to SKIPPED');
+      assert(!truth.mile, 'legacy-client Skip must remove Mile detail');
+
+      const { data: proofRow, error: proofReadErr } = await third.client.from('workout_attachments')
+        .select('id,completion_cleared')
+        .eq('user_id', third.userId)
+        .eq('id', attachmentId)
+        .maybeSingle();
+      assert(!proofReadErr, proofReadErr?.message);
+      assert(proofRow?.completion_cleared === true, 'stale-client Skip must retire the assigned Mile proof');
+      console.log('PASS first-time assigned Mile proof is retired by a stale-client Skip');
+      await a.client.from('workout_attachments').delete().eq('user_id', a.userId).eq('id', attachmentId);
+    }
+    await cleanupSlot(a.client, a.userId, slot);
+  }
+
   // Cross-version: the exact production client writes tables directly and must
   // still converge to a legal committed state.
   {
@@ -823,6 +948,77 @@ async function main() {
     assert(!truth.completion.attachment_id, 'legacy-client Skip must retire proof linkage');
     console.log('PASS legacy-client Skip from COMPLETED converges to legal SKIPPED');
     await cleanupSlot(a.client, a.userId, slot);
+  }
+
+  // Stale-client identity staging (ensureCloudMileTestIdentity 'patch-client-id')
+  // rewrites only mile_tests.client_record_id. Proof linkage resolves through that
+  // id, so the canonical completion must follow it.
+  {
+    const slot = allocSlot();
+    await cleanupSlot(a.client, a.userId, slot);
+    assert(!(await saveAssigned(a.client, slot, randomUUID(), { totalMinutes: 7.35 })).error, 'seed save failed');
+    const patchedId = randomUUID();
+    const { error } = await a.client.from('mile_tests')
+      .update({ client_record_id: patchedId, updated_at: new Date().toISOString() })
+      .eq('user_id', a.userId)
+      .eq('test_key', slot.testKey);
+    assert(!error, `legacy identity patch failed: ${error?.message}`);
+    const truth = await assertFreshClientsAgree(a, b, third, slot, 'legacy-identity-patch');
+    assert(truth.status === 'completed', 'identity patch must stay COMPLETED');
+    assert(truth.mile.client_record_id === patchedId, 'mile detail must carry the patched identity');
+    assert(
+      truth.completion.client_record_id === patchedId,
+      'canonical completion must follow the patched identity',
+    );
+    console.log('PASS legacy identity patch keeps completion and detail on one record id');
+    await cleanupSlot(a.client, a.userId, slot);
+  }
+
+  // Stale-client resave over a completed assignment: canonical metrics and proof
+  // linkage must follow the athlete's new save instead of silently disagreeing.
+  {
+    const slot = allocSlot();
+    await cleanupSlot(a.client, a.userId, slot);
+    const recordId = randomUUID();
+    const attachmentId = randomUUID();
+    const { error: proofErr } = await a.client.from('workout_attachments').insert({
+      id: attachmentId,
+      user_id: a.userId,
+      linked_record_id: recordId,
+      is_current: true,
+      completion_cleared: false,
+    });
+    const proofAvailable = !proofErr;
+    assert(!(await saveAssigned(a.client, slot, recordId, {
+      totalMinutes: 7.5,
+      attachmentId: proofAvailable ? attachmentId : null,
+      proofPolicyVersion: proofAvailable ? 1 : null,
+    })).error, 'seed save failed');
+
+    const { error } = await legacySaveMileDetail(a.client, a.userId, slot, {
+      totalMinutes: 6.72,
+      avgBpm: 161,
+      maxBpm: 179,
+    });
+    assert(!error, `legacy-client resave failed: ${error?.message}`);
+    const truth = await assertFreshClientsAgree(a, b, third, slot, 'legacy-client-resave-over-completed');
+    assert(truth.status === 'completed', 'legacy-client resave must stay COMPLETED');
+    assert(Number(truth.completion.total_minutes) === 6.72, 'canonical completion must adopt resaved time');
+    assert(Number(truth.completion.avg_bpm) === 161, 'canonical completion must adopt resaved avg HR');
+    assert(Number(truth.completion.max_bpm) === 179, 'canonical completion must adopt resaved max HR');
+    assert(Number(truth.mile.total_minutes) === 6.72, 'mile detail must carry resaved time');
+    assert(
+      truth.completion.attachment_id === truth.mile.attachment_id,
+      'canonical completion and mile detail must agree on proof linkage',
+    );
+    if (proofAvailable) {
+      assert(truth.completion.attachment_id === attachmentId, 'resave must not erase existing proof');
+    }
+    console.log('PASS legacy-client resave over COMPLETED keeps one agreed truth');
+    await cleanupSlot(a.client, a.userId, slot);
+    if (proofAvailable) {
+      await a.client.from('workout_attachments').delete().eq('user_id', a.userId).eq('id', attachmentId);
+    }
   }
 
   {
