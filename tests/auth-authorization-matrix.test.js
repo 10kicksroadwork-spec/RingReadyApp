@@ -54,6 +54,9 @@ describe('athlete/coach authorization matrix', () => {
     const body = functionBody(AUTH_SRC, 'saveCloudAssignedMileResult');
     expect(body).toMatch(/reconcileAssignedMileSaveOutcome/);
     expect(body).toMatch(/if \(reconciled\) return reconciled/);
+    expect(body).toMatch(/isAmbiguousCloudError/);
+    expect(body).toMatch(/attachmentId/);
+    expect(body).toMatch(/proofPolicyVersion/);
   });
   it('does not grant athletes coach identity via email helper', () => {
     expect(isCoachEmail('athlete@example.com')).toBe(false);

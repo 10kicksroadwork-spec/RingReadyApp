@@ -2000,10 +2000,27 @@ async function clearCompletionFromDetailOwned(weekIndex, workoutIndex, owner) {
     : 'Clear this workout log from this device and your account?';
   if (!window.confirm(label)) return;
 
+  const week = getWeek(safeWeekIndex);
+  const workout = week?.workouts?.[safeWorkoutIndex];
+  const isAssignedMile = workout?.action === 'mile-test';
+  const campLength = Number(getAthleteProfile().campLength) || 7;
+  const testKey = isAssignedMile
+    ? buildProgramProofKey(campLength, safeWeekIndex, safeWorkoutIndex)
+    : null;
+
   const attachmentId = existing?.attachment?.id || null;
   if (isSupabaseConfigured && getCurrentUser()) {
     try {
-      await ownedResult(owner, clearCloudWorkoutCompletionWithProof(safeWeekIndex, safeWorkoutIndex, attachmentId));
+      if (isAssignedMile) {
+        await ownedResult(owner, clearCloudAssignedMileWithProof({
+          testKey,
+          weekIndex: safeWeekIndex,
+          workoutIndex: safeWorkoutIndex,
+          attachmentId,
+        }));
+      } else {
+        await ownedResult(owner, clearCloudWorkoutCompletionWithProof(safeWeekIndex, safeWorkoutIndex, attachmentId));
+      }
     } catch (error) {
       if (!isAthleteOperationCurrent(owner)) return;
       console.warn('Could not clear workout from cloud', error);
@@ -2013,6 +2030,15 @@ async function clearCompletionFromDetailOwned(weekIndex, workoutIndex, owner) {
   }
 
   clearWorkoutDraft(`detail:${safeWeekIndex}:${safeWorkoutIndex}`);
+  if (isAssignedMile && testKey) {
+    clearWorkoutDraft(`mile:${testKey}`);
+    window.dispatchEvent(new CustomEvent('ringready:proof-forget', { detail: { surface: 'mile' } }));
+    const storedMile = getMileTestResult();
+    if (storedMile && String(storedMile.testKey || '') === String(testKey)) {
+      removeStorageKey(MILE_TEST_STORAGE_KEY);
+    }
+    noteMileMutation();
+  }
   window.dispatchEvent(new CustomEvent('ringready:proof-forget', { detail: { surface: 'detail' } }));
   markWorkoutCompletionCleared(safeWeekIndex, safeWorkoutIndex);
   const removed = removeWorkoutCompletion(safeWeekIndex, safeWorkoutIndex);

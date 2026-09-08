@@ -43,6 +43,7 @@ function numberOrNull(value) {
 }
 
 function integerOrNull(value) {
+  if (value === null || value === undefined || value === '') return null;
   const parsed = numberOrNull(value);
   return parsed === null ? null : Math.round(parsed);
 }
@@ -586,10 +587,21 @@ function isSkippedAssignmentRow(row) {
     || record?.type === 'daily-workout-skip';
 }
 
+function isAmbiguousCloudError(error) {
+  return !!error && (
+    error.ambiguous === true
+    || error.name === 'OperationTimeoutError'
+    || error.name === 'TypeError'
+    || /timeout|timed out|network|failed to fetch|load failed|econn|socket|abort/i.test(String(error.message || ''))
+  );
+}
+
 /**
  * After an ambiguous assigned-Mile save (timeout / lost response), prove whether
  * the requested logical save already committed as COMPLETED + matching Mile detail.
- * Returns a success payload when proven; null when success cannot be established.
+ * When proof was requested, both WC and Mile must carry the requested attachment and
+ * policy version, and neither may still be pending. Returns a success payload only
+ * when the full authoritative postcondition is proven.
  */
 export async function reconcileAssignedMileSaveOutcome({
   owner,
@@ -602,6 +614,8 @@ export async function reconcileAssignedMileSaveOutcome({
   totalMinutes,
   avgBpm,
   maxBpm,
+  attachmentId = null,
+  proofPolicyVersion = null,
 } = {}) {
   const week = Number(weekIndex);
   const workout = Number(workoutIndex);
@@ -656,6 +670,18 @@ export async function reconcileAssignedMileSaveOutcome({
   if (Number.isFinite(Number(maxBpm)) && Number(mileRow.data.max_bpm) !== Number(maxBpm)) {
     return null;
   }
+
+  const requestedAttachmentId = attachmentId ? String(attachmentId) : null;
+  const requestedPolicyVersion = integerOrNull(proofPolicyVersion);
+  if (requestedAttachmentId) {
+    if (String(completion.attachment_id || '') !== requestedAttachmentId) return null;
+    if (String(mileRow.data.attachment_id || '') !== requestedAttachmentId) return null;
+  }
+  if (requestedPolicyVersion !== null) {
+    if (integerOrNull(completion.proof_policy_version) !== requestedPolicyVersion) return null;
+    if (integerOrNull(mileRow.data.proof_policy_version) !== requestedPolicyVersion) return null;
+  }
+  if (completion.proof_pending || mileRow.data.proof_pending) return null;
 
   return {
     completion_id: completion.id,
@@ -750,6 +776,7 @@ export async function saveCloudAssignedMileResult(result, hrInfo, testContext, c
     return data || result;
   } catch (error) {
     if (error?.accountChanged) throw error;
+    if (!isAmbiguousCloudError(error)) throw error;
     const reconciled = await reconcileAssignedMileSaveOutcome({
       owner,
       userId: user.id,
@@ -761,6 +788,8 @@ export async function saveCloudAssignedMileResult(result, hrInfo, testContext, c
       totalMinutes: params.p_total_minutes,
       avgBpm: params.p_avg_bpm,
       maxBpm: params.p_max_bpm,
+      attachmentId: params.p_attachment_id,
+      proofPolicyVersion: params.p_proof_policy_version,
     });
     if (reconciled) return reconciled;
     throw error;

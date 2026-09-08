@@ -220,6 +220,15 @@ async function clearAssigned(client, slot) {
   });
 }
 
+// Stale/legacy client path: generic clear must join the same assignment authority.
+async function clearGeneric(client, slot) {
+  return client.rpc('clear_workout_completion_with_proof', {
+    p_week_index: slot.weekIndex,
+    p_workout_index: slot.workoutIndex,
+    p_attachment_id: null,
+  });
+}
+
 async function assertFreshClientsAgree(a, b, third, slot, label) {
   const truthA = await readCanonical(a.client, a.userId, slot);
   const truthB = await readCanonical(b.client, b.userId, slot);
@@ -236,9 +245,12 @@ async function runConcurrentPair(label, launchA, launchB, a, b, third, slot) {
   const settled = await Promise.allSettled([launchA(), launchB()]);
   const failures = settled.filter((entry) => entry.status === 'rejected'
     || (entry.status === 'fulfilled' && entry.value?.error));
-  // Serialization may abort one side under deadlock; both outcomes must still converge.
-  if (failures.length === 2) {
-    throw new Error(`${label}: both concurrent mutations failed`);
+  // Serialized valid transitions must both fulfill; a rejected request is an athlete error.
+  if (failures.length > 0) {
+    const reason = failures[0].status === 'rejected'
+      ? failures[0].reason?.message
+      : failures[0].value?.error?.message;
+    throw new Error(`${label}: concurrent mutation failed (${reason || 'unknown'})`);
   }
   return assertFreshClientsAgree(a, b, third, slot, label);
 }
@@ -307,6 +319,64 @@ async function main() {
     );
     assertConsistentTruth(truth, `Save||Clear#${round}`);
     console.log(`PASS concurrent Save||Clear#${round}: canonical=${truth.status || 'cleared'}`);
+    await cleanupSlot(a.client, a.userId, slot);
+  }
+
+  for (let round = 0; round < CONCURRENT_ROUNDS; round += 1) {
+    const slot = allocSlot();
+    await cleanupSlot(a.client, a.userId, slot);
+    const saveId = randomUUID();
+    assert(!(await saveAssigned(a.client, slot, saveId, { totalMinutes: 8 })).error, 'seed save failed');
+    const truth = await runConcurrentPair(
+      `Save||genericClear#${round}`,
+      () => saveAssigned(a.client, slot, saveId, { totalMinutes: 8.3 + round * 0.01 }),
+      () => clearGeneric(b.client, slot),
+      a,
+      b,
+      third,
+      slot,
+    );
+    assertConsistentTruth(truth, `Save||genericClear#${round}`);
+    console.log(`PASS concurrent Save||genericClear#${round}: canonical=${truth.status || 'cleared'}`);
+    await cleanupSlot(a.client, a.userId, slot);
+  }
+
+  for (let round = 0; round < Math.max(4, Math.floor(CONCURRENT_ROUNDS / 2)); round += 1) {
+    const slot = allocSlot();
+    await cleanupSlot(a.client, a.userId, slot);
+    const skipId = randomUUID();
+    assert(!(await skipAssigned(a.client, slot, skipId)).error, 'seed skip failed');
+    const truth = await runConcurrentPair(
+      `Skip||genericClear#${round}`,
+      () => skipAssigned(a.client, slot, skipId),
+      () => clearGeneric(b.client, slot),
+      a,
+      b,
+      third,
+      slot,
+    );
+    assertConsistentTruth(truth, `Skip||genericClear#${round}`);
+    console.log(`PASS concurrent Skip||genericClear#${round}: canonical=${truth.status || 'cleared'}`);
+    await cleanupSlot(a.client, a.userId, slot);
+  }
+
+  for (let round = 0; round < Math.max(4, Math.floor(CONCURRENT_ROUNDS / 2)); round += 1) {
+    const slot = allocSlot();
+    await cleanupSlot(a.client, a.userId, slot);
+    const skipId = randomUUID();
+    const saveId = randomUUID();
+    assert(!(await skipAssigned(a.client, slot, skipId)).error, 'seed skip failed');
+    const truth = await runConcurrentPair(
+      `Save||genericClearFromSkipped#${round}`,
+      () => saveAssigned(a.client, slot, saveId, { totalMinutes: 8.5 }),
+      () => clearGeneric(b.client, slot),
+      a,
+      b,
+      third,
+      slot,
+    );
+    assertConsistentTruth(truth, `Save||genericClearFromSkipped#${round}`);
+    console.log(`PASS concurrent Save||genericClearFromSkipped#${round}: canonical=${truth.status || 'cleared'}`);
     await cleanupSlot(a.client, a.userId, slot);
   }
 

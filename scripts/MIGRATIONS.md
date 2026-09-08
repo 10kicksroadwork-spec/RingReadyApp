@@ -34,10 +34,11 @@ Auth-touching migrations: `000`–`006`, `009`, `012`–`013`, `015`–`016`.
 | 20 | [019_assigned_mile_clear_lifecycle.sql](./migrations/019_assigned_mile_clear_lifecycle.sql) | Assigned Mile clear RPC (staging/testable; **do not apply to production** until code-clean review promotes) |
 | 21 | [020_assigned_mile_save_authority.sql](./migrations/020_assigned_mile_save_authority.sql) | Assigned Mile save + skip RPCs — canonical `workout_completions` + subordinate `mile_tests` (staging only; superseded serialization in 021) |
 | 22 | [021_assigned_mile_serialized_transitions.sql](./migrations/021_assigned_mile_serialized_transitions.sql) | Shared per-assignment advisory lock + key/position identity resolve for Save/Skip/Clear (staging only; **do not apply to production** yet) |
+| 23 | [022_generic_clear_assignment_authority.sql](./migrations/022_generic_clear_assignment_authority.sql) | Generic clear joins assignment lock and removes subordinate Mile detail (staging only; protects stale clients) |
 
 ## Fresh database
 
-Paste and run each file in the Supabase SQL editor in order. Follow this table for the current canonical sequence. Migration **019–021** are staging-only until a code-clean review promotes them. Do not apply to production while PR #70 remains below certification.
+Paste and run each file in the Supabase SQL editor in order. Follow this table for the current canonical sequence. Migration **019–022** are staging-only until a code-clean review promotes them. Do not apply to production while PR #70 remains below certification.
 
 ## Upgrade from existing production
 
