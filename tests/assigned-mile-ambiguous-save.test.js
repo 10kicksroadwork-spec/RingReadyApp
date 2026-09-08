@@ -38,6 +38,14 @@ const completedWc = {
   workout_index: 3,
   record_json: { status: 'completed', type: 'daily-workout-completion' },
   proof_pending: false,
+  distance: 1,
+  total_minutes: 7.5,
+  total_seconds: 450,
+  avg_bpm: 150,
+  max_bpm: 170,
+  modality: 'running',
+  output_type: 'distance',
+  output_value: 1,
 };
 
 const matchingMile = {
@@ -46,6 +54,7 @@ const matchingMile = {
   test_key: 'program:7:5:3',
   distance: 1,
   total_minutes: 7.5,
+  total_seconds: 450,
   avg_bpm: 150,
   max_bpm: 170,
   proof_pending: false,
@@ -84,6 +93,7 @@ describe('assigned mile ambiguous save reconciliation', () => {
       clientRecordId: 'rec-1',
       distance: 1,
       totalMinutes: 7.5,
+      totalSeconds: 450,
       avgBpm: 150,
       maxBpm: 170,
     });
@@ -93,6 +103,56 @@ describe('assigned mile ambiguous save reconciliation', () => {
       test_key: 'program:7:5:3',
       completion_key: '5:3',
     });
+  });
+
+  it('does NOT reconcile when WC metrics are stale but Mile matches requested save', async () => {
+    mockRows({
+      wc: {
+        ...completedWc,
+        total_minutes: 7.67,
+        total_seconds: 460,
+        avg_bpm: 145,
+        max_bpm: 165,
+      },
+      mile: matchingMile,
+    });
+    const auth = await loadAuth();
+    const reconciled = await auth.reconcileAssignedMileSaveOutcome({
+      owner: { id: 'op-1' },
+      userId: mockUser.id,
+      testKey: 'program:7:5:3',
+      weekIndex: 5,
+      workoutIndex: 3,
+      clientRecordId: 'rec-1',
+      distance: 1,
+      totalMinutes: 7.5,
+      totalSeconds: 450,
+      avgBpm: 150,
+      maxBpm: 170,
+    });
+    expect(reconciled).toBeNull();
+  });
+
+  it('reconciles when WC and Mile both prove the full requested postcondition', async () => {
+    mockRows({
+      wc: completedWc,
+      mile: matchingMile,
+    });
+    const auth = await loadAuth();
+    const reconciled = await auth.reconcileAssignedMileSaveOutcome({
+      owner: { id: 'op-1' },
+      userId: mockUser.id,
+      testKey: 'program:7:5:3',
+      weekIndex: 5,
+      workoutIndex: 3,
+      clientRecordId: 'rec-1',
+      distance: 1,
+      totalMinutes: 7.5,
+      totalSeconds: 450,
+      avgBpm: 150,
+      maxBpm: 170,
+    });
+    expect(reconciled).toMatchObject({ status: 'completed', reconciled: true });
   });
 
   it('does not treat skipped assignment + mile absence as save success', async () => {
@@ -243,14 +303,18 @@ describe('assigned mile save source contract', () => {
       .toBeLessThan(clearBody.indexOf('delete from public.mile_tests'));
   });
 
-  it('generic clear joins assignment lock and removes subordinate Mile detail', () => {
+  it('generic clear joins assignment lock and uses fail-closed identity resolver', () => {
     const migration = readFileSync('scripts/migrations/022_generic_clear_assignment_authority.sql', 'utf8');
     expect(migration).toMatch(/lock_assigned_workout_transition/);
+    expect(migration).toMatch(/resolve_assigned_workout_completion_id/);
     expect(migration).toMatch(/clear_workout_completion_with_proof/);
     expect(migration).toMatch(/delete from public\.mile_tests/);
+    expect(migration).not.toMatch(/wc\.completion_key = v_completion_key\s*\n\s*or/i);
     const fnIdx = migration.indexOf('create or replace function public.clear_workout_completion_with_proof');
     const body = migration.slice(fnIdx);
     expect(body.indexOf('lock_assigned_workout_transition'))
+      .toBeLessThan(body.indexOf('resolve_assigned_workout_completion_id'));
+    expect(body.indexOf('resolve_assigned_workout_completion_id'))
       .toBeLessThan(body.indexOf('delete from public.workout_completions'));
   });
 

@@ -499,6 +499,128 @@ async function main() {
     await cleanupSlot(a.client, a.userId, slot);
   }
 
+  {
+    const slot = allocSlot();
+    await cleanupSlot(a.client, a.userId, slot);
+    const idA = randomUUID();
+    const idB = randomUUID();
+    const wrongWeek = slot.weekIndex - 1;
+    const savedAt = new Date().toISOString();
+    const mileRecord = {
+      user_id: a.userId,
+      test_key: slot.testKey,
+      client_record_id: idB,
+      distance: 1,
+      total_minutes: 7.5,
+      total_seconds: 450,
+      avg_bpm: 150,
+      max_bpm: 170,
+      saved_at: savedAt,
+      result_json: { testKey: slot.testKey, distance: 1, totalMinutes: 7.5 },
+      test_context_json: { testKey: slot.testKey, weekIndex: slot.weekIndex, workoutIndex: slot.workoutIndex },
+    };
+    const completionBase = {
+      user_id: a.userId,
+      week_label: 'Week Test',
+      week_title: 'Authority',
+      day_of_week: 'Saturday/Sunday',
+      workout_type: 'Mile Re-Test',
+      description: 'dual identity contract',
+      completed_at: savedAt,
+      distance: 1,
+      total_minutes: 7.5,
+      total_seconds: 450,
+      avg_bpm: 150,
+      max_bpm: 170,
+      modality: 'running',
+      output_type: 'distance',
+      output_value: 1,
+      record_json: {
+        status: 'completed',
+        type: 'daily-workout-completion',
+        workoutContext: { weekIndex: slot.weekIndex, workoutIndex: slot.workoutIndex },
+      },
+    };
+    const { error: seedAErr } = await a.client.from('workout_completions').insert({
+      ...completionBase,
+      client_record_id: idA,
+      completion_key: slot.completionKey,
+      week_index: wrongWeek,
+      workout_index: slot.workoutIndex,
+      record_json: {
+        ...completionBase.record_json,
+        id: idA,
+        workoutContext: { weekIndex: wrongWeek, workoutIndex: slot.workoutIndex },
+      },
+    });
+    assert(!seedAErr, `dual-identity row A seed failed: ${seedAErr?.message}`);
+    const { error: seedBErr } = await a.client.from('workout_completions').insert({
+      ...completionBase,
+      client_record_id: idB,
+      completion_key: `legacy-stale-${idB}`,
+      week_index: slot.weekIndex,
+      workout_index: slot.workoutIndex,
+      record_json: { ...completionBase.record_json, id: idB },
+    });
+    assert(!seedBErr, `dual-identity row B seed failed: ${seedBErr?.message}`);
+    const { error: seedMileErr } = await a.client.from('mile_tests').insert(mileRecord);
+    assert(!seedMileErr, `dual-identity mile seed failed: ${seedMileErr?.message}`);
+
+    const { data: rowBBefore, error: rowBBeforeErr } = await a.client.from('workout_completions')
+      .select('id,completion_key,week_index,workout_index')
+      .eq('user_id', a.userId)
+      .eq('week_index', slot.weekIndex)
+      .eq('workout_index', slot.workoutIndex)
+      .maybeSingle();
+    assert(!rowBBeforeErr, rowBBeforeErr?.message);
+    assert(rowBBefore?.id, 'row B must exist at target position before generic clear');
+    const { data: mileBefore, error: mileBeforeErr } = await a.client.from('mile_tests')
+      .select('id,test_key')
+      .eq('user_id', a.userId)
+      .eq('test_key', slot.testKey)
+      .maybeSingle();
+    assert(!mileBeforeErr, mileBeforeErr?.message);
+    assert(mileBefore?.id, 'mile detail must exist before generic clear');
+
+    const { error: clearErr } = await clearGeneric(a.client, slot);
+    assert(clearErr, 'generic clear must fail closed on dual semantic identity');
+    assert(/identity conflict/i.test(clearErr.message || ''), `expected identity conflict, got: ${clearErr.message}`);
+
+    const { data: rowBAfter, error: rowBAfterErr } = await a.client.from('workout_completions')
+      .select('id,completion_key,week_index,workout_index')
+      .eq('user_id', a.userId)
+      .eq('week_index', slot.weekIndex)
+      .eq('workout_index', slot.workoutIndex)
+      .maybeSingle();
+    assert(!rowBAfterErr, rowBAfterErr?.message);
+    assert(rowBAfter?.id === rowBBefore.id, 'positional completion must survive failed generic clear');
+    const { data: mileAfter, error: mileAfterErr } = await a.client.from('mile_tests')
+      .select('id,test_key')
+      .eq('user_id', a.userId)
+      .eq('test_key', slot.testKey)
+      .maybeSingle();
+    assert(!mileAfterErr, mileAfterErr?.message);
+    assert(mileAfter?.id === mileBefore.id, 'mile detail must survive failed generic clear');
+    const { count: rowCount, error: countErr } = await third.client.from('workout_completions')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', third.userId)
+      .or(`completion_key.eq.${slot.completionKey},and(week_index.eq.${slot.weekIndex},workout_index.eq.${slot.workoutIndex})`);
+    assert(!countErr, countErr?.message);
+    assert(rowCount === 2, `both conflicting WC rows must remain, got ${rowCount}`);
+    console.log('PASS cross-identity generic clear fails closed');
+
+    const ordinarySlot = allocSlot();
+    await cleanupSlot(a.client, a.userId, ordinarySlot);
+    const ordinaryId = randomUUID();
+    assert(!(await saveAssigned(a.client, ordinarySlot, ordinaryId, { totalMinutes: 7.2 })).error, 'ordinary save seed failed');
+    assert(!(await clearGeneric(b.client, ordinarySlot)).error, 'ordinary generic clear must still succeed');
+    const cleared = await readCanonical(third.client, third.userId, ordinarySlot);
+    assert(!cleared.completion && !cleared.mile, 'ordinary generic clear must remove canonical state');
+    console.log('PASS ordinary generic clear still succeeds after identity contract');
+    await cleanupSlot(a.client, a.userId, ordinarySlot);
+    await cleanupSlot(a.client, a.userId, slot);
+  }
+
   console.log('\nPASS: assigned mile concurrent multi-context authority races');
 }
 

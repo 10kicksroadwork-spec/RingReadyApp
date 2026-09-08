@@ -22,7 +22,6 @@ declare
   v_client_record_id text;
   v_db_attachment_id uuid;
   v_attachment_id uuid;
-  v_completion_key text;
 begin
   if v_user_id is null then
     raise exception 'Authentication required';
@@ -36,41 +35,34 @@ begin
   -- workout_completions / mile_tests / workout_attachments mutation.
   perform public.lock_assigned_workout_transition(p_week_index, p_workout_index);
 
-  v_completion_key := p_week_index::text || ':' || p_workout_index::text;
+  -- Fail closed when completion_key and week/workout resolve to different rows.
+  v_completion_id := public.resolve_assigned_workout_completion_id(
+    p_week_index,
+    p_workout_index
+  );
 
-  select
-    wc.id,
-    wc.client_record_id,
-    wc.attachment_id
-  into
-    v_completion_id,
-    v_client_record_id,
-    v_db_attachment_id
-  from public.workout_completions wc
-  where wc.user_id = v_user_id
-    and (
-      wc.completion_key = v_completion_key
-      or (
-        wc.week_index = p_week_index
-        and wc.workout_index = p_workout_index
-      )
-    )
-  order by
-    case
-      when wc.completion_key = v_completion_key then 0
-      else 1
-    end,
-    wc.updated_at desc
-  limit 1
-  for update;
-
-  if not found then
+  if v_completion_id is null then
     -- Repeating a committed clear is a success, including after a lost response.
     -- Still remove subordinate assigned Mile detail for this position.
     delete from public.mile_tests
     where user_id = v_user_id
       and test_key ~ ('^program:[0-9]+:' || p_week_index::text || ':' || p_workout_index::text || '$');
     return;
+  end if;
+
+  select
+    wc.client_record_id,
+    wc.attachment_id
+  into
+    v_client_record_id,
+    v_db_attachment_id
+  from public.workout_completions wc
+  where wc.id = v_completion_id
+    and wc.user_id = v_user_id
+  for update;
+
+  if not found then
+    raise exception 'Workout completion not found after identity resolution';
   end if;
 
   -- Recover the current authoritative proof for legacy/stranded rows whose

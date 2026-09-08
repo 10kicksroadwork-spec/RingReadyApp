@@ -587,13 +587,58 @@ function isSkippedAssignmentRow(row) {
     || record?.type === 'daily-workout-skip';
 }
 
+function isTransportTypeError(error) {
+  if (!error || error.name !== 'TypeError') return false;
+  return /fetch|network|failed to load|load failed|abort|socket|econn|timed out|timeout/i.test(
+    String(error.message || ''),
+  );
+}
+
 function isAmbiguousCloudError(error) {
   return !!error && (
     error.ambiguous === true
     || error.name === 'OperationTimeoutError'
-    || error.name === 'TypeError'
+    || isTransportTypeError(error)
     || /timeout|timed out|network|failed to fetch|load failed|econn|socket|abort/i.test(String(error.message || ''))
   );
+}
+
+function assignedMileMetricsMatch(row, {
+  distance,
+  totalMinutes,
+  totalSeconds,
+  avgBpm,
+  maxBpm,
+  requireMileSemantics = false,
+} = {}) {
+  if (!row) return false;
+  if (Number.isFinite(Number(distance)) && Number(row.distance) !== Number(distance)) {
+    return false;
+  }
+  if (Number.isFinite(Number(totalMinutes))
+    && Math.abs(Number(row.total_minutes) - Number(totalMinutes)) > 0.001) {
+    return false;
+  }
+  if (totalSeconds != null && totalSeconds !== ''
+    && Number.isFinite(Number(totalSeconds))
+    && integerOrNull(row.total_seconds) !== Math.round(Number(totalSeconds))) {
+    return false;
+  }
+  if (Number.isFinite(Number(avgBpm)) && Number(row.avg_bpm) !== Number(avgBpm)) {
+    return false;
+  }
+  if (Number.isFinite(Number(maxBpm)) && Number(row.max_bpm) !== Number(maxBpm)) {
+    return false;
+  }
+  if (requireMileSemantics) {
+    if (String(row.modality || '') !== 'running') return false;
+    if (String(row.output_type || '') !== 'distance') return false;
+    if (Number.isFinite(Number(distance))
+      && Number(row.output_value) !== Number(distance)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /**
@@ -612,6 +657,7 @@ export async function reconcileAssignedMileSaveOutcome({
   clientRecordId,
   distance,
   totalMinutes,
+  totalSeconds = null,
   avgBpm,
   maxBpm,
   attachmentId = null,
@@ -657,17 +703,17 @@ export async function reconcileAssignedMileSaveOutcome({
     if (mileClient && mileClient !== expectedClientId) return null;
   }
 
-  if (Number.isFinite(Number(distance)) && Number(mileRow.data.distance) !== Number(distance)) {
+  const metricRequest = {
+    distance,
+    totalMinutes,
+    totalSeconds,
+    avgBpm,
+    maxBpm,
+  };
+  if (!assignedMileMetricsMatch(completion, { ...metricRequest, requireMileSemantics: true })) {
     return null;
   }
-  if (Number.isFinite(Number(totalMinutes))
-    && Math.abs(Number(mileRow.data.total_minutes) - Number(totalMinutes)) > 0.001) {
-    return null;
-  }
-  if (Number.isFinite(Number(avgBpm)) && Number(mileRow.data.avg_bpm) !== Number(avgBpm)) {
-    return null;
-  }
-  if (Number.isFinite(Number(maxBpm)) && Number(mileRow.data.max_bpm) !== Number(maxBpm)) {
+  if (!assignedMileMetricsMatch(mileRow.data, metricRequest)) {
     return null;
   }
 
@@ -786,6 +832,7 @@ export async function saveCloudAssignedMileResult(result, hrInfo, testContext, c
       clientRecordId,
       distance: params.p_distance,
       totalMinutes: params.p_total_minutes,
+      totalSeconds: params.p_total_seconds,
       avgBpm: params.p_avg_bpm,
       maxBpm: params.p_max_bpm,
       attachmentId: params.p_attachment_id,
