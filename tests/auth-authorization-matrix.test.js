@@ -26,14 +26,28 @@ describe('athlete/coach authorization matrix', () => {
       'saveCloudWorkoutCompletion',
       'saveCloudSprintSession',
       'saveCloudMileTest',
+      'saveCloudAssignedMileResult',
+      'skipCloudAssignedMile',
+      'clearCloudAssignedMileWithProof',
     ]) {
       expect(AUTH_SRC.includes(`export async function ${name}`) || AUTH_SRC.includes(`export function ${name}`), name).toBe(true);
       const start = AUTH_SRC.search(new RegExp(`export (?:async )?function ${name}\\(`));
       expect(start).toBeGreaterThanOrEqual(0);
-      const body = AUTH_SRC.slice(start, start + 1200);
+      const body = AUTH_SRC.slice(start, start + 3500);
       expect(body).toMatch(/getCurrentUser\(/);
-      expect(body).toMatch(/user\.id|user_id:\s*user\.id/);
+      expect(body).toMatch(/user\.id|user_id:\s*user\.id|auth\.uid|\.rpc\(/);
     }
+  });
+
+  it('routes assigned Mile Clear through the server RPC (not client two-step deletes)', () => {
+    const body = functionBody(AUTH_SRC, 'clearCloudAssignedMileWithProof');
+    expect(body).toMatch(/clear_assigned_mile_with_proof/);
+    expect(body).not.toMatch(/\.from\('mile_tests'\)\.delete\(/);
+  });
+
+  it('routes assigned Mile Save/Skip through canonical server RPCs', () => {
+    expect(functionBody(AUTH_SRC, 'saveCloudAssignedMileResult')).toMatch(/save_assigned_mile_result/);
+    expect(functionBody(AUTH_SRC, 'skipCloudAssignedMile')).toMatch(/skip_assigned_mile/);
   });
   it('does not grant athletes coach identity via email helper', () => {
     expect(isCoachEmail('athlete@example.com')).toBe(false);

@@ -4,6 +4,7 @@ import { resetVolatileStorageForTest } from '../src/safe-storage.js';
 
 const mockUser = { id: 'athlete-a' };
 const clearCloudAssignedMileWithProof = vi.fn();
+const saveCloudAssignedMileResult = vi.fn();
 const saveCloudMileTest = vi.fn();
 const ensureCloudMileTestIdentity = vi.fn();
 const ensureWorkoutProofUploaded = vi.fn();
@@ -11,8 +12,10 @@ const ensureWorkoutProofUploaded = vi.fn();
 vi.mock('../src/auth.js', () => ({
   getCurrentUser: vi.fn(() => mockUser),
   clearCloudAssignedMileWithProof: (...args) => clearCloudAssignedMileWithProof(...args),
+  saveCloudAssignedMileResult: (...args) => saveCloudAssignedMileResult(...args),
   saveCloudMileTest: (...args) => saveCloudMileTest(...args),
   ensureCloudMileTestIdentity: (...args) => ensureCloudMileTestIdentity(...args),
+  skipCloudAssignedMile: vi.fn(),
   saveCloudHRInfo: vi.fn(),
   initSupabaseAuth: vi.fn(),
   isCoachUser: vi.fn(() => false),

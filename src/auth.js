@@ -530,22 +530,168 @@ export async function clearCloudAssignedMileWithProof({
   const user = getCurrentUser();
   if (!isSupabaseConfigured || !supabase || !user) return false;
   const owner = captureAthleteOperation();
-  const key = String(testKey || '').trim();
   const week = Number(weekIndex);
   const workout = Number(workoutIndex);
-
-  if (key) {
-    const { error: mileError } = await ownedResult(owner, withOperationTimeout(
-      supabase.from('mile_tests').delete().eq('user_id', user.id).eq('test_key', key),
-      { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_COMPLETION, operation: 'clear_mile_test' },
-    ));
-    if (mileError) throw mileError;
+  if (!Number.isFinite(week) || !Number.isFinite(workout)) {
+    throw new Error('Assigned mile clear requires week and workout index');
   }
 
-  if (Number.isFinite(week) && Number.isFinite(workout)) {
-    await ownedResult(owner, clearCloudWorkoutCompletionWithProof(week, workout, attachmentId));
+  const params = {
+    p_test_key: String(testKey || '').trim() || null,
+    p_week_index: week,
+    p_workout_index: workout,
+    p_attachment_id: attachmentId || null,
+  };
+
+  try {
+    const { error } = await ownedResult(owner, withOperationTimeout(
+      supabase.rpc('clear_assigned_mile_with_proof', params),
+      { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_COMPLETION, operation: 'clear_assigned_mile' },
+    ));
+    if (error) throw error;
+  } catch (error) {
+    if (error.accountChanged) throw error;
+    // Ambiguous RPC failure: prove absence of both assignment identities + mile detail.
+    const key = String(testKey || '').trim();
+    const [byKey, byPosition, mileRow] = await Promise.all([
+      ownedResult(owner, withOperationTimeout(
+        supabase.from('workout_completions').select('id').eq('user_id', user.id)
+          .eq('completion_key', `${week}:${workout}`).maybeSingle(),
+        { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_HYDRATION, operation: 'clear_mile_reconcile_key' },
+      )),
+      ownedResult(owner, withOperationTimeout(
+        supabase.from('workout_completions').select('id').eq('user_id', user.id)
+          .eq('week_index', week).eq('workout_index', workout).maybeSingle(),
+        { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_HYDRATION, operation: 'clear_mile_reconcile_position' },
+      )),
+      key
+        ? ownedResult(owner, withOperationTimeout(
+          supabase.from('mile_tests').select('id').eq('user_id', user.id).eq('test_key', key).maybeSingle(),
+          { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_HYDRATION, operation: 'clear_mile_reconcile_test' },
+        ))
+        : Promise.resolve({ data: null, error: null }),
+    ]);
+    if (byKey.error || byPosition.error || mileRow.error || byKey.data || byPosition.data || mileRow.data) {
+      throw error;
+    }
   }
   return true;
+}
+
+export async function saveCloudAssignedMileResult(result, hrInfo, testContext, completionRecord) {
+  const user = getCurrentUser();
+  if (!isSupabaseConfigured || !supabase || !user || !result) return null;
+  const owner = captureAthleteOperation();
+  const weekIndex = Number(testContext?.weekIndex ?? completionRecord?.workoutContext?.weekIndex);
+  const workoutIndex = Number(testContext?.workoutIndex ?? completionRecord?.workoutContext?.workoutIndex);
+  const testKey = String(testContext?.testKey || result.testKey || '').trim();
+  if (!testKey || !Number.isFinite(weekIndex) || !Number.isFinite(workoutIndex)) {
+    throw new Error('Assigned mile save requires test_key and week/workout identity');
+  }
+
+  const context = completionRecord?.workoutContext
+    || completionRecord?.cfg?.workoutContext
+    || testContext
+    || {};
+  const workoutLog = completionRecord?.workoutLog || {
+    distance: result.distance,
+    totalMinutes: result.totalMinutes,
+    totalSeconds: result.totalSeconds,
+    totalTimeDisplay: result.totalTimeDisplay,
+    avgBpm: result.avgBpm,
+    maxBpm: result.maxBpm,
+    completedAt: result.savedAt,
+  };
+  const params = {
+    p_test_key: testKey,
+    p_week_index: weekIndex,
+    p_workout_index: workoutIndex,
+    p_client_record_id: String(result.id || completionRecord?.id || '').trim(),
+    p_distance: Number(result.distance),
+    p_total_minutes: Number(result.totalMinutes),
+    p_total_seconds: Number.isFinite(Number(result.totalSeconds))
+      ? Math.round(Number(result.totalSeconds))
+      : Math.round(Number(result.totalMinutes) * 60),
+    p_avg_bpm: Math.round(Number(result.avgBpm)),
+    p_max_bpm: Math.round(Number(result.maxBpm)),
+    p_pace_min_per_mile: numberOrNull(result.paceMinPerMile),
+    p_saved_at: result.savedAt || new Date().toISOString(),
+    p_attachment_id: result.attachment?.id || completionRecord?.attachment?.id || null,
+    p_proof_policy_version: integerOrNull(result.proofPolicyVersion || completionRecord?.proofPolicyVersion),
+    p_result_json: (() => {
+      const clone = { ...result };
+      delete clone.assignedResults;
+      return clone;
+    })(),
+    p_hr_info_json: hrInfo || null,
+    p_test_context_json: testContext || null,
+    p_record_json: completionRecord || {
+      id: result.id,
+      testKey,
+      status: 'completed',
+      type: 'daily-workout-completion',
+      completedAt: result.savedAt,
+      workoutContext: context,
+      cfg: { workoutContext: context },
+      workoutLog,
+      attachment: result.attachment || null,
+      proofPolicyVersion: result.proofPolicyVersion || null,
+    },
+    p_week_label: textOrEmpty(context.weekLabel),
+    p_week_title: textOrEmpty(context.weekTitle),
+    p_day_of_week: textOrEmpty(context.dayOfWeek),
+    p_workout_type: textOrEmpty(context.workoutType),
+    p_description: textOrEmpty(context.description),
+    p_warmup: textOrEmpty(context.warmup),
+    p_target_zone: textOrEmpty(context.targetZone),
+    p_target_bpm: integerOrNull(context.targetBPM),
+    p_modality: 'running',
+    p_output_type: 'distance',
+    p_output_value: numberOrNull(result.distance),
+  };
+
+  const { data, error } = await ownedResult(owner, withOperationTimeout(
+    supabase.rpc('save_assigned_mile_result', params),
+    { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_COMPLETION, operation: 'save_assigned_mile' },
+  ));
+  if (error) throw error;
+  return data || result;
+}
+
+export async function skipCloudAssignedMile(record, testKey = '') {
+  const user = getCurrentUser();
+  if (!isSupabaseConfigured || !supabase || !user || !record) return null;
+  const owner = captureAthleteOperation();
+  const context = record.workoutContext || record.cfg?.workoutContext || {};
+  const weekIndex = Number(context.weekIndex);
+  const workoutIndex = Number(context.workoutIndex);
+  if (!Number.isFinite(weekIndex) || !Number.isFinite(workoutIndex)) {
+    throw new Error('Assigned mile skip requires week/workout identity');
+  }
+
+  const params = {
+    p_test_key: String(testKey || '').trim() || null,
+    p_week_index: weekIndex,
+    p_workout_index: workoutIndex,
+    p_client_record_id: String(record.id || '').trim(),
+    p_record_json: record,
+    p_week_label: textOrEmpty(context.weekLabel),
+    p_week_title: textOrEmpty(context.weekTitle),
+    p_day_of_week: textOrEmpty(context.dayOfWeek),
+    p_workout_type: textOrEmpty(context.workoutType),
+    p_description: textOrEmpty(context.description),
+    p_warmup: textOrEmpty(context.warmup),
+    p_target_zone: textOrEmpty(context.targetZone),
+    p_target_bpm: integerOrNull(context.targetBPM),
+    p_completed_at: record.completedAt || record.workoutLog?.completedAt || new Date().toISOString(),
+  };
+
+  const { data, error } = await ownedResult(owner, withOperationTimeout(
+    supabase.rpc('skip_assigned_mile', params),
+    { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_COMPLETION, operation: 'skip_assigned_mile' },
+  ));
+  if (error) throw error;
+  return data || record;
 }
 
 export async function deleteCloudWorkoutCompletion(weekIndex, workoutIndex) {
