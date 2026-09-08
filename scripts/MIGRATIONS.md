@@ -31,12 +31,13 @@ Auth-touching migrations: `000`–`006`, `009`, `012`–`013`, `015`–`016`.
 | 17 | [016_idempotent_proof_attachment.sql](./migrations/016_idempotent_proof_attachment.sql) | Same-path proof RPC idempotency for safe mobile retries |
 | 18 | [017_workout_completion_position_unique.sql](./migrations/017_workout_completion_position_unique.sql) | Document/ensure UNIQUE(user_id, week_index, workout_index) matching production |
 | 19 | [018_clear_retry_and_sprint_proof.sql](./migrations/018_clear_retry_and_sprint_proof.sql) | Idempotent clear and atomic removal of cleared proof from Sprint recovery |
-| 20 | [019_assigned_mile_clear_lifecycle.sql](./migrations/019_assigned_mile_clear_lifecycle.sql) | Assigned Mile clear RPC (staging/testable; **do not apply to production** until Review B3 promotes) |
-| 21 | [020_assigned_mile_save_authority.sql](./migrations/020_assigned_mile_save_authority.sql) | Assigned Mile save + skip RPCs — canonical `workout_completions` + subordinate `mile_tests` (staging only) |
+| 20 | [019_assigned_mile_clear_lifecycle.sql](./migrations/019_assigned_mile_clear_lifecycle.sql) | Assigned Mile clear RPC (staging/testable; **do not apply to production** until code-clean review promotes) |
+| 21 | [020_assigned_mile_save_authority.sql](./migrations/020_assigned_mile_save_authority.sql) | Assigned Mile save + skip RPCs — canonical `workout_completions` + subordinate `mile_tests` (staging only; superseded serialization in 021) |
+| 22 | [021_assigned_mile_serialized_transitions.sql](./migrations/021_assigned_mile_serialized_transitions.sql) | Shared per-assignment advisory lock + key/position identity resolve for Save/Skip/Clear (staging only; **do not apply to production** yet) |
 
 ## Fresh database
 
-Paste and run each file in the Supabase SQL editor in order. Follow this table for the current canonical sequence. Migration **019–020** are staging-only until Review B3 promotes them. Do not apply to production in Review B2.
+Paste and run each file in the Supabase SQL editor in order. Follow this table for the current canonical sequence. Migration **019–021** are staging-only until a code-clean review promotes them. Do not apply to production while PR #70 remains below certification.
 
 ## Upgrade from existing production
 
