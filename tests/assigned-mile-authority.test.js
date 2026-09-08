@@ -1,8 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { persistWorkoutCompletion, getWorkoutCompletion, removeWorkoutCompletion } from '../src/storage.js';
+import { persistWorkoutCompletion, getWorkoutCompletion } from '../src/storage.js';
 import { resetVolatileStorageForTest } from '../src/safe-storage.js';
-import { MILE_TEST_STORAGE_KEY, WORKOUT_COMPLETIONS_STORAGE_KEY } from '../src/constants.js';
-import { writeJSON } from '../src/safe-storage.js';
 
 const mockUser = { id: 'athlete-a' };
 const clearCloudAssignedMileWithProof = vi.fn();
