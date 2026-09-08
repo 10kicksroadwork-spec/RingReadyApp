@@ -48,7 +48,8 @@ test.describe('assigned mile result reopen lifecycle', () => {
     await attachProof(page, 'mile');
     await expect(page.locator('#save-mile-test-btn')).toBeEnabled();
     await page.locator('#save-mile-test-btn').click();
-    await expect(page.locator('#toast')).toContainText(/MILE TEST SAVED/i, { timeout: 15000 });
+    await expect(page.locator('#clear-mile-test-btn')).toBeVisible({ timeout: 15000 });
+    await expect(page.locator('#mile-last-result')).toContainText(/7:15|Last saved/i);
 
     await goHome(page);
     await goToWeek(page, weekIndex);
@@ -71,12 +72,12 @@ test.describe('assigned mile result reopen lifecycle', () => {
     await page.locator('#mile-avg-bpm-input').fill('154');
     await page.locator('#mile-max-bpm-input').fill('173');
     await page.locator('#save-mile-test-btn').click();
-    await expect(page.locator('#toast')).toContainText(/MILE TEST SAVED/i, { timeout: 15000 });
-    await expect(page.locator('#mile-time-input')).toHaveValue('7:05');
+    await expect(page.locator('#mile-time-input')).toHaveValue('7:05', { timeout: 15000 });
+    await expect(page.locator('#clear-mile-test-btn')).toBeVisible();
 
     page.once('dialog', (dialog) => dialog.accept());
     await page.locator('#clear-mile-test-btn').click();
-    await expect(page.locator('#toast')).toContainText(/CLEARED/i, { timeout: 15000 });
+    await expect(page.locator('#clear-mile-test-btn')).toBeHidden({ timeout: 15000 });
 
     await page.reload();
     await waitForHome(page);
@@ -95,7 +96,7 @@ test.describe('assigned mile result reopen lifecycle', () => {
     await page.locator('#mile-max-bpm-input').fill('168');
     await attachProof(page, 'mile');
     await page.locator('#save-mile-test-btn').click();
-    await expect(page.locator('#toast')).toContainText(/MILE TEST SAVED/i, { timeout: 15000 });
+    await expect(page.locator('#clear-mile-test-btn')).toBeVisible({ timeout: 15000 });
 
     await goHome(page);
     await goToWeek(page, weekIndex);
