@@ -12,6 +12,36 @@
 --   SKIPPED:   WC skipped + NO Mile + prior proof retired
 --   CLEARED:   NO WC + NO Mile + proof cleared
 
+-- User-scoped lock primitive. Triggers and other server-side callers run for a row's
+-- owner rather than for auth.uid(), so the athlete-facing wrapper delegates here.
+create or replace function public.lock_assigned_workout_transition_for(
+  p_user_id uuid,
+  p_week_index integer,
+  p_workout_index integer
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if p_user_id is null then
+    raise exception 'not authenticated';
+  end if;
+  if p_week_index is null or p_workout_index is null then
+    raise exception 'Week and workout index are required';
+  end if;
+
+  -- Shared by save / skip / clear so concurrent transitions serialize as one state machine.
+  perform pg_advisory_xact_lock(
+    hashtext(p_user_id::text),
+    hashtext('assigned:' || p_week_index::text || ':' || p_workout_index::text)
+  );
+end;
+$$;
+
+revoke all on function public.lock_assigned_workout_transition_for(uuid, integer, integer) from public;
+
 create or replace function public.lock_assigned_workout_transition(
   p_week_index integer,
   p_workout_index integer
@@ -21,30 +51,31 @@ language plpgsql
 security definer
 set search_path = public
 as $$
-declare
-  v_uid uuid := auth.uid();
 begin
-  if v_uid is null then
-    raise exception 'not authenticated';
-  end if;
-  if p_week_index is null or p_workout_index is null then
-    raise exception 'Week and workout index are required';
-  end if;
-
-  -- Shared by save / skip / clear so concurrent transitions serialize as one state machine.
-  perform pg_advisory_xact_lock(
-    hashtext(v_uid::text),
-    hashtext('assigned:' || p_week_index::text || ':' || p_workout_index::text)
-  );
+  perform public.lock_assigned_workout_transition_for(auth.uid(), p_week_index, p_workout_index);
 end;
 $$;
 
 revoke all on function public.lock_assigned_workout_transition(integer, integer) from public;
 grant execute on function public.lock_assigned_workout_transition(integer, integer) to authenticated;
 
--- Resolve ONE semantic workout_completions row by completion_key OR week/workout position.
--- Fail closed if key identity and positional identity disagree.
-create or replace function public.resolve_assigned_workout_completion_id(
+-- Resolve ONE semantic workout_completions row for an assignment position.
+--
+-- week/workout position is CANONICAL; completion_key is a convenience identity.
+-- Mirrors findWorkoutCompletionIdentity / keyRowDisagreesWithCanonicalPosition in
+-- src/workout-completion-identity.js:
+--
+--   key row + position row, same id                     -> valid
+--   key row + position row, different ids               -> conflict
+--   position row only                                   -> valid positional authority
+--   key row only, stored position absent (legacy)       -> supported recovery
+--   key row only, stored position != requested position -> conflict
+--   neither                                             -> null
+--
+-- A key hit stored at another assignment must never be silently moved into, or
+-- deleted on behalf of, the requested assignment.
+create or replace function public.resolve_assigned_workout_completion_id_for(
+  p_user_id uuid,
   p_week_index integer,
   p_workout_index integer
 )
@@ -54,19 +85,23 @@ security definer
 set search_path = public
 as $$
 declare
-  v_uid uuid := auth.uid();
   v_completion_key text := p_week_index::text || ':' || p_workout_index::text;
-  v_by_key uuid;
+  v_by_key_id uuid;
+  v_by_key_week integer;
+  v_by_key_workout integer;
   v_by_position uuid;
 begin
-  if v_uid is null then
+  if p_user_id is null then
     raise exception 'not authenticated';
   end if;
+  if p_week_index is null or p_workout_index is null then
+    raise exception 'Week and workout index are required';
+  end if;
 
-  select wc.id
-  into v_by_key
+  select wc.id, wc.week_index, wc.workout_index
+  into v_by_key_id, v_by_key_week, v_by_key_workout
   from public.workout_completions wc
-  where wc.user_id = v_uid
+  where wc.user_id = p_user_id
     and wc.completion_key = v_completion_key
   order by wc.updated_at desc nulls last
   limit 1;
@@ -74,7 +109,7 @@ begin
   select wc.id
   into v_by_position
   from public.workout_completions wc
-  where wc.user_id = v_uid
+  where wc.user_id = p_user_id
     and wc.week_index = p_week_index
     and wc.workout_index = p_workout_index
   order by
@@ -82,16 +117,49 @@ begin
     wc.updated_at desc nulls last
   limit 1;
 
-  if v_by_key is not null
+  if v_by_key_id is not null
      and v_by_position is not null
-     and v_by_key is distinct from v_by_position
+     and v_by_key_id is distinct from v_by_position
   then
     raise exception
       'Assigned workout identity conflict: completion_key and week/workout resolve to different rows (key=%, position=%)',
-      v_by_key, v_by_position;
+      v_by_key_id, v_by_position;
   end if;
 
-  return coalesce(v_by_key, v_by_position);
+  if v_by_key_id is not null
+     and v_by_position is null
+     and (v_by_key_week is not null or v_by_key_workout is not null)
+     and (
+       v_by_key_week is distinct from p_week_index
+       or v_by_key_workout is distinct from p_workout_index
+     )
+  then
+    raise exception
+      'Assigned workout identity conflict: completion_key row % is stored at assignment %:% but %:% was requested',
+      v_by_key_id, v_by_key_week, v_by_key_workout, p_week_index, p_workout_index;
+  end if;
+
+  return coalesce(v_by_key_id, v_by_position);
+end;
+$$;
+
+revoke all on function public.resolve_assigned_workout_completion_id_for(uuid, integer, integer) from public;
+
+create or replace function public.resolve_assigned_workout_completion_id(
+  p_week_index integer,
+  p_workout_index integer
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  return public.resolve_assigned_workout_completion_id_for(
+    auth.uid(),
+    p_week_index,
+    p_workout_index
+  );
 end;
 $$;
 

@@ -15,6 +15,7 @@ import {
   planMileTestIdentityStaging,
 } from './proof-staging.js';
 import { MODALITY_RUNNING, normalizeModality } from './modality.js';
+import { keyRowDisagreesWithCanonicalPosition } from './workout-completion-identity.js';
 import { isSupabaseConfigured, supabase } from './supabase-client.js';
 import {
   ensureWorkoutIdentityReconciled,
@@ -693,6 +694,14 @@ export async function reconcileAssignedMileSaveOutcome({
 
   const completion = byKey.data || byPosition.data;
   if (byKey.data && byPosition.data && byKey.data.id !== byPosition.data.id) return null;
+  // Position is canonical: a key hit stored at another assignment proves nothing here.
+  if (keyRowDisagreesWithCanonicalPosition(byKey.data, {
+    source: 'week_workout',
+    weekIndex: week,
+    workoutIndex: workout,
+  })) {
+    return null;
+  }
   if (!completion || isSkippedAssignmentRow(completion) || !mileRow.data) return null;
 
   const expectedClientId = String(clientRecordId || '').trim();
