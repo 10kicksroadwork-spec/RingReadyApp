@@ -336,9 +336,11 @@ describe('assigned mile save source contract', () => {
     expect(src).toMatch(/reconcileAssignedMileSaveOutcome/);
     expect(src).toMatch(/save_assigned_mile_result/);
     const start = src.indexOf('export async function saveCloudAssignedMileResult');
-    const body = src.slice(start, start + 4500);
+    const end = src.indexOf('export async function skipCloudAssignedMile', start);
+    const body = src.slice(start, end === -1 ? start + 9000 : end);
     expect(body).toMatch(/catch \(error\)/);
     expect(body).toMatch(/isAmbiguousCloudError/);
+    expect(body).toMatch(/isSerializedTransitionDeadlockError/);
     expect(body).toMatch(/reconcileAssignedMileSaveOutcome/);
     expect(body).toMatch(/if \(reconciled\) return reconciled/);
   });
@@ -404,6 +406,19 @@ describe('assigned mile save source contract', () => {
     expect(migration).toMatch(/create or replace function public\.is_authoritative_assigned_mile_attachment/);
     expect(migration).toMatch(/wa\.is_current = true/);
     expect(migration).toMatch(/wa\.completion_cleared = false/);
+    // When both supplied IDs are retired, look up the actual current proof — never return a
+    // candidate that already failed is_authoritative_assigned_mile_attachment().
+    const resolveIdx = migration.indexOf('create or replace function public.resolve_assigned_mile_attachment_id');
+    const resolveBody = migration.slice(resolveIdx, migration.indexOf('$function$;', resolveIdx));
+    expect(resolveBody).toMatch(/array_agg\(wa\.id/);
+    expect(resolveBody).toMatch(/v_current_count = 1/);
+    expect(resolveBody).toMatch(/v_current_count = 0/);
+    expect(resolveBody).toMatch(/return null;/);
+    expect(resolveBody).toMatch(/raise exception/);
+    expect(resolveBody).toMatch(/ambiguous current assigned mile proof/);
+    // Absolute rule: do not fall back to a non-authoritative canonical id.
+    expect(resolveBody).not.toMatch(/if p_incoming_attachment_id is null then\s+return p_canonical_attachment_id/);
+    expect(resolveBody.match(/return p_canonical_attachment_id;/g)?.length).toBe(1);
 
     // Legacy Mile-only saves gain a canonical completion instead of standing alone.
     const afterIdx = migration.indexOf('create or replace function public.tg_assigned_mile_detail_after');

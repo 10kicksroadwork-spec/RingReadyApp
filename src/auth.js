@@ -604,6 +604,14 @@ function isAmbiguousCloudError(error) {
   );
 }
 
+/** Postgres serialization deadlock from legacy Mile upsert vs new Clear lock-order inversion. */
+function isSerializedTransitionDeadlockError(error) {
+  if (!error) return false;
+  const code = String(error.code || error?.cause?.code || '');
+  if (code === '40P01') return true;
+  return /40P01|deadlock detected/i.test(String(error.message || ''));
+}
+
 function assignedMileMetricsMatch(row, {
   distance,
   totalMinutes,
@@ -831,6 +839,33 @@ export async function saveCloudAssignedMileResult(result, hrInfo, testContext, c
     return data || result;
   } catch (error) {
     if (error?.accountChanged) throw error;
+
+    if (isSerializedTransitionDeadlockError(error)) {
+      const reconciledAfterDeadlock = await reconcileAssignedMileSaveOutcome({
+        owner,
+        userId: user.id,
+        testKey,
+        weekIndex,
+        workoutIndex,
+        clientRecordId,
+        distance: params.p_distance,
+        totalMinutes: params.p_total_minutes,
+        totalSeconds: params.p_total_seconds,
+        avgBpm: params.p_avg_bpm,
+        maxBpm: params.p_max_bpm,
+        attachmentId: params.p_attachment_id,
+        proofPolicyVersion: params.p_proof_policy_version,
+      });
+      if (reconciledAfterDeadlock) return reconciledAfterDeadlock;
+
+      const { data: retryData, error: retryError } = await ownedResult(owner, withOperationTimeout(
+        supabase.rpc('save_assigned_mile_result', params),
+        { timeoutMs: OPERATION_TIMEOUT_MS.CLOUD_COMPLETION, operation: 'save_assigned_mile_retry' },
+      ));
+      if (retryError) throw retryError;
+      return retryData || result;
+    }
+
     if (!isAmbiguousCloudError(error)) throw error;
     const reconciled = await reconcileAssignedMileSaveOutcome({
       owner,
@@ -1106,10 +1141,20 @@ export async function saveCloudMileTest(result, hrInfo, testContext) {
   const user = getCurrentUser();
   if (!isSupabaseConfigured || !supabase || !user || !result) return null;
 
-  const { error } = await supabase
-    .from('mile_tests')
-    .upsert(buildMileTestCloudPayload(result, hrInfo, testContext, user.id), { onConflict: 'user_id,test_key' });
+  const payload = buildMileTestCloudPayload(result, hrInfo, testContext, user.id);
+  const attemptUpsert = async () => {
+    const { error } = await supabase
+      .from('mile_tests')
+      .upsert(payload, { onConflict: 'user_id,test_key' });
+    if (error) throw error;
+    return result;
+  };
 
-  if (error) throw error;
-  return result;
+  try {
+    return await attemptUpsert();
+  } catch (error) {
+    // Known lock-order inversion with new Clear: abort commits nothing; one retry is safe.
+    if (!isSerializedTransitionDeadlockError(error)) throw error;
+    return await attemptUpsert();
+  }
 }

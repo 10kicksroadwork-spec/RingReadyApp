@@ -1435,6 +1435,185 @@ async function main() {
     }
   }
 
+  // B7 P0: replacement handoff — B is already non-current, C is current, WC/Mile still
+  // point at B. A stale e85 resave of B must converge to C, never re-canonicalize B.
+  {
+    const slot = allocSlot();
+    await cleanupSlot(a.client, a.userId, slot);
+    const recordId = randomUUID();
+    const storagePaths = [];
+    const attachmentIds = [];
+    try {
+      assert(!(await saveAssigned(a.client, slot, recordId, { totalMinutes: 7.17 })).error, 'seed save failed');
+      const proofB = await createAssignedMileProof(a.client, a.userId, slot, recordId, 'handoff-b');
+      storagePaths.push(proofB.storagePath);
+      attachmentIds.push(proofB.proof.id);
+      assert(!(await saveAssigned(a.client, slot, recordId, {
+        totalMinutes: 7.17,
+        attachmentId: proofB.proof.id,
+        proofPolicyVersion: 1,
+      })).error, 'link proof B failed');
+
+      const proofC = await createAssignedMileProof(a.client, a.userId, slot, recordId, 'handoff-c');
+      storagePaths.push(proofC.storagePath);
+      attachmentIds.push(proofC.proof.id);
+
+      // Intentionally leave WC/Mile pointing at retired B while C is the unique current proof.
+      const mid = await readCanonical(third.client, third.userId, slot);
+      assert(mid.completion.attachment_id === proofB.proof.id, 'handoff seed must still reference B');
+      const { data: states, error: stateErr } = await third.client.from('workout_attachments')
+        .select('id,is_current')
+        .eq('user_id', third.userId)
+        .in('id', [proofB.proof.id, proofC.proof.id]);
+      assert(!stateErr, stateErr?.message);
+      const byId = Object.fromEntries((states || []).map((row) => [row.id, row]));
+      assert(byId[proofB.proof.id]?.is_current === false, 'handoff: B must be non-current');
+      assert(byId[proofC.proof.id]?.is_current === true, 'handoff: C must be current');
+
+      const { error: staleErr } = await legacySaveMileDetail(a.client, a.userId, slot, {
+        clientRecordId: recordId,
+        totalMinutes: 6.88,
+        avgBpm: 157,
+        attachmentId: proofB.proof.id,
+        proofPolicyVersion: 1,
+        attachment: { id: proofB.proof.id },
+      });
+      assert(!staleErr, `handoff stale-B resave failed: ${staleErr?.message}`);
+
+      const truth = await assertFreshClientsAgree(a, b, third, slot, 'handoff-stale-B-to-C');
+      assert(truth.status === 'completed', 'handoff resave must stay COMPLETED');
+      assert(Number(truth.completion.total_minutes) === 6.88, 'handoff metrics must still apply');
+      assertProofMirrorsAgree(truth, proofC.proof.id, 'handoff-stale-B-to-C');
+      await assertFinalAssignedProofInvariants(third.client, third.userId, slot, 'handoff-stale-B-to-C');
+
+      const { data: stillB, error: stillErr } = await third.client.from('workout_attachments')
+        .select('is_current')
+        .eq('user_id', third.userId)
+        .eq('id', proofB.proof.id)
+        .maybeSingle();
+      assert(!stillErr, stillErr?.message);
+      assert(stillB?.is_current === false, 'handoff: B must remain retired');
+      console.log('PASS replacement handoff: stale B resave converges to current C');
+    } finally {
+      await cleanupSlot(a.client, a.userId, slot);
+      await cleanupProofArtifacts(a.client, attachmentIds, storagePaths);
+    }
+  }
+
+  // No current candidate: completed Mile must not finalize pointing at a retired proof.
+  {
+    const slot = allocSlot();
+    await cleanupSlot(a.client, a.userId, slot);
+    const recordId = randomUUID();
+    const storagePaths = [];
+    const attachmentIds = [];
+    try {
+      assert(!(await saveAssigned(a.client, slot, recordId, { totalMinutes: 7.19 })).error, 'seed save failed');
+      const proofB = await createAssignedMileProof(a.client, a.userId, slot, recordId, 'nocurrent-b');
+      storagePaths.push(proofB.storagePath);
+      attachmentIds.push(proofB.proof.id);
+      assert(!(await saveAssigned(a.client, slot, recordId, {
+        totalMinutes: 7.19,
+        attachmentId: proofB.proof.id,
+        proofPolicyVersion: 1,
+      })).error, 'link proof B failed');
+
+      const { error: retireErr } = await a.client.from('workout_attachments')
+        .update({ is_current: false, updated_at: new Date().toISOString() })
+        .eq('user_id', a.userId)
+        .eq('id', proofB.proof.id);
+      assert(!retireErr, `retire-only B failed: ${retireErr?.message}`);
+
+      const { error: staleErr } = await legacySaveMileDetail(a.client, a.userId, slot, {
+        clientRecordId: recordId,
+        totalMinutes: 6.81,
+        attachmentId: proofB.proof.id,
+        proofPolicyVersion: 1,
+        attachment: { id: proofB.proof.id },
+      });
+      assert(!staleErr, `no-current stale resave failed: ${staleErr?.message}`);
+
+      const truth = await assertFreshClientsAgree(a, b, third, slot, 'no-current-proof');
+      assert(truth.status === 'completed', 'no-current case must stay COMPLETED');
+      assert(!truth.completion.attachment_id, 'no-current case must not finalize on retired proof');
+      assert(!truth.mile.attachment_id, 'mile detail must not keep retired proof');
+      assert(!truth.completion.record_json?.attachment?.id, 'WC JSON must not keep retired proof');
+      assert(!truth.mile.result_json?.attachment?.id, 'Mile JSON must not keep retired proof');
+      await assertFinalAssignedProofInvariants(third.client, third.userId, slot, 'no-current-proof');
+      console.log('PASS no-current candidate: completed Mile does not keep retired proof');
+    } finally {
+      await cleanupSlot(a.client, a.userId, slot);
+      await cleanupProofArtifacts(a.client, attachmentIds, storagePaths);
+    }
+  }
+
+  // Ambiguous current candidates for the same assignment identity must fail closed.
+  {
+    const slot = allocSlot();
+    await cleanupSlot(a.client, a.userId, slot);
+    const recordId = randomUUID();
+    const attachmentIds = [];
+    try {
+      assert(!(await saveAssigned(a.client, slot, recordId, { totalMinutes: 7.21 })).error, 'seed save failed');
+      const idOne = randomUUID();
+      const idTwo = randomUUID();
+      attachmentIds.push(idOne, idTwo);
+      const { error: insertErr } = await a.client.from('workout_attachments').insert([
+        {
+          id: idOne,
+          user_id: a.userId,
+          proof_key: `${slot.testKey}:ambiguous-a`,
+          linked_record_id: recordId,
+          week_index: slot.weekIndex,
+          workout_index: slot.workoutIndex,
+          storage_path: `${a.userId}/${slot.testKey}/ambiguous-a.webp`,
+          file_size: 1024,
+          is_current: true,
+          completion_cleared: false,
+        },
+        {
+          id: idTwo,
+          user_id: a.userId,
+          proof_key: `${slot.testKey}:ambiguous-b`,
+          linked_record_id: recordId,
+          week_index: slot.weekIndex,
+          workout_index: slot.workoutIndex,
+          storage_path: `${a.userId}/${slot.testKey}/ambiguous-b.webp`,
+          file_size: 1024,
+          is_current: true,
+          completion_cleared: false,
+        },
+      ]);
+      assert(!insertErr, `ambiguous seed insert failed: ${insertErr?.message}`);
+
+      const before = await readCanonical(third.client, third.userId, slot);
+      const { error: ambiguousErr } = await legacySaveMileDetail(a.client, a.userId, slot, {
+        clientRecordId: recordId,
+        totalMinutes: 6.5,
+      });
+      assert(!!ambiguousErr, 'ambiguous current proofs must fail closed');
+      assert(
+        /ambiguous current assigned mile proof/i.test(String(ambiguousErr.message || '')),
+        `expected ambiguous fail-closed error, got: ${ambiguousErr.message}`,
+      );
+
+      const after = await readCanonical(third.client, third.userId, slot);
+      assert(after.status === before.status, 'fail-closed must not change assignment status');
+      assert(
+        Number(after.completion?.total_minutes) === Number(before.completion?.total_minutes),
+        'fail-closed must not apply the aborted metrics write',
+      );
+      assert(
+        (after.completion?.attachment_id || null) === (before.completion?.attachment_id || null),
+        'fail-closed must not invent a proof link',
+      );
+      console.log('PASS ambiguous current proofs fail closed without mutating assignment');
+    } finally {
+      await cleanupSlot(a.client, a.userId, slot);
+      await cleanupProofArtifacts(a.client, attachmentIds, []);
+    }
+  }
+
   // P2: quantify the documented same-row lock inversion. One transaction may abort with
   // 40P01; nothing partial may commit; a retry must land in a legal state.
   {

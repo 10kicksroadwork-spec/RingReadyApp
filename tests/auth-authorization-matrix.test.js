@@ -58,6 +58,18 @@ describe('athlete/coach authorization matrix', () => {
     expect(body).toMatch(/attachmentId/);
     expect(body).toMatch(/proofPolicyVersion/);
   });
+
+  it('automatically recovers from serialized Mile transition deadlocks', () => {
+    expect(AUTH_SRC).toMatch(/isSerializedTransitionDeadlockError/);
+    expect(AUTH_SRC).toMatch(/40P01|deadlock detected/);
+    const assigned = functionBody(AUTH_SRC, 'saveCloudAssignedMileResult');
+    expect(assigned).toMatch(/isSerializedTransitionDeadlockError/);
+    expect(assigned).toMatch(/save_assigned_mile_retry|save_assigned_mile_result/);
+    const legacy = functionBody(AUTH_SRC, 'saveCloudMileTest');
+    expect(legacy).toMatch(/isSerializedTransitionDeadlockError/);
+    expect(legacy).toMatch(/attemptUpsert/);
+  });
+
   it('does not grant athletes coach identity via email helper', () => {
     expect(isCoachEmail('athlete@example.com')).toBe(false);
     expect(isCoachEmail(COACH_EMAILS[0])).toBe(true);

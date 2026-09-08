@@ -21,8 +21,10 @@
 -- Proof freshness is part of the same perimeter: a non-null incoming attachment_id is trusted
 -- only when workout_attachments still shows it as current, not completion-cleared, owned by the
 -- athlete, and belonging to the assignment/proof identity. A stale client that resaves a
--- retired proof keeps the current canonical proof and still saves metrics. Relational columns
--- and JSON mirrors (record_json / result_json attachment + proofPolicyVersion) stay synchronized.
+-- retired proof keeps the current canonical proof and still saves metrics. If both the incoming
+-- and WC-referenced proofs are already non-current (replacement handoff window), the resolver
+-- looks up the assignment's actual unique current proof — it never returns a candidate that
+-- failed authority. Relational columns and JSON mirrors stay synchronized.
 --
 -- Deliberately preserved:
 --   * standalone mile-test:baseline rows (never assignment-scoped)
@@ -179,8 +181,9 @@ $$;
 revoke all on function public.is_authoritative_assigned_mile_attachment(uuid, uuid, text, integer, integer, text) from public;
 
 -- Resolve which attachment_id may become canonical for a final assigned Mile write.
--- Prefer a legitimate current incoming replacement; otherwise preserve the current canonical
--- proof. Never resurrect a retired/non-current attachment merely because a stale client sent it.
+-- Prefer authoritative incoming, then authoritative WC canonical. If neither supplied
+-- candidate is still current, look up the assignment's actual current proof. Never return
+-- an attachment that failed is_authoritative_assigned_mile_attachment().
 create or replace function public.resolve_assigned_mile_attachment_id(
   p_user_id uuid,
   p_incoming_attachment_id uuid,
@@ -196,6 +199,9 @@ stable
 security definer
 set search_path = public
 as $function$
+declare
+  v_current_ids uuid[];
+  v_current_count integer;
 begin
   if p_incoming_attachment_id is not null
      and public.is_authoritative_assigned_mile_attachment(
@@ -223,13 +229,43 @@ begin
     return p_canonical_attachment_id;
   end if;
 
-  -- Incoming was null or retired, and canonical is missing or also retired: do not invent
-  -- proof linkage from a stale id.
-  if p_incoming_attachment_id is null then
-    return p_canonical_attachment_id;
+  select coalesce(array_agg(wa.id order by wa.uploaded_at desc nulls last, wa.id), '{}'::uuid[])
+  into v_current_ids
+  from public.workout_attachments wa
+  where wa.user_id = p_user_id
+    and wa.is_current = true
+    and wa.completion_cleared = false
+    and (
+      wa.proof_key = p_test_key
+      or (
+        wa.week_index is not distinct from p_week_index
+        and wa.workout_index is not distinct from p_workout_index
+      )
+      or (
+        coalesce(trim(coalesce(p_client_record_id, '')), '') <> ''
+        and wa.linked_record_id = trim(p_client_record_id)
+      )
+    );
+
+  v_current_count := coalesce(cardinality(v_current_ids), 0);
+
+  if v_current_count = 1 then
+    return v_current_ids[1];
   end if;
 
-  return p_canonical_attachment_id;
+  if v_current_count = 0 then
+    -- Neither supplied candidate is authoritative and no current replacement exists.
+    -- Never finalize on a known-retired attachment id.
+    return null;
+  end if;
+
+  raise exception
+    'ambiguous current assigned mile proof for user % assignment %:% (test_key %)',
+    p_user_id,
+    p_week_index,
+    p_workout_index,
+    p_test_key
+    using errcode = '22000';
 end;
 $function$;
 
