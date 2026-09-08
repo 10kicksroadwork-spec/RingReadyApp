@@ -1,0 +1,540 @@
+-- Assigned Mile mutation authority perimeter (staging / testable — DO NOT apply to production
+-- until a code-clean review promotes the contract).
+--
+-- 019-022 made assigned Mile Save/Skip/Clear server-authoritative for clients that call the
+-- new RPCs. Already-loaded clients (production e85e989 and earlier) still write
+-- public.mile_tests / public.workout_completions directly, so the per-assignment advisory lock
+-- is cooperative rather than enforced: a stale tab can leave illegal committed states such as
+-- "assignment skipped but Mile detail survives" or "no assignment but Mile detail present".
+--
+-- This migration makes the assignment state machine mandatory at the DML boundary. Direct
+-- writes join the same advisory lock and converge server-side into the only legal states:
+--
+--   COMPLETED: canonical workout_completions + matching program:* mile_tests + agreed proof
+--   SKIPPED:   canonical workout_completions + NO program:* mile_tests + retired proof
+--   CLEARED:   no canonical workout_completions + no program:* mile_tests
+--
+-- Convergence is preferred over rejection so a stale athlete still gets a truthful success
+-- instead of a dead-end failure. The only fail-closed case is an ambiguous assignment identity,
+-- where guessing would destroy or move the wrong authoritative completion.
+--
+-- Deliberately preserved:
+--   * standalone mile-test:baseline rows (never assignment-scoped)
+--   * proof_pending = true provisional identity staging and its rollback delete
+--   * every existing SECURITY DEFINER RPC path (019-022) — triggers are idempotent there
+--   * athlete RLS policies; nothing is revoked
+
+-- program:<camp>:<week>:<workout> -> [week, workout]; null for any non-assignment test key.
+create or replace function public.assigned_mile_slot(p_test_key text)
+returns integer[]
+language sql
+immutable
+set search_path = public
+as $$
+  select case
+    when coalesce(p_test_key, '') ~ '^program:[0-9]+:[0-9]+:[0-9]+$'
+      then array[
+        split_part(p_test_key, ':', 3)::integer,
+        split_part(p_test_key, ':', 4)::integer
+      ]
+    else null
+  end;
+$$;
+
+revoke all on function public.assigned_mile_slot(text) from public;
+grant execute on function public.assigned_mile_slot(text) to authenticated;
+
+-- Final (non-staging) assignment Mile detail. Provisional proof staging rows carry
+-- proof_pending = true and a null saved_at and must stay outside the state machine.
+create or replace function public.is_final_assigned_mile_detail(
+  p_test_key text,
+  p_proof_pending boolean,
+  p_saved_at timestamptz
+)
+returns boolean
+language sql
+immutable
+set search_path = public
+as $$
+  select public.assigned_mile_slot(p_test_key) is not null
+    and coalesce(p_proof_pending, false) = false
+    and p_saved_at is not null;
+$$;
+
+revoke all on function public.is_final_assigned_mile_detail(text, boolean, timestamptz) from public;
+
+-- Same skip semantics as isSkippedAssignmentRow() in src/auth.js.
+create or replace function public.assigned_workout_is_skipped(p_record_json jsonb)
+returns boolean
+language sql
+immutable
+set search_path = public
+as $$
+  select coalesce(p_record_json->>'status', '') = 'skipped'
+    or coalesce(p_record_json->'workoutLog'->>'status', '') = 'skipped'
+    or coalesce(p_record_json->>'type', '') = 'daily-workout-skip';
+$$;
+
+revoke all on function public.assigned_workout_is_skipped(jsonb) from public;
+
+create or replace function public.assignment_has_mile_detail(
+  p_user_id uuid,
+  p_week_index integer,
+  p_workout_index integer
+)
+returns boolean
+language sql
+volatile
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1
+    from public.mile_tests mt
+    where mt.user_id = p_user_id
+      and mt.test_key ~ ('^program:[0-9]+:' || p_week_index::text || ':' || p_workout_index::text || '$')
+      and coalesce(mt.proof_pending, false) = false
+  );
+$$;
+
+revoke all on function public.assignment_has_mile_detail(uuid, integer, integer) from public;
+
+-- BEFORE on mile_tests: join the assignment lock before the detail row lands, fail closed on
+-- ambiguous identity, and never let subordinate detail contradict canonical proof linkage.
+create or replace function public.tg_assigned_mile_detail_before()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $function$
+declare
+  v_slot integer[] := public.assigned_mile_slot(new.test_key);
+  v_week integer;
+  v_workout integer;
+  v_completion_id uuid;
+  v_wc_client_record_id text;
+  v_wc_attachment_id uuid;
+  v_wc_policy_version integer;
+begin
+  if not public.is_final_assigned_mile_detail(new.test_key, new.proof_pending, new.saved_at) then
+    return new;
+  end if;
+
+  v_week := v_slot[1];
+  v_workout := v_slot[2];
+
+  perform public.lock_assigned_workout_transition_for(new.user_id, v_week, v_workout);
+
+  v_completion_id := public.resolve_assigned_workout_completion_id_for(
+    new.user_id,
+    v_week,
+    v_workout
+  );
+
+  if v_completion_id is null then
+    return new;
+  end if;
+
+  select wc.client_record_id, wc.attachment_id, wc.proof_policy_version
+  into v_wc_client_record_id, v_wc_attachment_id, v_wc_policy_version
+  from public.workout_completions wc
+  where wc.id = v_completion_id
+    and wc.user_id = new.user_id;
+
+  -- Only ever upgrade missing proof linkage; a direct write must not erase canonical proof.
+  if new.attachment_id is null and v_wc_attachment_id is not null then
+    new.attachment_id := v_wc_attachment_id;
+    if new.proof_policy_version is null then
+      new.proof_policy_version := v_wc_policy_version;
+    end if;
+  end if;
+
+  if coalesce(trim(coalesce(new.client_record_id, '')), '') = ''
+     and coalesce(trim(coalesce(v_wc_client_record_id, '')), '') <> ''
+  then
+    new.client_record_id := v_wc_client_record_id;
+  end if;
+
+  return new;
+end;
+$function$;
+
+-- AFTER on mile_tests: canonical workout_completions must prove the saved Mile.
+create or replace function public.tg_assigned_mile_detail_after()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $function$
+declare
+  v_slot integer[] := public.assigned_mile_slot(new.test_key);
+  v_week integer;
+  v_workout integer;
+  v_completion_id uuid;
+  v_completion_key text;
+  v_client_record_id text;
+  v_context jsonb;
+  v_saved_at text;
+  v_workout_log jsonb;
+  v_record jsonb;
+  v_next_record jsonb;
+  v_wc_total_minutes numeric;
+  v_wc_total_seconds integer;
+  v_wc_avg_bpm integer;
+  v_wc_max_bpm integer;
+  v_wc_distance numeric;
+  v_wc_modality text;
+  v_wc_output_type text;
+  v_wc_output_value numeric;
+  v_wc_attachment_id uuid;
+  v_wc_policy_version integer;
+  v_wc_proof_pending boolean;
+  v_wc_client_record_id text;
+begin
+  if not public.is_final_assigned_mile_detail(new.test_key, new.proof_pending, new.saved_at) then
+    return null;
+  end if;
+
+  v_week := v_slot[1];
+  v_workout := v_slot[2];
+  v_completion_key := v_week::text || ':' || v_workout::text;
+
+  -- Already held by the BEFORE trigger / calling RPC; re-acquiring in-transaction is a no-op.
+  perform public.lock_assigned_workout_transition_for(new.user_id, v_week, v_workout);
+
+  v_completion_id := public.resolve_assigned_workout_completion_id_for(
+    new.user_id,
+    v_week,
+    v_workout
+  );
+
+  v_client_record_id := coalesce(
+    nullif(trim(coalesce(new.client_record_id, '')), ''),
+    new.id::text
+  );
+  v_saved_at := to_char(new.saved_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"');
+  v_context := coalesce(new.test_context_json, '{}'::jsonb)
+    || jsonb_build_object('weekIndex', v_week, 'workoutIndex', v_workout);
+  v_workout_log := jsonb_build_object(
+    'distance', new.distance,
+    'totalMinutes', new.total_minutes,
+    'totalSeconds', new.total_seconds,
+    'avgBpm', new.avg_bpm,
+    'maxBpm', new.max_bpm,
+    'modality', 'running',
+    'outputType', 'distance',
+    'outputValue', new.distance,
+    'completedAt', v_saved_at
+  );
+
+  if v_completion_id is null then
+    -- Legacy clients save assigned Mile detail without any canonical completion.
+    insert into public.workout_completions (
+      user_id,
+      client_record_id,
+      completion_key,
+      week_index,
+      workout_index,
+      week_label,
+      week_title,
+      day_of_week,
+      workout_type,
+      description,
+      warmup,
+      target_zone,
+      target_bpm,
+      total_minutes,
+      total_seconds,
+      avg_bpm,
+      max_bpm,
+      modality,
+      output_type,
+      output_value,
+      avg_watts,
+      distance,
+      completed_at,
+      proof_policy_version,
+      attachment_id,
+      proof_pending,
+      record_json,
+      updated_at
+    ) values (
+      new.user_id,
+      v_client_record_id,
+      v_completion_key,
+      v_week,
+      v_workout,
+      coalesce(v_context->>'weekLabel', v_context->>'weekTab', ''),
+      coalesce(v_context->>'weekTitle', ''),
+      coalesce(v_context->>'dayOfWeek', ''),
+      coalesce(v_context->>'workoutType', 'Mile Test'),
+      coalesce(v_context->>'description', ''),
+      coalesce(v_context->>'warmup', ''),
+      coalesce(v_context->>'targetZone', ''),
+      nullif(v_context->>'targetBPM', '')::integer,
+      new.total_minutes,
+      new.total_seconds,
+      new.avg_bpm,
+      new.max_bpm,
+      'running',
+      'distance',
+      new.distance,
+      null,
+      new.distance,
+      new.saved_at,
+      new.proof_policy_version,
+      new.attachment_id,
+      false,
+      jsonb_build_object(
+        'id', v_client_record_id,
+        'testKey', new.test_key,
+        'status', 'completed',
+        'type', 'daily-workout-completion',
+        'completedAt', v_saved_at,
+        'workoutContext', v_context,
+        'cfg', jsonb_build_object('workoutContext', v_context),
+        'workoutLog', v_workout_log
+      ),
+      now()
+    );
+    return null;
+  end if;
+
+  select
+    wc.record_json,
+    wc.total_minutes,
+    wc.total_seconds,
+    wc.avg_bpm,
+    wc.max_bpm,
+    wc.distance,
+    wc.modality,
+    wc.output_type,
+    wc.output_value,
+    wc.attachment_id,
+    wc.proof_policy_version,
+    wc.proof_pending,
+    wc.client_record_id
+  into
+    v_record,
+    v_wc_total_minutes,
+    v_wc_total_seconds,
+    v_wc_avg_bpm,
+    v_wc_max_bpm,
+    v_wc_distance,
+    v_wc_modality,
+    v_wc_output_type,
+    v_wc_output_value,
+    v_wc_attachment_id,
+    v_wc_policy_version,
+    v_wc_proof_pending,
+    v_wc_client_record_id
+  from public.workout_completions wc
+  where wc.id = v_completion_id
+    and wc.user_id = new.user_id
+  for update;
+
+  -- Canonical row already proves this Mile (the 019-022 RPC path); leave it alone.
+  if not public.assigned_workout_is_skipped(v_record)
+     and v_wc_total_minutes is not distinct from new.total_minutes
+     and v_wc_total_seconds is not distinct from new.total_seconds
+     and v_wc_avg_bpm is not distinct from new.avg_bpm
+     and v_wc_max_bpm is not distinct from new.max_bpm
+     and v_wc_distance is not distinct from new.distance
+     and v_wc_modality is not distinct from 'running'
+     and v_wc_output_type is not distinct from 'distance'
+     and v_wc_output_value is not distinct from new.distance
+     and v_wc_attachment_id is not distinct from new.attachment_id
+     and v_wc_policy_version is not distinct from new.proof_policy_version
+     and coalesce(v_wc_proof_pending, false) = false
+  then
+    return null;
+  end if;
+
+  v_next_record :=
+    (coalesce(v_record, '{}'::jsonb) - 'skipReason' - 'skipReasonLabel' - 'coachApproved')
+    || jsonb_build_object(
+      'id', v_client_record_id,
+      'testKey', new.test_key,
+      'status', 'completed',
+      'type', 'daily-workout-completion',
+      'completedAt', v_saved_at,
+      'workoutContext', coalesce(v_record->'workoutContext', '{}'::jsonb) || v_context,
+      'cfg', jsonb_build_object(
+        'workoutContext',
+        coalesce(v_record->'cfg'->'workoutContext', '{}'::jsonb) || v_context
+      ),
+      'workoutLog',
+        (
+          coalesce(v_record->'workoutLog', '{}'::jsonb)
+          - 'status' - 'skipReason' - 'skipReasonLabel' - 'coachApproved'
+        ) || v_workout_log
+    );
+
+  update public.workout_completions
+  set
+    client_record_id = v_client_record_id,
+    completion_key = v_completion_key,
+    week_index = v_week,
+    workout_index = v_workout,
+    total_minutes = new.total_minutes,
+    total_seconds = new.total_seconds,
+    avg_bpm = new.avg_bpm,
+    max_bpm = new.max_bpm,
+    modality = 'running',
+    output_type = 'distance',
+    output_value = new.distance,
+    avg_watts = null,
+    distance = new.distance,
+    completed_at = new.saved_at,
+    attachment_id = coalesce(new.attachment_id, attachment_id),
+    proof_policy_version = coalesce(new.proof_policy_version, proof_policy_version),
+    proof_pending = false,
+    record_json = v_next_record,
+    updated_at = now()
+  where id = v_completion_id
+    and user_id = new.user_id;
+
+  return null;
+end;
+$function$;
+
+-- BEFORE on workout_completions: force SKIPPED assigned-Mile rows to drop result metrics and
+-- proof linkage, whichever client wrote them.
+--
+-- Deliberately does NOT take the assignment advisory lock. PostgreSQL locks the target row
+-- before BEFORE-ROW triggers fire, so locking here would invert lock order against the RPCs
+-- (advisory lock first, then row lock) and turn benign races into deadlocks. workout_completions
+-- races are already serialized by the row lock plus the positional unique constraint, and the
+-- AFTER trigger converges subordinate detail inside whichever transaction commits.
+create or replace function public.tg_assigned_workout_before()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $function$
+begin
+  if tg_op = 'DELETE' then
+    return old;
+  end if;
+
+  if new.week_index is null or new.workout_index is null then
+    return new;
+  end if;
+
+  if public.assigned_workout_is_skipped(new.record_json)
+     and public.assignment_has_mile_detail(new.user_id, new.week_index, new.workout_index)
+  then
+    new.total_minutes := null;
+    new.total_seconds := null;
+    new.avg_bpm := null;
+    new.max_bpm := null;
+    new.distance := null;
+    new.modality := null;
+    new.output_type := null;
+    new.output_value := null;
+    new.avg_watts := null;
+    new.proof_policy_version := null;
+    new.attachment_id := null;
+    new.proof_pending := false;
+  end if;
+
+  return new;
+end;
+$function$;
+
+-- AFTER on workout_completions: subordinate Mile detail and its proof must not outlive a
+-- SKIPPED or CLEARED assignment, whichever client produced the transition.
+create or replace function public.tg_assigned_workout_after()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $function$
+declare
+  v_user_id uuid;
+  v_week integer;
+  v_workout integer;
+  v_pattern text;
+  v_detail record;
+begin
+  if tg_op = 'DELETE' then
+    v_user_id := old.user_id;
+    v_week := old.week_index;
+    v_workout := old.workout_index;
+  else
+    v_user_id := new.user_id;
+    v_week := new.week_index;
+    v_workout := new.workout_index;
+    if not public.assigned_workout_is_skipped(new.record_json) then
+      return null;
+    end if;
+  end if;
+
+  if v_week is null or v_workout is null then
+    return null;
+  end if;
+
+  -- Non-Mile assignments keep their existing clear/skip behaviour untouched.
+  if not public.assignment_has_mile_detail(v_user_id, v_week, v_workout) then
+    return null;
+  end if;
+
+  v_pattern := '^program:[0-9]+:' || v_week::text || ':' || v_workout::text || '$';
+
+  for v_detail in
+    select mt.client_record_id, mt.attachment_id
+    from public.mile_tests mt
+    where mt.user_id = v_user_id
+      and mt.test_key ~ v_pattern
+      and coalesce(mt.proof_pending, false) = false
+  loop
+    perform public.retire_assigned_workout_proof(
+      v_user_id,
+      null,
+      v_detail.client_record_id,
+      v_detail.attachment_id
+    );
+  end loop;
+
+  if tg_op <> 'INSERT' then
+    perform public.retire_assigned_workout_proof(
+      v_user_id,
+      old.id,
+      old.client_record_id,
+      old.attachment_id
+    );
+  end if;
+
+  -- Provisional proof staging rows are intentionally left in place.
+  delete from public.mile_tests mt
+  where mt.user_id = v_user_id
+    and mt.test_key ~ v_pattern
+    and coalesce(mt.proof_pending, false) = false;
+
+  return null;
+end;
+$function$;
+
+drop trigger if exists assigned_mile_detail_before on public.mile_tests;
+create trigger assigned_mile_detail_before
+  before insert or update on public.mile_tests
+  for each row
+  execute function public.tg_assigned_mile_detail_before();
+
+drop trigger if exists assigned_mile_detail_after on public.mile_tests;
+create trigger assigned_mile_detail_after
+  after insert or update on public.mile_tests
+  for each row
+  execute function public.tg_assigned_mile_detail_after();
+
+drop trigger if exists assigned_workout_before on public.workout_completions;
+create trigger assigned_workout_before
+  before insert or update or delete on public.workout_completions
+  for each row
+  execute function public.tg_assigned_workout_before();
+
+drop trigger if exists assigned_workout_after on public.workout_completions;
+create trigger assigned_workout_after
+  after insert or update or delete on public.workout_completions
+  for each row
+  execute function public.tg_assigned_workout_after();

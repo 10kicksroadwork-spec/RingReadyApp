@@ -4,7 +4,15 @@
  *
  * Uses independently authenticated Supabase clients for the SAME athlete and
  * launches overlapping Save/Skip/Clear mutations concurrently.
- * Requires migrations 019 + 020 + 021 applied on the target database (staging only).
+ * Requires migrations 019 + 020 + 021 + 022 + 023 applied on the target database
+ * (staging only).
+ *
+ * Covers three layers:
+ *   1. new-client RPC races (Save / Skip / assigned Clear / generic Clear)
+ *   2. assignment identity conflicts, which must fail closed and mutate nothing
+ *   3. cross-version convergence: direct table writes issued by the exact
+ *      production client (e85e98985709320adcb9d133dd5a6c457c86f9cc), which never
+ *      calls the new RPCs, must still land in a legal committed state
  *
  * Env:
  *   RING_READY_SUPABASE_URL / RING_READY_SUPABASE_ANON_KEY
@@ -12,7 +20,7 @@
  *   RING_READY_REQUIRE_PROOF_TESTS=1 (or RING_READY_REQUIRE_MILE_AUTHORITY_TESTS=1)
  *     to fail closed when missing creds/RPCs
  *
- * DO NOT apply 019/020/021 to production from this script.
+ * DO NOT apply 019/020/021/022/023 to production from this script.
  */
 
 import { createClient } from '@supabase/supabase-js';
@@ -227,6 +235,178 @@ async function clearGeneric(client, slot) {
     p_workout_index: slot.workoutIndex,
     p_attachment_id: null,
   });
+}
+
+/**
+ * Exact production (e85e989) assigned-Mile final save: buildMileTestCloudPayload +
+ * saveCloudMileTest. It writes mile_tests directly and never touches
+ * workout_completions, so the server must supply the canonical completion.
+ */
+async function legacySaveMileDetail(client, userId, slot, values = {}) {
+  const savedAt = values.savedAt || new Date().toISOString();
+  const clientRecordId = values.clientRecordId || randomUUID();
+  const distance = values.distance ?? 1;
+  const totalMinutes = values.totalMinutes ?? 7.5;
+  const totalSeconds = values.totalSeconds ?? Math.round(totalMinutes * 60);
+  const result = {
+    id: clientRecordId,
+    testKey: slot.testKey,
+    distance,
+    totalMinutes,
+    totalSeconds,
+    avgBpm: values.avgBpm ?? 150,
+    maxBpm: values.maxBpm ?? 170,
+    paceMinPerMile: totalMinutes / distance,
+    savedAt,
+  };
+  return client.from('mile_tests').upsert({
+    user_id: userId,
+    client_record_id: clientRecordId,
+    test_key: slot.testKey,
+    saved_at: savedAt,
+    distance,
+    total_minutes: totalMinutes,
+    total_seconds: totalSeconds,
+    pace_min_per_mile: result.paceMinPerMile,
+    avg_bpm: result.avgBpm,
+    max_bpm: result.maxBpm,
+    proof_policy_version: values.proofPolicyVersion ?? null,
+    attachment_id: values.attachmentId ?? null,
+    proof_pending: false,
+    result_json: result,
+    hr_info_json: null,
+    test_context_json: {
+      testKey: slot.testKey,
+      weekIndex: slot.weekIndex,
+      workoutIndex: slot.workoutIndex,
+      weekLabel: 'Week Test',
+      weekTitle: 'Authority',
+      dayOfWeek: 'Saturday/Sunday',
+      workoutType: 'Mile Re-Test',
+    },
+    updated_at: new Date().toISOString(),
+  }, { onConflict: 'user_id,test_key' });
+}
+
+/**
+ * Exact production (e85e989) Workout Detail skip: buildWorkoutCloudPayload upserted
+ * straight into workout_completions with no knowledge of skip_assigned_mile().
+ */
+async function legacySkipWorkout(client, userId, slot, clientRecordId) {
+  const completedAt = new Date().toISOString();
+  const context = {
+    weekIndex: slot.weekIndex,
+    workoutIndex: slot.workoutIndex,
+    weekLabel: 'Week Test',
+    weekTitle: 'Authority',
+    dayOfWeek: 'Saturday/Sunday',
+    workoutType: 'Mile Re-Test',
+    description: 'legacy client skip',
+  };
+  const record = {
+    id: clientRecordId,
+    status: 'skipped',
+    type: 'daily-workout-skip',
+    completedAt,
+    workoutContext: context,
+    cfg: { workoutContext: context },
+    workoutLog: {
+      status: 'skipped',
+      skipReason: 'injury',
+      skipReasonLabel: 'Injury / medical',
+      coachApproved: true,
+      completedAt,
+    },
+  };
+  return client.from('workout_completions').upsert({
+    user_id: userId,
+    client_record_id: clientRecordId,
+    completion_key: slot.completionKey,
+    week_index: slot.weekIndex,
+    workout_index: slot.workoutIndex,
+    week_label: context.weekLabel,
+    week_title: context.weekTitle,
+    day_of_week: context.dayOfWeek,
+    workout_type: context.workoutType,
+    description: context.description,
+    warmup: '',
+    target_zone: '',
+    target_bpm: null,
+    total_minutes: null,
+    total_seconds: null,
+    avg_bpm: null,
+    max_bpm: null,
+    distance: null,
+    completed_at: completedAt,
+    proof_policy_version: null,
+    attachment_id: null,
+    proof_pending: false,
+    record_json: record,
+    updated_at: new Date().toISOString(),
+  }, { onConflict: 'user_id,completion_key' });
+}
+
+async function readPositionRow(client, userId, weekIndex, workoutIndex) {
+  const { data, error } = await client.from('workout_completions')
+    .select('id,completion_key,week_index,workout_index,attachment_id,record_json')
+    .eq('user_id', userId)
+    .eq('week_index', weekIndex)
+    .eq('workout_index', workoutIndex)
+    .maybeSingle();
+  if (error) throw new Error(`position read failed: ${error.message}`);
+  return data;
+}
+
+async function readKeyRow(client, userId, completionKey) {
+  const { data, error } = await client.from('workout_completions')
+    .select('id,completion_key,week_index,workout_index,attachment_id')
+    .eq('user_id', userId)
+    .eq('completion_key', completionKey)
+    .maybeSingle();
+  if (error) throw new Error(`key read failed: ${error.message}`);
+  return data;
+}
+
+async function readMileRow(client, userId, slot) {
+  const { data, error } = await client.from('mile_tests')
+    .select('id,test_key,client_record_id,attachment_id,total_minutes,avg_bpm')
+    .eq('user_id', userId)
+    .eq('test_key', slot.testKey)
+    .maybeSingle();
+  if (error) throw new Error(`mile read failed: ${error.message}`);
+  return data;
+}
+
+const WRONG_WORKOUT_INDEX = 7;
+
+/**
+ * Seed a completion_key row whose stored assignment position is a DIFFERENT valid
+ * assignment, using only legal writes: a legacy Mile save (server supplies the
+ * canonical completion) followed by positional drift on that row.
+ */
+async function seedKeyRowAtWrongPosition(client, userId, slot) {
+  const legacyId = randomUUID();
+  const { error: mileErr } = await legacySaveMileDetail(client, userId, slot, {
+    clientRecordId: legacyId,
+    totalMinutes: 7.5,
+  });
+  assert(!mileErr, `key-position seed mile write failed: ${mileErr?.message}`);
+
+  const seeded = await readPositionRow(client, userId, slot.weekIndex, slot.workoutIndex);
+  assert(seeded?.id, 'key-position seed expected a server-converged completion');
+  assert(seeded.completion_key === slot.completionKey, 'key-position seed expected canonical key');
+
+  const { error: driftErr } = await client.from('workout_completions')
+    .update({ workout_index: WRONG_WORKOUT_INDEX, updated_at: new Date().toISOString() })
+    .eq('id', seeded.id)
+    .eq('user_id', userId);
+  assert(!driftErr, `key-position seed drift failed: ${driftErr?.message}`);
+  return { keyRowId: seeded.id, legacyId };
+}
+
+async function cleanupWrongPosition(client, userId, slot) {
+  await client.from('workout_completions').delete().eq('user_id', userId)
+    .eq('week_index', slot.weekIndex).eq('workout_index', WRONG_WORKOUT_INDEX);
 }
 
 async function assertFreshClientsAgree(a, b, third, slot, label) {
@@ -499,125 +679,215 @@ async function main() {
     await cleanupSlot(a.client, a.userId, slot);
   }
 
+  // Single key row stored at a different valid assignment, with NO row at the
+  // requested position. Every shared transition must fail closed.
+  for (const op of ['save', 'skip', 'genericClear', 'assignedClear']) {
+    const slot = allocSlot();
+    await cleanupSlot(a.client, a.userId, slot);
+    await cleanupWrongPosition(a.client, a.userId, slot);
+    const { keyRowId } = await seedKeyRowAtWrongPosition(a.client, a.userId, slot);
+
+    const keyBefore = await readKeyRow(third.client, third.userId, slot.completionKey);
+    const mileBefore = await readMileRow(third.client, third.userId, slot);
+    assert(keyBefore?.id === keyRowId, 'key row must exist before the mismatched transition');
+    assert(keyBefore.workout_index === WRONG_WORKOUT_INDEX, 'key row must be stored at the wrong position');
+    assert(mileBefore?.id, 'mile detail must exist before the mismatched transition');
+    assert(
+      !(await readPositionRow(third.client, third.userId, slot.weekIndex, slot.workoutIndex)),
+      'no completion may exist at the requested position for this case',
+    );
+
+    let outcome;
+    if (op === 'save') outcome = await saveAssigned(b.client, slot, randomUUID(), { totalMinutes: 6.4 });
+    else if (op === 'skip') outcome = await skipAssigned(b.client, slot, randomUUID());
+    else if (op === 'genericClear') outcome = await clearGeneric(b.client, slot);
+    else outcome = await clearAssigned(b.client, slot);
+
+    assert(outcome.error, `${op}: mismatched key identity must fail closed`);
+    assert(
+      /identity conflict/i.test(outcome.error.message || ''),
+      `${op}: expected identity conflict, got: ${outcome.error.message}`,
+    );
+
+    const keyAfter = await readKeyRow(third.client, third.userId, slot.completionKey);
+    const mileAfter = await readMileRow(third.client, third.userId, slot);
+    assert(keyAfter?.id === keyBefore.id, `${op}: key row must be untouched`);
+    assert(keyAfter.workout_index === WRONG_WORKOUT_INDEX, `${op}: key row must not be moved`);
+    assert(keyAfter.attachment_id === keyBefore.attachment_id, `${op}: proof linkage must be untouched`);
+    assert(mileAfter?.id === mileBefore.id, `${op}: mile detail must be untouched`);
+    assert(
+      !(await readPositionRow(third.client, third.userId, slot.weekIndex, slot.workoutIndex)),
+      `${op}: no row may be created at the requested position`,
+    );
+    console.log(`PASS key-position mismatch fails closed: ${op}`);
+
+    await cleanupWrongPosition(a.client, a.userId, slot);
+    await cleanupSlot(a.client, a.userId, slot);
+  }
+
+  // Two different rows claim the same assignment (dual-row conflict).
   {
     const slot = allocSlot();
     await cleanupSlot(a.client, a.userId, slot);
-    const idA = randomUUID();
-    const idB = randomUUID();
-    const wrongWeek = slot.weekIndex - 1;
-    const savedAt = new Date().toISOString();
-    const mileRecord = {
+    await cleanupWrongPosition(a.client, a.userId, slot);
+    const { keyRowId } = await seedKeyRowAtWrongPosition(a.client, a.userId, slot);
+
+    const staleId = randomUUID();
+    const { error: seedBErr } = await a.client.from('workout_completions').insert({
       user_id: a.userId,
-      test_key: slot.testKey,
-      client_record_id: idB,
-      distance: 1,
-      total_minutes: 7.5,
-      total_seconds: 450,
-      avg_bpm: 150,
-      max_bpm: 170,
-      saved_at: savedAt,
-      result_json: { testKey: slot.testKey, distance: 1, totalMinutes: 7.5 },
-      test_context_json: { testKey: slot.testKey, weekIndex: slot.weekIndex, workoutIndex: slot.workoutIndex },
-    };
-    const completionBase = {
-      user_id: a.userId,
-      week_label: 'Week Test',
-      week_title: 'Authority',
+      client_record_id: staleId,
+      completion_key: `legacy-stale-${staleId}`,
+      week_index: slot.weekIndex,
+      workout_index: slot.workoutIndex,
+      week_label: 'Legacy',
+      week_title: 'Stale key',
       day_of_week: 'Saturday/Sunday',
       workout_type: 'Mile Re-Test',
       description: 'dual identity contract',
-      completed_at: savedAt,
-      distance: 1,
-      total_minutes: 7.5,
-      total_seconds: 450,
-      avg_bpm: 150,
-      max_bpm: 170,
-      modality: 'running',
-      output_type: 'distance',
-      output_value: 1,
+      completed_at: new Date().toISOString(),
       record_json: {
+        id: staleId,
         status: 'completed',
         type: 'daily-workout-completion',
         workoutContext: { weekIndex: slot.weekIndex, workoutIndex: slot.workoutIndex },
       },
-    };
-    const { error: seedAErr } = await a.client.from('workout_completions').insert({
-      ...completionBase,
-      client_record_id: idA,
-      completion_key: slot.completionKey,
-      week_index: wrongWeek,
-      workout_index: slot.workoutIndex,
-      record_json: {
-        ...completionBase.record_json,
-        id: idA,
-        workoutContext: { weekIndex: wrongWeek, workoutIndex: slot.workoutIndex },
-      },
     });
-    assert(!seedAErr, `dual-identity row A seed failed: ${seedAErr?.message}`);
-    const { error: seedBErr } = await a.client.from('workout_completions').insert({
-      ...completionBase,
-      client_record_id: idB,
-      completion_key: `legacy-stale-${idB}`,
-      week_index: slot.weekIndex,
-      workout_index: slot.workoutIndex,
-      record_json: { ...completionBase.record_json, id: idB },
-    });
-    assert(!seedBErr, `dual-identity row B seed failed: ${seedBErr?.message}`);
-    const { error: seedMileErr } = await a.client.from('mile_tests').insert(mileRecord);
-    assert(!seedMileErr, `dual-identity mile seed failed: ${seedMileErr?.message}`);
+    assert(!seedBErr, `dual-identity position row seed failed: ${seedBErr?.message}`);
 
-    const { data: rowBBefore, error: rowBBeforeErr } = await a.client.from('workout_completions')
-      .select('id,completion_key,week_index,workout_index')
-      .eq('user_id', a.userId)
-      .eq('week_index', slot.weekIndex)
-      .eq('workout_index', slot.workoutIndex)
-      .maybeSingle();
-    assert(!rowBBeforeErr, rowBBeforeErr?.message);
-    assert(rowBBefore?.id, 'row B must exist at target position before generic clear');
-    const { data: mileBefore, error: mileBeforeErr } = await a.client.from('mile_tests')
-      .select('id,test_key')
-      .eq('user_id', a.userId)
-      .eq('test_key', slot.testKey)
-      .maybeSingle();
-    assert(!mileBeforeErr, mileBeforeErr?.message);
+    const positionBefore = await readPositionRow(third.client, third.userId, slot.weekIndex, slot.workoutIndex);
+    const mileBefore = await readMileRow(third.client, third.userId, slot);
+    assert(positionBefore?.id, 'position row must exist before generic clear');
     assert(mileBefore?.id, 'mile detail must exist before generic clear');
 
     const { error: clearErr } = await clearGeneric(a.client, slot);
     assert(clearErr, 'generic clear must fail closed on dual semantic identity');
     assert(/identity conflict/i.test(clearErr.message || ''), `expected identity conflict, got: ${clearErr.message}`);
 
-    const { data: rowBAfter, error: rowBAfterErr } = await a.client.from('workout_completions')
-      .select('id,completion_key,week_index,workout_index')
-      .eq('user_id', a.userId)
-      .eq('week_index', slot.weekIndex)
-      .eq('workout_index', slot.workoutIndex)
-      .maybeSingle();
-    assert(!rowBAfterErr, rowBAfterErr?.message);
-    assert(rowBAfter?.id === rowBBefore.id, 'positional completion must survive failed generic clear');
-    const { data: mileAfter, error: mileAfterErr } = await a.client.from('mile_tests')
-      .select('id,test_key')
-      .eq('user_id', a.userId)
-      .eq('test_key', slot.testKey)
-      .maybeSingle();
-    assert(!mileAfterErr, mileAfterErr?.message);
+    const positionAfter = await readPositionRow(third.client, third.userId, slot.weekIndex, slot.workoutIndex);
+    const keyAfter = await readKeyRow(third.client, third.userId, slot.completionKey);
+    const mileAfter = await readMileRow(third.client, third.userId, slot);
+    assert(positionAfter?.id === positionBefore.id, 'positional completion must survive failed generic clear');
+    assert(keyAfter?.id === keyRowId, 'key completion must survive failed generic clear');
     assert(mileAfter?.id === mileBefore.id, 'mile detail must survive failed generic clear');
-    const { count: rowCount, error: countErr } = await third.client.from('workout_completions')
-      .select('id', { count: 'exact', head: true })
-      .eq('user_id', third.userId)
-      .or(`completion_key.eq.${slot.completionKey},and(week_index.eq.${slot.weekIndex},workout_index.eq.${slot.workoutIndex})`);
-    assert(!countErr, countErr?.message);
-    assert(rowCount === 2, `both conflicting WC rows must remain, got ${rowCount}`);
-    console.log('PASS cross-identity generic clear fails closed');
+    console.log('PASS dual-row identity generic clear fails closed');
 
-    const ordinarySlot = allocSlot();
-    await cleanupSlot(a.client, a.userId, ordinarySlot);
-    const ordinaryId = randomUUID();
-    assert(!(await saveAssigned(a.client, ordinarySlot, ordinaryId, { totalMinutes: 7.2 })).error, 'ordinary save seed failed');
-    assert(!(await clearGeneric(b.client, ordinarySlot)).error, 'ordinary generic clear must still succeed');
-    const cleared = await readCanonical(third.client, third.userId, ordinarySlot);
+    await cleanupWrongPosition(a.client, a.userId, slot);
+    await cleanupSlot(a.client, a.userId, slot);
+  }
+
+  {
+    const slot = allocSlot();
+    await cleanupSlot(a.client, a.userId, slot);
+    assert(!(await saveAssigned(a.client, slot, randomUUID(), { totalMinutes: 7.2 })).error, 'ordinary save seed failed');
+    assert(!(await clearGeneric(b.client, slot)).error, 'ordinary generic clear must still succeed');
+    const cleared = await readCanonical(third.client, third.userId, slot);
     assert(!cleared.completion && !cleared.mile, 'ordinary generic clear must remove canonical state');
     console.log('PASS ordinary generic clear still succeeds after identity contract');
-    await cleanupSlot(a.client, a.userId, ordinarySlot);
+    await cleanupSlot(a.client, a.userId, slot);
+  }
+
+  // Cross-version: the exact production client writes tables directly and must
+  // still converge to a legal committed state.
+  {
+    const slot = allocSlot();
+    await cleanupSlot(a.client, a.userId, slot);
+    const legacyId = randomUUID();
+    const { error } = await legacySaveMileDetail(a.client, a.userId, slot, {
+      clientRecordId: legacyId,
+      totalMinutes: 7.25,
+      avgBpm: 152,
+    });
+    assert(!error, `legacy-client Save failed: ${error?.message}`);
+    const truth = await assertFreshClientsAgree(a, b, third, slot, 'legacy-client-save');
+    assert(truth.status === 'completed', 'legacy-client Save must converge to COMPLETED');
+    assert(!!truth.completion, 'legacy-client Save must produce a canonical completion');
+    assert(truth.completion.completion_key === slot.completionKey, 'converged completion must use canonical key');
+    assert(Number(truth.completion.total_minutes) === 7.25, 'canonical completion must carry saved metrics');
+    assert(Number(truth.completion.avg_bpm) === 152, 'canonical completion must carry saved HR');
+    assert(truth.completion.modality === 'running', 'canonical completion must carry Mile modality');
+    assert(truth.completion.output_type === 'distance', 'canonical completion must carry Mile output type');
+    assert(truth.completion.client_record_id === legacyId, 'canonical completion must adopt the client record id');
+    console.log('PASS legacy-client Save converges to legal COMPLETED');
+    await cleanupSlot(a.client, a.userId, slot);
+  }
+
+  {
+    const slot = allocSlot();
+    await cleanupSlot(a.client, a.userId, slot);
+    assert(!(await saveAssigned(a.client, slot, randomUUID(), { totalMinutes: 7.3 })).error, 'seed save failed');
+    const { error } = await legacySkipWorkout(b.client, b.userId, slot, randomUUID());
+    assert(!error, `legacy-client Skip failed: ${error?.message}`);
+    const truth = await assertFreshClientsAgree(a, b, third, slot, 'legacy-client-skip');
+    assert(truth.status === 'skipped', 'legacy-client Skip must converge to SKIPPED');
+    assert(!truth.mile, 'legacy-client Skip must not leave Mile detail behind');
+    assert(!truth.completion.attachment_id, 'legacy-client Skip must retire proof linkage');
+    console.log('PASS legacy-client Skip from COMPLETED converges to legal SKIPPED');
+    await cleanupSlot(a.client, a.userId, slot);
+  }
+
+  {
+    const slot = allocSlot();
+    await cleanupSlot(a.client, a.userId, slot);
+    assert(!(await saveAssigned(a.client, slot, randomUUID(), { totalMinutes: 7.4 })).error, 'seed save failed');
+    assert(!(await clearAssigned(b.client, slot)).error, 'seed clear failed');
+    const { error } = await legacySaveMileDetail(a.client, a.userId, slot, { totalMinutes: 6.8 });
+    assert(!error, `legacy-client resave failed: ${error?.message}`);
+    const truth = await assertFreshClientsAgree(a, b, third, slot, 'legacy-client-resave');
+    assert(truth.status === 'completed', 'legacy-client resave after Clear must converge to COMPLETED');
+    assert(!!truth.completion && !!truth.mile, 'Mile-only state is illegal after legacy resave');
+    console.log('PASS legacy-client Save after new Clear never leaves Mile-only state');
+    await cleanupSlot(a.client, a.userId, slot);
+  }
+
+  for (let round = 0; round < Math.max(4, Math.floor(CONCURRENT_ROUNDS / 2)); round += 1) {
+    const slot = allocSlot();
+    await cleanupSlot(a.client, a.userId, slot);
+    const truth = await runConcurrentPair(
+      `legacySave||newClear#${round}`,
+      () => legacySaveMileDetail(a.client, a.userId, slot, { totalMinutes: 7.05 }),
+      () => clearAssigned(b.client, slot),
+      a,
+      b,
+      third,
+      slot,
+    );
+    assertConsistentTruth(truth, `legacySave||newClear#${round}`);
+    console.log(`PASS cross-version legacySave||newClear#${round}: canonical=${truth.status || 'cleared'}`);
+    await cleanupSlot(a.client, a.userId, slot);
+  }
+
+  for (let round = 0; round < Math.max(4, Math.floor(CONCURRENT_ROUNDS / 2)); round += 1) {
+    const slot = allocSlot();
+    await cleanupSlot(a.client, a.userId, slot);
+    assert(!(await saveAssigned(a.client, slot, randomUUID(), { totalMinutes: 7.6 })).error, 'seed save failed');
+    const truth = await runConcurrentPair(
+      `legacySkip||newSave#${round}`,
+      () => legacySkipWorkout(a.client, a.userId, slot, randomUUID()),
+      () => saveAssigned(b.client, slot, randomUUID(), { totalMinutes: 6.95 }),
+      a,
+      b,
+      third,
+      slot,
+    );
+    assertConsistentTruth(truth, `legacySkip||newSave#${round}`);
+    console.log(`PASS cross-version legacySkip||newSave#${round}: canonical=${truth.status || 'cleared'}`);
+    await cleanupSlot(a.client, a.userId, slot);
+  }
+
+  for (let round = 0; round < Math.max(4, Math.floor(CONCURRENT_ROUNDS / 2)); round += 1) {
+    const slot = allocSlot();
+    await cleanupSlot(a.client, a.userId, slot);
+    const truth = await runConcurrentPair(
+      `legacySave||newSkip#${round}`,
+      () => legacySaveMileDetail(a.client, a.userId, slot, { totalMinutes: 7.15 }),
+      () => skipAssigned(b.client, slot, randomUUID()),
+      a,
+      b,
+      third,
+      slot,
+    );
+    assertConsistentTruth(truth, `legacySave||newSkip#${round}`);
+    console.log(`PASS cross-version legacySave||newSkip#${round}: canonical=${truth.status || 'cleared'}`);
     await cleanupSlot(a.client, a.userId, slot);
   }
 

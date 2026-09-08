@@ -179,6 +179,60 @@ describe('assigned mile ambiguous save reconciliation', () => {
     expect(reconciled).toBeNull();
   });
 
+  it('does NOT reconcile from a key row stored at a different assignment position', async () => {
+    from.mockImplementation((table) => {
+      if (table === 'workout_completions') {
+        const maybeSingle = async () => ({
+          // completion_key hit whose stored position belongs to another assignment,
+          // and no row at the requested position.
+          data: { ...completedWc, id: 'wc-key', week_index: 4, workout_index: 1 },
+          error: null,
+        });
+        const eq = () => ({ eq, maybeSingle });
+        const select = () => ({ eq, maybeSingle });
+        return { select };
+      }
+      return mockQuery({ data: matchingMile, error: null });
+    });
+    const auth = await loadAuth();
+    const reconciled = await auth.reconcileAssignedMileSaveOutcome({
+      owner: { id: 'op-1' },
+      userId: mockUser.id,
+      testKey: 'program:7:5:3',
+      weekIndex: 5,
+      workoutIndex: 3,
+      clientRecordId: 'rec-1',
+      distance: 1,
+      totalMinutes: 7.5,
+      totalSeconds: 450,
+      avgBpm: 150,
+      maxBpm: 170,
+    });
+    expect(reconciled).toBeNull();
+  });
+
+  it('still reconciles a legacy key row with no stored assignment position', async () => {
+    mockRows({
+      wc: { ...completedWc, week_index: null, workout_index: null },
+      mile: matchingMile,
+    });
+    const auth = await loadAuth();
+    const reconciled = await auth.reconcileAssignedMileSaveOutcome({
+      owner: { id: 'op-1' },
+      userId: mockUser.id,
+      testKey: 'program:7:5:3',
+      weekIndex: 5,
+      workoutIndex: 3,
+      clientRecordId: 'rec-1',
+      distance: 1,
+      totalMinutes: 7.5,
+      totalSeconds: 450,
+      avgBpm: 150,
+      maxBpm: 170,
+    });
+    expect(reconciled).toMatchObject({ status: 'completed', reconciled: true });
+  });
+
   it('fails closed when key and position resolve to different rows', async () => {
     let wcBuilderCount = 0;
     from.mockImplementation((table) => {
@@ -316,6 +370,59 @@ describe('assigned mile save source contract', () => {
       .toBeLessThan(body.indexOf('resolve_assigned_workout_completion_id'));
     expect(body.indexOf('resolve_assigned_workout_completion_id'))
       .toBeLessThan(body.indexOf('delete from public.workout_completions'));
+  });
+
+  it('resolves assignment identity with position as canonical authority', () => {
+    const migration = readFileSync('scripts/migrations/021_assigned_mile_serialized_transitions.sql', 'utf8');
+    const fnIdx = migration.indexOf('create or replace function public.resolve_assigned_workout_completion_id_for');
+    expect(fnIdx).toBeGreaterThan(-1);
+    const body = migration.slice(fnIdx, migration.indexOf('$$;', fnIdx));
+    // dual-row conflict
+    expect(body).toMatch(/v_by_key_id is distinct from v_by_position/);
+    // key-only row whose stored position disagrees with the requested assignment
+    expect(body).toMatch(/v_by_key_week is distinct from p_week_index/);
+    expect(body).toMatch(/v_by_key_workout is distinct from p_workout_index/);
+    // legacy key rows without a stored position stay recoverable
+    expect(body).toMatch(/v_by_key_week is not null or v_by_key_workout is not null/);
+    expect(body).toMatch(/return coalesce\(v_by_key_id, v_by_position\)/);
+    expect(migration).toMatch(/resolve_assigned_workout_completion_id_for\(\s*auth\.uid\(\)/);
+  });
+
+  it('enforces the assigned mutation perimeter for stale clients', () => {
+    const migration = readFileSync('scripts/migrations/023_assignment_mutation_perimeter.sql', 'utf8');
+
+    // Direct mile_tests writes join the same assignment lock before the row lands.
+    const beforeIdx = migration.indexOf('create or replace function public.tg_assigned_mile_detail_before');
+    const beforeBody = migration.slice(beforeIdx, migration.indexOf('$function$;', beforeIdx));
+    expect(beforeBody).toMatch(/lock_assigned_workout_transition_for/);
+    expect(beforeBody).toMatch(/resolve_assigned_workout_completion_id_for/);
+
+    // Legacy Mile-only saves gain a canonical completion instead of standing alone.
+    const afterIdx = migration.indexOf('create or replace function public.tg_assigned_mile_detail_after');
+    const afterBody = migration.slice(afterIdx, migration.indexOf('$function$;', afterIdx));
+    expect(afterBody).toMatch(/insert into public\.workout_completions/);
+    expect(afterBody).toMatch(/update public\.workout_completions/);
+
+    // Skipped or cleared assignments must not keep subordinate Mile detail or proof.
+    const skipIdx = migration.indexOf('create or replace function public.tg_assigned_workout_after');
+    const skipBody = migration.slice(skipIdx, migration.indexOf('$function$;', skipIdx));
+    expect(skipBody).toMatch(/retire_assigned_workout_proof/);
+    expect(skipBody).toMatch(/delete from public\.mile_tests/);
+
+    // Provisional proof staging and standalone baseline Mile stay outside the perimeter.
+    expect(migration).toMatch(/coalesce\(p_proof_pending, false\) = false/);
+    expect(migration).toMatch(/\^program:\[0-9\]\+:\[0-9\]\+:\[0-9\]\+\$/);
+    expect(migration).not.toMatch(/revoke .*(insert|update|delete).*mile_tests/i);
+    expect(migration).not.toMatch(/drop policy .*mile_tests_(insert|update)_own/i);
+
+    for (const trigger of [
+      'assigned_mile_detail_before',
+      'assigned_mile_detail_after',
+      'assigned_workout_before',
+      'assigned_workout_after',
+    ]) {
+      expect(migration).toMatch(new RegExp(`create trigger ${trigger}\\b`));
+    }
   });
 
   it('routes Mile Clear Skip through assigned clear in workout detail', () => {

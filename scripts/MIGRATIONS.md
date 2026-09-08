@@ -33,12 +33,15 @@ Auth-touching migrations: `000`–`006`, `009`, `012`–`013`, `015`–`016`.
 | 19 | [018_clear_retry_and_sprint_proof.sql](./migrations/018_clear_retry_and_sprint_proof.sql) | Idempotent clear and atomic removal of cleared proof from Sprint recovery |
 | 20 | [019_assigned_mile_clear_lifecycle.sql](./migrations/019_assigned_mile_clear_lifecycle.sql) | Assigned Mile clear RPC (staging/testable; **do not apply to production** until code-clean review promotes) |
 | 21 | [020_assigned_mile_save_authority.sql](./migrations/020_assigned_mile_save_authority.sql) | Assigned Mile save + skip RPCs — canonical `workout_completions` + subordinate `mile_tests` (staging only; superseded serialization in 021) |
-| 22 | [021_assigned_mile_serialized_transitions.sql](./migrations/021_assigned_mile_serialized_transitions.sql) | Shared per-assignment advisory lock + key/position identity resolve for Save/Skip/Clear (staging only; **do not apply to production** yet) |
+| 22 | [021_assigned_mile_serialized_transitions.sql](./migrations/021_assigned_mile_serialized_transitions.sql) | Shared per-assignment advisory lock + position-canonical identity resolve for Save/Skip/Clear (staging only; **do not apply to production** yet) |
 | 23 | [022_generic_clear_assignment_authority.sql](./migrations/022_generic_clear_assignment_authority.sql) | Generic clear joins assignment lock and removes subordinate Mile detail (staging only; protects stale clients) |
+| 24 | [023_assignment_mutation_perimeter.sql](./migrations/023_assignment_mutation_perimeter.sql) | Assigned Mile mutation perimeter — direct table writes from already-loaded clients join the assignment lock and converge to a legal state (staging only; **do not apply to production** yet) |
 
 ## Fresh database
 
-Paste and run each file in the Supabase SQL editor in order. Follow this table for the current canonical sequence. Migration **019–022** are staging-only until a code-clean review promotes them. Do not apply to production while PR #70 remains below certification.
+Paste and run each file in the Supabase SQL editor in order. Follow this table for the current canonical sequence. Migration **019–023** are staging-only until a code-clean review promotes them. Do not apply to production while PR #70 remains below certification.
+
+**Deployment ordering constraint for 019–023.** The assignment perimeter in **023** is deliberately backward-compatible with already-loaded clients: an `e85e989` client that writes `mile_tests` / `workout_completions` directly still converges server-side to a legal assigned-Mile state instead of being rejected. That is what makes it safe to apply the DB contract *before* the new frontend ships, and it is also what keeps a Vercel rollback to `e85e989` usable while the new schema is live. Do not replace the convergence triggers with write revocations without first moving every baseline-Mile and proof-staging caller.
 
 ## Upgrade from existing production
 
