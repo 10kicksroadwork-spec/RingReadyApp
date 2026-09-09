@@ -3600,7 +3600,7 @@
 
 .coach-zone-heatmap {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
   gap: 8px;
 }
 
@@ -3611,6 +3611,16 @@
   border: 1px solid rgba(255, 255, 255, 0.1);
   background: rgba(255, 255, 255, 0.03);
   font-size: 12px;
+}
+
+.coach-zone-heat-cell strong {
+  font-size: 13px;
+  line-height: 1.15;
+}
+
+.coach-zone-heat-cell .coach-zone-heat-band {
+  color: var(--light-grey, #8a8a8a);
+  font-size: 11px;
 }
 
 .coach-zone-heat-cell.is-on-target {

@@ -53,24 +53,143 @@ export function getSessionZoneTarget(session, workout, hrInfo = {}) {
   return { target, tolerance: HR_TARGET_TOLERANCE_BPM, mode: 'flat' };
 }
 
-export function isSessionAvgOnTarget(avgBpm, zoneTarget) {
-  if (!zoneTarget) return false;
+export function getZoneBand(zoneTarget) {
+  if (!zoneTarget) return null;
+  const target = Number(zoneTarget.target);
+  const tolerance = Number(zoneTarget.tolerance);
+  if (!Number.isFinite(target) || target <= 0 || !Number.isFinite(tolerance) || tolerance < 0) {
+    return null;
+  }
+  return {
+    target,
+    tolerance,
+    low: target - tolerance,
+    high: target + tolerance,
+  };
+}
+
+/**
+ * Miss magnitude from the nearest acceptable HR band edge (not the midpoint).
+ * Shares the same in-zone definition as isSessionAvgOnTarget / scoreZoneAdherence.
+ */
+export function measureZoneMiss(avgBpm, zoneTarget) {
+  const band = getZoneBand(zoneTarget);
   const avg = Number(avgBpm);
-  if (!Number.isFinite(avg) || avg <= 0) return false;
-  return Math.abs(avg - zoneTarget.target) <= zoneTarget.tolerance;
+  if (!band || !Number.isFinite(avg) || avg <= 0) {
+    return {
+      eligible: false,
+      onTarget: false,
+      missBpm: null,
+      direction: null,
+      headline: null,
+      bandLow: band?.low ?? null,
+      bandHigh: band?.high ?? null,
+      avgBpm: Number.isFinite(avg) && avg > 0 ? avg : null,
+      bandLabel: null,
+    };
+  }
+
+  const bandLabel = `Target ${band.low}–${band.high}`;
+  // Inclusive edges: exact boundary is in-zone / 0 miss.
+  if (avg >= band.low && avg <= band.high) {
+    return {
+      eligible: true,
+      onTarget: true,
+      missBpm: 0,
+      direction: null,
+      headline: 'IN ZONE',
+      bandLow: band.low,
+      bandHigh: band.high,
+      avgBpm: avg,
+      bandLabel,
+    };
+  }
+
+  if (avg > band.high) {
+    const missBpm = Number((avg - band.high).toFixed(1));
+    return {
+      eligible: true,
+      onTarget: false,
+      missBpm,
+      direction: 'high',
+      headline: `${Math.round(missBpm)} bpm HIGH`,
+      bandLow: band.low,
+      bandHigh: band.high,
+      avgBpm: avg,
+      bandLabel,
+    };
+  }
+
+  const missBpm = Number((band.low - avg).toFixed(1));
+  return {
+    eligible: true,
+    onTarget: false,
+    missBpm,
+    direction: 'low',
+    headline: `${Math.round(missBpm)} bpm LOW`,
+    bandLow: band.low,
+    bandHigh: band.high,
+    avgBpm: avg,
+    bandLabel,
+  };
+}
+
+export function isSessionAvgOnTarget(avgBpm, zoneTarget) {
+  return measureZoneMiss(avgBpm, zoneTarget).onTarget === true;
+}
+
+export function summarizeZoneMisses(measurements = []) {
+  const misses = (Array.isArray(measurements) ? measurements : [])
+    .filter((row) => row?.eligible && row.onTarget === false)
+    .filter((row) => Number.isFinite(Number(row.missBpm)) && Number(row.missBpm) > 0);
+  if (!misses.length) {
+    return {
+      missCount: 0,
+      avgMissBpm: null,
+      worstMissBpm: null,
+      worstDirection: null,
+      summaryLabel: null,
+    };
+  }
+
+  const avgMissBpm = misses.reduce((sum, row) => sum + Number(row.missBpm), 0) / misses.length;
+  let worst = misses[0];
+  misses.forEach((row) => {
+    if (Number(row.missBpm) > Number(worst.missBpm)) worst = row;
+  });
+  const worstDirection = worst.direction === 'low' ? 'low' : 'high';
+  const worstLabel = worstDirection === 'low' ? 'LOW' : 'HIGH';
+  return {
+    missCount: misses.length,
+    avgMissBpm: Number(avgMissBpm.toFixed(1)),
+    worstMissBpm: Number(Number(worst.missBpm).toFixed(1)),
+    worstDirection,
+    summaryLabel: `Avg miss: ${Math.round(avgMissBpm)} bpm · Worst miss: ${Math.round(Number(worst.missBpm))} bpm ${worstLabel}`,
+  };
 }
 
 export function scoreZoneAdherence(sessions, workoutLookup, hrInfo = {}) {
   let scored = 0;
   let onTarget = 0;
+  const measurements = [];
   sessions.forEach((session) => {
     if (session.status !== 'logged') return;
     if (/sprint|mile/i.test(String(session.type || ''))) return;
     const workout = workoutLookup(session);
     const zoneTarget = getSessionZoneTarget(session, workout, hrInfo);
     if (!zoneTarget) return;
+    // Score-eligible only with a valid band AND usable average HR.
+    // Missing/invalid HR is data absence, not physiological failure.
+    const measurement = measureZoneMiss(session.avgBpm, zoneTarget);
+    if (!measurement.eligible) return;
     scored += 1;
-    if (isSessionAvgOnTarget(session.avgBpm, zoneTarget)) onTarget += 1;
+    measurements.push(measurement);
+    if (measurement.onTarget) onTarget += 1;
   });
-  return { scored, onTarget };
+  return {
+    scored,
+    onTarget,
+    measurements,
+    ...summarizeZoneMisses(measurements),
+  };
 }

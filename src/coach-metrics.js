@@ -15,6 +15,10 @@ import {
   normalizeModality,
   sessionPerformanceOutput,
 } from './modality.js';
+import {
+  measureZoneMiss,
+  summarizeZoneMisses,
+} from './hr-analytics.js';
 
 export const LENS_BENCHMARK = 'benchmark';
 export const LENS_RECOVERY = 'recovery';
@@ -1361,10 +1365,13 @@ function buildWeeklyHrTrend(athlete, helpers = {}) {
       restingHr: athlete.restingHr,
     });
     if (!zoneTarget) return;
+    // Same eligibility contract as scoreZoneAdherence / heatmap: usable avg HR required.
+    const measurement = measureZoneMiss(session.avgBpm, zoneTarget);
+    if (!measurement.eligible) return;
     if (!byWeek.has(weekIndex)) byWeek.set(weekIndex, { scored: 0, onTarget: 0 });
     const bucket = byWeek.get(weekIndex);
     bucket.scored += 1;
-    if (helpers.isSessionAvgOnTarget?.(session.avgBpm, zoneTarget)) bucket.onTarget += 1;
+    if (measurement.onTarget) bucket.onTarget += 1;
   });
 
   return [...byWeek.entries()]
@@ -1392,7 +1399,13 @@ function buildZoneHeatmap(athlete, helpers = {}) {
         restingHr: athlete.restingHr,
       });
       if (!zoneTarget) return null;
-      const onTarget = Boolean(helpers.isSessionAvgOnTarget?.(session.avgBpm, zoneTarget));
+      const measurement = measureZoneMiss(session.avgBpm, zoneTarget);
+      if (!measurement.eligible) return null;
+      // Keep scoring authority on the shared helper when provided; miss magnitude
+      // still comes from the same band definition via measureZoneMiss.
+      const onTarget = typeof helpers.isSessionAvgOnTarget === 'function'
+        ? Boolean(helpers.isSessionAvgOnTarget(session.avgBpm, zoneTarget))
+        : measurement.onTarget;
       return {
         weekIndex: Number(session.weekIndex),
         workoutIndex: Number(session.workoutIndex),
@@ -1402,9 +1415,33 @@ function buildZoneHeatmap(athlete, helpers = {}) {
         onTarget,
         status: onTarget ? STATUS_ON_TARGET : STATUS_NEEDS_ATTENTION,
         label: `W${Number(session.weekIndex) + 1}${session.day ? ` ${session.day}` : ''}`,
+        missBpm: measurement.missBpm,
+        missDirection: measurement.direction,
+        headline: onTarget
+          ? 'IN ZONE'
+          : (measurement.headline || 'Off'),
+        bandLow: measurement.bandLow,
+        bandHigh: measurement.bandHigh,
+        bandLabel: measurement.bandLabel,
       };
     })
     .filter(Boolean);
+}
+
+function buildZoneMissSummaryFromSessions(athlete, helpers = {}) {
+  const measurements = [];
+  (athlete?.sessions || []).forEach((session) => {
+    if (session.status !== 'logged') return;
+    if (/sprint|mile/i.test(String(session.type || ''))) return;
+    const workout = helpers.workoutLookup?.(session) || null;
+    const zoneTarget = helpers.getSessionZoneTarget?.(session, workout, {
+      maxHr: athlete.maxHr,
+      restingHr: athlete.restingHr,
+    });
+    if (!zoneTarget) return;
+    measurements.push(measureZoneMiss(session.avgBpm, zoneTarget));
+  });
+  return summarizeZoneMisses(measurements);
 }
 
 /**
@@ -1529,13 +1566,25 @@ export function buildCoachAthleteAnalytics(athlete, helpers = {}) {
     hrOnTarget = Number(scored?.onTarget);
     hrScored = Number(scored?.scored);
   }
-  const hrClassified = classifyHrAdherence(hrOnTarget, hrScored);
   const hrTrend = buildWeeklyHrTrend(athlete, helpers);
 
   const sources = athlete?.sources || helpers.sources || buildCoachSourceAvailability(athlete?.sourceErrors || {});
   const sprintsAvailable = sources.sprints !== false;
   const mileTestsAvailable = sources.mileTests !== false;
   const completionsAvailable = sources.completions !== false;
+
+  // Heatmap is the session-level authority for zone miss magnitude. When the
+  // athlete scan did not already carry scored/onTarget counts, derive them
+  // from the same eligible heatmap rows so summary and detail cannot diverge.
+  const zoneHeatmap = completionsAvailable ? buildZoneHeatmap(athlete, helpers) : [];
+  const zoneMissSummary = completionsAvailable
+    ? buildZoneMissSummaryFromSessions(athlete, helpers)
+    : summarizeZoneMisses([]);
+  if ((!Number.isFinite(hrScored) || hrScored <= 0) && zoneHeatmap.length) {
+    hrScored = zoneHeatmap.length;
+    hrOnTarget = zoneHeatmap.filter((cell) => cell.onTarget).length;
+  }
+  const hrClassified = classifyHrAdherence(hrOnTarget, hrScored);
 
   const benchmarkMetric = buildBenchmarkMetricFromPoints(
     resolveBenchmarkPoints(athlete, helpers),
@@ -1587,7 +1636,6 @@ export function buildCoachAthleteAnalytics(athlete, helpers = {}) {
     : null;
 
   const profileMaxHr = Number(athlete?.maxHr);
-  const zoneHeatmap = completionsAvailable ? buildZoneHeatmap(athlete, helpers) : [];
   const hrPaceEfficiency = completionsAvailable ? buildHrPaceEfficiency(athlete, helpers) : [];
 
   return {
@@ -1691,8 +1739,16 @@ export function buildCoachAthleteAnalytics(athlete, helpers = {}) {
       value: hrClassified.hasData ? hrClassified.pct : null,
       displayValue: hrClassified.hasData ? `${hrClassified.pct}%` : '--',
       detail: hrClassified.hasData
-        ? `${hrClassified.onTarget}/${hrClassified.scored} within target HR band`
+        ? [
+          `${hrClassified.onTarget}/${hrClassified.scored} within target HR band`,
+          zoneMissSummary.summaryLabel,
+        ].filter(Boolean).join(' · ')
         : (athlete?.scan?.zone?.detail || 'No HR vs target yet'),
+      missCount: zoneMissSummary.missCount,
+      avgMissBpm: zoneMissSummary.avgMissBpm,
+      worstMissBpm: zoneMissSummary.worstMissBpm,
+      worstMissDirection: zoneMissSummary.worstDirection,
+      missSummaryLabel: zoneMissSummary.summaryLabel,
       status: hrClassified.status,
       badge: statusBadgeLabel(hrClassified.status),
       tone: statusToTone(hrClassified.status),
@@ -1706,6 +1762,11 @@ export function buildCoachAthleteAnalytics(athlete, helpers = {}) {
         pct: null,
         scored: 0,
         onTarget: 0,
+        missCount: 0,
+        avgMissBpm: null,
+        worstMissBpm: null,
+        worstMissDirection: null,
+        missSummaryLabel: null,
         trendPoints: [],
         unavailable: true,
       },
@@ -1907,11 +1968,15 @@ export function buildLensCard(athlete, lens) {
   if (lens === LENS_HR_ADHERENCE) {
     if (analytics?.hrAdherence) {
       const metric = analytics.hrAdherence;
+      const missLabel = metric.missSummaryLabel || null;
       return cardFromAnalyticsMetric(base, metric, {
         valueLabel: 'HR ADHERENCE',
         value: metric.displayValue,
         deltaLabel: metric.hasData
-          ? `${metric.onTarget} / ${metric.scored} eligible sessions within target range`
+          ? [
+            `${metric.onTarget} / ${metric.scored} eligible sessions within target range`,
+            missLabel,
+          ].filter(Boolean).join(' · ')
           : '',
         detail: metric.detail,
         sortValue: metric.hasData ? metric.pct : null,
@@ -1920,21 +1985,32 @@ export function buildLensCard(athlete, lens) {
           pct: metric.pct,
           onTarget: metric.onTarget,
           scored: metric.scored,
+          avgMissBpm: metric.avgMissBpm,
+          worstMissBpm: metric.worstMissBpm,
+          worstMissDirection: metric.worstMissDirection,
+          missSummaryLabel: metric.missSummaryLabel,
         },
       });
     }
     const signal = athlete?.scan?.zone || {};
     const classified = classifyHrAdherence(signal.onTarget, signal.scored);
+    const missLabel = signal.missSummaryLabel || null;
     return {
       ...base,
       ...classified,
       value: classified.hasData ? `${classified.pct}%` : '--',
       valueLabel: 'HR ADHERENCE',
       deltaLabel: classified.hasData
-        ? `${classified.onTarget} / ${classified.scored} eligible sessions within target range`
+        ? [
+          `${classified.onTarget} / ${classified.scored} eligible sessions within target range`,
+          missLabel,
+        ].filter(Boolean).join(' · ')
         : '',
       detail: classified.hasData
-        ? `${classified.onTarget}/${classified.scored} within target HR band`
+        ? [
+          `${classified.onTarget}/${classified.scored} within target HR band`,
+          missLabel,
+        ].filter(Boolean).join(' · ')
         : (signal.detail || 'No HR vs target yet'),
       trendPoints: [],
       badge: statusBadgeLabel(classified.status),

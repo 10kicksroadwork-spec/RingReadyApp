@@ -249,7 +249,8 @@ function buildZoneSignal(sessions, maxHr = null, restingHr = null) {
     const week = PROGRAM[session.weekIndex];
     return week?.workouts?.[session.workoutIndex] || null;
   };
-  const { scored, onTarget } = scoreZoneAdherence(sessions, workoutLookup, hrInfo);
+  const scoredResult = scoreZoneAdherence(sessions, workoutLookup, hrInfo);
+  const { scored, onTarget, summaryLabel } = scoredResult;
   if (!scored) return emptySignal('zone', 'No HR vs target yet');
   const pct = Math.round((onTarget / scored) * 100);
   let tone = 'red';
@@ -260,11 +261,19 @@ function buildZoneSignal(sessions, maxHr = null, restingHr = null) {
     tone,
     value: `${pct}%`,
     short: `${pct}%`,
-    detail: `${onTarget}/${scored} runs within target HR band`,
+    detail: [
+      `${onTarget}/${scored} runs within target HR band`,
+      summaryLabel,
+    ].filter(Boolean).join(' · '),
     points: [],
     pct,
     scored,
     onTarget,
+    missCount: scoredResult.missCount,
+    avgMissBpm: scoredResult.avgMissBpm,
+    worstMissBpm: scoredResult.worstMissBpm,
+    worstMissDirection: scoredResult.worstDirection,
+    missSummaryLabel: summaryLabel,
   };
 }
 
@@ -834,6 +843,11 @@ function scanFromAnalytics(analytics, priorScan = {}) {
       pct: hr.pct ?? null,
       scored: hr.scored ?? null,
       onTarget: hr.onTarget ?? null,
+      missCount: hr.missCount ?? null,
+      avgMissBpm: hr.avgMissBpm ?? null,
+      worstMissBpm: hr.worstMissBpm ?? null,
+      worstMissDirection: hr.worstMissDirection ?? null,
+      missSummaryLabel: hr.missSummaryLabel ?? null,
       status: hr.status,
       badge: hr.badge,
     },
@@ -1978,8 +1992,9 @@ function renderAthleteParitySections(athlete) {
       heatBody.innerHTML = `<div class="coach-zone-heatmap" role="list">${cells.map((cell) => `
         <div class="coach-zone-heat-cell is-${escapeHTML(cell.status)}" role="listitem" title="${escapeHTML(cell.type || '')}">
           <span>${escapeHTML(cell.label || '')}</span>
-          <strong>${cell.onTarget ? 'On' : 'Off'}</strong>
+          <strong>${escapeHTML(cell.headline || (cell.onTarget ? 'IN ZONE' : 'Off'))}</strong>
           <em>${cell.avgBpm != null ? `${Math.round(cell.avgBpm)} bpm` : '--'}</em>
+          ${cell.bandLabel ? `<em class="coach-zone-heat-band">${escapeHTML(cell.bandLabel)}</em>` : ''}
         </div>
       `).join('')}</div>`;
     }
