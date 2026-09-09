@@ -178,8 +178,11 @@ export function scoreZoneAdherence(sessions, workoutLookup, hrInfo = {}) {
     const workout = workoutLookup(session);
     const zoneTarget = getSessionZoneTarget(session, workout, hrInfo);
     if (!zoneTarget) return;
-    scored += 1;
+    // Score-eligible only with a valid band AND usable average HR.
+    // Missing/invalid HR is data absence, not physiological failure.
     const measurement = measureZoneMiss(session.avgBpm, zoneTarget);
+    if (!measurement.eligible) return;
+    scored += 1;
     measurements.push(measurement);
     if (measurement.onTarget) onTarget += 1;
   });

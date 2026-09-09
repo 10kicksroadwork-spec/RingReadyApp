@@ -1365,10 +1365,13 @@ function buildWeeklyHrTrend(athlete, helpers = {}) {
       restingHr: athlete.restingHr,
     });
     if (!zoneTarget) return;
+    // Same eligibility contract as scoreZoneAdherence / heatmap: usable avg HR required.
+    const measurement = measureZoneMiss(session.avgBpm, zoneTarget);
+    if (!measurement.eligible) return;
     if (!byWeek.has(weekIndex)) byWeek.set(weekIndex, { scored: 0, onTarget: 0 });
     const bucket = byWeek.get(weekIndex);
     bucket.scored += 1;
-    if (helpers.isSessionAvgOnTarget?.(session.avgBpm, zoneTarget)) bucket.onTarget += 1;
+    if (measurement.onTarget) bucket.onTarget += 1;
   });
 
   return [...byWeek.entries()]

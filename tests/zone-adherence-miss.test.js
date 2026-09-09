@@ -234,4 +234,62 @@ describe('coach zone heatmap + summary wiring', () => {
     expect(zoneTarget).toEqual({ target: 137, tolerance: 5, mode: 'flat' });
     expect(measureZoneMiss(150, zoneTarget).headline).toBe('8 bpm HIGH');
   });
+
+  it('excludes missing/invalid avg HR from scoring, miss stats, heatmap, and PI', () => {
+    const helpers = {
+      getSessionZoneTarget: (session) => (
+        Number.isFinite(Number(session.targetBPM))
+          ? { target: Number(session.targetBPM), tolerance: 5, mode: 'flat' }
+          : null
+      ),
+      isSessionAvgOnTarget,
+      scoreZoneAdherence,
+    };
+
+    const sessions = [
+      { status: 'logged', type: 'Easy Run', weekIndex: 0, workoutIndex: 3, avgBpm: 138, targetBPM: 137 }, // in zone
+      { status: 'logged', type: 'Long Run', weekIndex: 0, workoutIndex: 4, avgBpm: 150, targetBPM: 137 }, // 8 HIGH
+      { status: 'logged', type: 'Easy Run', weekIndex: 1, workoutIndex: 3, avgBpm: null, targetBPM: 137 }, // missing
+      { status: 'logged', type: 'Threshold Run', weekIndex: 1, workoutIndex: 2, avgBpm: 0, targetBPM: 137 }, // zero
+      { status: 'logged', type: 'Long Run', weekIndex: 1, workoutIndex: 4, avgBpm: Number.NaN, targetBPM: 137 }, // invalid
+    ];
+
+    const scored = scoreZoneAdherence(sessions, () => null, {});
+    expect(scored.scored).toBe(2);
+    expect(scored.onTarget).toBe(1);
+    expect(scored.missCount).toBe(1);
+    expect(scored.avgMissBpm).toBe(8);
+    expect(scored.worstMissBpm).toBe(8);
+    expect(scored.worstDirection).toBe('high');
+    expect(scored.measurements.every((row) => row.eligible)).toBe(true);
+
+    const athlete = {
+      id: 'missing-hr',
+      name: 'Missing HR',
+      currentWeekIndex: 1,
+      scan: { recovery: {}, pace: {}, zone: {} },
+      sessions,
+    };
+    const withMissing = buildCoachAthleteAnalytics(athlete, helpers);
+    expect(withMissing.zoneHeatmap).toHaveLength(2);
+    expect(withMissing.hrAdherence.scored).toBe(2);
+    expect(withMissing.hrAdherence.onTarget).toBe(1);
+    expect(withMissing.zoneHeatmap.length).toBe(withMissing.hrAdherence.scored);
+    expect(withMissing.hrAdherence.detail).toContain('1/2 within target HR band');
+    expect(withMissing.hrAdherence.detail).toContain('Avg miss: 8 bpm · Worst miss: 8 bpm HIGH');
+    expect(withMissing.zoneHeatmap.every((cell) => cell.headline === 'IN ZONE' || /HIGH|LOW/.test(cell.headline))).toBe(true);
+    expect(withMissing.zoneHeatmap.some((cell) => /NO HR|Off/i.test(cell.headline || ''))).toBe(false);
+
+    const withoutMissing = buildCoachAthleteAnalytics({
+      ...athlete,
+      id: 'usable-only',
+      sessions: sessions.filter((row) => Number(row.avgBpm) > 0),
+    }, helpers);
+
+    expect(withMissing.hrAdherence.pct).toBe(withoutMissing.hrAdherence.pct);
+    expect(withMissing.hrAdherence.scored).toBe(withoutMissing.hrAdherence.scored);
+    expect(withMissing.performance.components.hrAdherence.rawChange)
+      .toBe(withoutMissing.performance.components.hrAdherence.rawChange);
+    expect(withMissing.performance.index).toBe(withoutMissing.performance.index);
+  });
 });
