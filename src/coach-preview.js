@@ -450,25 +450,24 @@ function buildPaceSignal(sessions) {
 }
 
 function buildPerformanceSignal(performance) {
+  // Legacy continuity signal — overwritten by composite analytics in scanFromAnalytics.
+  // Kept so cardio continuity remains available on athlete.performance for modality debug.
   if (!performance?.index) {
     return emptySignal('performance', 'Needs HR-valid cardio sessions');
   }
   const index = Number(performance.index);
-  let tone = 'amber';
-  if (index >= 100) tone = 'green';
-  else if (index < 95) tone = 'red';
   const modalityLabel = performance.latestModality
     ? formatModalityLabel(performance.latestModality)
     : 'camp';
   const switchNote = performance.modalityCount > 1
-    ? ` · ${performance.modalityCount} modalities, score kept continuous`
+    ? ` · ${performance.modalityCount} modalities, cardio continuity kept`
     : '';
   return {
     key: 'performance',
-    tone,
+    tone: 'neutral',
     value: formatPerformanceIndex(index),
     short: formatPerformanceIndex(index),
-    detail: `Camp index on ${modalityLabel}${switchNote}`,
+    detail: `Cardio Output on ${modalityLabel}${switchNote}`,
     points: (performance.points || []).map((row) => ({
       weekIndex: row.weekIndex,
       pct: row.index,
@@ -751,10 +750,22 @@ function scanFromAnalytics(analytics, priorScan = {}) {
         weekIndex: row.weekIndex,
         pct: row.value,
         index: row.value,
+        deltaFromPrior: row.deltaFromPrior,
+        deltaFromBaseline: row.deltaFromBaseline,
+        components: row.components,
       })),
       index: performance.hasData ? performance.value : null,
       status: performance.status,
       badge: performance.badge,
+      confidence: performance.confidence,
+      confidenceLabel: performance.confidenceLabel,
+      contributingComponents: performance.contributingComponents,
+      totalComponents: performance.totalComponents,
+      dataLimited: performance.dataLimited,
+      trajectoryLabel: performance.trajectoryLabel,
+      deltaFromBaseline: performance.delta,
+      deltaFromPrior: performance.deltaFromPrior,
+      components: performance.components,
     },
     bench: {
       key: 'bench',
@@ -1723,13 +1734,17 @@ function renderMetricCard(id, title, signal, clickable) {
   const secondary = signal.key === 'recovery' && signal.avg != null
     ? `<p class="coach-metric-secondary">Camp avg ${Math.round(Number(signal.avg))} BPM</p>`
     : '';
-  return `<${tag} class="coach-metric-card is-${signal.tone}${clickable ? ' is-clickable' : ''}${athleteDrill === id ? ' is-open' : ''}" ${clickAttrs}>
+  const isPerformance = signal.key === 'performance';
+  const headExtra = isPerformance && signal.trajectoryLabel
+    ? `<em>${escapeHTML(signal.trajectoryLabel)}</em>`
+    : (clickable ? '<em>Open sessions</em>' : '');
+  return `<${tag} class="coach-metric-card is-${signal.tone}${clickable ? ' is-clickable' : ''}${isPerformance ? ' is-performance-index' : ''}${athleteDrill === id ? ' is-open' : ''}" ${clickAttrs}>
     <div class="coach-metric-card-head">
       <span>${escapeHTML(title)}</span>
-      ${clickable ? '<em>Open sessions</em>' : ''}
+      ${headExtra}
     </div>
     <strong>${escapeHTML(signal.value)}${unit}</strong>
-    <p>${escapeHTML(signal.detail)}</p>
+    <p>${escapeHTML(signal.detail || '')}</p>
     ${secondary}
     ${spark}
   </${tag}>`;

@@ -155,8 +155,11 @@ describe('canonical lens cards', () => {
     expect(card.status).toBe(athlete.analytics.benchmark.status);
     expect(card.status).toBe(STATUS_IMPROVING);
     expect(card.userId).toBe('daniel');
-    // General PI remains a separate metric.
-    expect(athlete.analytics.performance.value).toBeCloseTo(108.4);
+    // Composite PI is a separate metric from Benchmark Index and blends available signals.
+    expect(athlete.analytics.performance).not.toEqual(athlete.analytics.benchmark);
+    expect(athlete.analytics.performance.hasData).toBe(true);
+    expect(athlete.analytics.performance.value).not.toBe(athlete.analytics.benchmark.value);
+    expect(athlete.analytics.performance.contributingComponents).toBeGreaterThanOrEqual(2);
   });
 
   it('keeps recovery / pace / adherence consistent for the same athlete', () => {
@@ -281,12 +284,12 @@ describe('canonical analytics consistency', () => {
     expect(statusBadgeLabel(card.status)).toBe('BASELINE');
   });
 
-  it('uses week-one Benchmark baseline (not 2-session PI) for Test Account W1/W2', () => {
+  it('uses week-one Benchmark baseline while composite PI also moves on W2', () => {
     const athlete = {
       id: 'test-account',
       name: 'Test Account',
       currentWeekIndex: 1,
-      // General PI would still be baseline at 2 sessions — Benchmark Index must not.
+      // Composite Cardio Output now also moves on the second benchmark — Benchmark Index stays canonical for the Benchmark tab.
       performance: { index: 100 },
       benchmarks: [
         { weekIndex: 0, distance: 3.09, avgBpm: 142, minutes: 30.03 },
@@ -303,8 +306,6 @@ describe('canonical analytics consistency', () => {
     athlete.analytics = buildCoachAthleteAnalytics(athlete);
     const card = buildLensCard(athlete, LENS_BENCHMARK);
     const bench = athlete.analytics.benchmark;
-    expect(athlete.analytics.performance.status).toBe(STATUS_BASELINE);
-    expect(athlete.analytics.performance.displayValue).toBe('100.0');
     expect(bench.trendPoints).toHaveLength(2);
     expect(bench.trendPoints[0].value).toBe(100);
     expect(bench.trendPoints[1].value).toBeGreaterThan(100);
@@ -314,6 +315,10 @@ describe('canonical analytics consistency', () => {
     expect(card.value).toBe(bench.displayValue);
     expect(card.trendPoints).toHaveLength(2);
     expect(statusBadgeLabel(card.status)).not.toBe('BASELINE');
+    // Composite PI consumes Cardio from the same Benchmark series and therefore also moves.
+    expect(athlete.analytics.performance.hasData).toBe(true);
+    expect(athlete.analytics.performance.index).toBeGreaterThan(100);
+    expect(athlete.analytics.performance).not.toEqual(athlete.analytics.benchmark);
   });
 
   it('keeps Detailed Summary Benchmark Run identical to Benchmark Stats via buildAthleteRecord', () => {
@@ -613,7 +618,9 @@ describe('source outage fail-closed decisions', () => {
     expect(dueSessions.length).toBeGreaterThan(0);
     expect(dueSessions.every((session) => session.status === 'unavailable' || session.status === 'skipped')).toBe(true);
     expect(dueSessions.some((session) => session.status === 'logged')).toBe(false);
-    expect(athlete.analytics.performance.status).toBe(STATUS_UNAVAILABLE);
+    // Completions outage removes cardio/pace/HR from PI; remaining healthy sources
+    // (recovery / mile) may still contribute with DATA LIMITED confidence — never invent schedule adherence.
+    expect(athlete.analytics.performance.dataLimited).toBe(true);
     expect(athlete.analytics.benchmark.status).toBe(STATUS_UNAVAILABLE);
     expect(athlete.analytics.pace.status).toBe(STATUS_UNAVAILABLE);
     expect(athlete.analytics.hrAdherence.status).toBe(STATUS_UNAVAILABLE);

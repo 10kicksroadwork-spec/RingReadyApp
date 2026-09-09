@@ -2,7 +2,13 @@
  * Canonical coach analytics lenses — shared by Detailed Summary and
  * aggregate metric pages. Same athlete + same scan data must yield the
  * same value/status everywhere (see docs/COACH_DECISION_DASHBOARD_SPEC.md).
+ *
+ * Composite Performance Index lives here as the coach-facing overall trend
+ * signal. Individual lenses (Benchmark / Recovery / Pace / HR / Mile) remain
+ * the diagnostic instruments underneath.
  */
+
+import { buildPerformanceContinuity } from './modality.js';
 
 export const LENS_BENCHMARK = 'benchmark';
 export const LENS_RECOVERY = 'recovery';
@@ -17,8 +23,29 @@ export const STATUS_NEEDS_ATTENTION = 'needs-attention';
 export const STATUS_WATCH = 'watch';
 export const STATUS_NO_DATA = 'no-data';
 export const STATUS_UNAVAILABLE = 'unavailable';
+export const STATUS_STABLE = 'stable';
 
 const PACE_FLAT_PCT = 0.8;
+
+/** Tunable composite Performance Index weights — must sum to 1.0. */
+export const PERFORMANCE_COMPONENT_WEIGHTS = {
+  cardioOutput: 0.30,
+  sprintRecovery: 0.25,
+  pace: 0.20,
+  hrAdherence: 0.15,
+  mileTest: 0.10,
+};
+
+export const PERFORMANCE_COMPONENT_CHANGE_CAP = 25;
+export const PERFORMANCE_TRAJECTORY_DEADBAND = 0.5;
+export const PERFORMANCE_CONFIDENCE_HIGH = 0.7;
+export const PERFORMANCE_CONFIDENCE_MEDIUM = 0.4;
+
+const COMPONENT_KEYS = Object.keys(PERFORMANCE_COMPONENT_WEIGHTS);
+const TOTAL_COMPONENT_WEIGHT = COMPONENT_KEYS.reduce(
+  (sum, key) => sum + PERFORMANCE_COMPONENT_WEIGHTS[key],
+  0
+);
 
 export const METRIC_PAGE_DEFS = {
   [LENS_BENCHMARK]: {
@@ -155,11 +182,476 @@ export function classifyHrAdherence(onTarget, scored) {
   return { status, hasData: true, sortValue: pct, pct, onTarget: onTargetNum, scored: scoredNum };
 }
 
+/**
+ * Composite PI status reflects CURRENT TRAJECTORY (latest vs prior),
+ * not merely whether the level sits above 100.
+ */
+export function classifyCompositeTrajectory(deltaFromPrior, pointCount = 0) {
+  if (!Number.isFinite(Number(pointCount)) || Number(pointCount) < 2) {
+    return {
+      status: STATUS_BASELINE,
+      tone: statusToTone(STATUS_BASELINE),
+      label: 'BASELINE',
+      hasPrior: false,
+    };
+  }
+  const delta = Number(deltaFromPrior);
+  if (!Number.isFinite(delta)) {
+    return {
+      status: STATUS_BASELINE,
+      tone: statusToTone(STATUS_BASELINE),
+      label: 'BASELINE',
+      hasPrior: false,
+    };
+  }
+  if (delta > PERFORMANCE_TRAJECTORY_DEADBAND) {
+    return {
+      status: STATUS_IMPROVING,
+      tone: 'green',
+      label: 'IMPROVING',
+      hasPrior: true,
+    };
+  }
+  if (delta < -PERFORMANCE_TRAJECTORY_DEADBAND) {
+    return {
+      status: STATUS_DECLINING,
+      tone: 'red',
+      label: 'DECLINING',
+      hasPrior: true,
+    };
+  }
+  return {
+    status: STATUS_STABLE,
+    tone: 'amber',
+    label: 'STABLE',
+    hasPrior: true,
+  };
+}
+
+export function clampPerformanceComponentChange(rawChange) {
+  const value = Number(rawChange);
+  if (!Number.isFinite(value)) return null;
+  return Math.min(
+    PERFORMANCE_COMPONENT_CHANGE_CAP,
+    Math.max(-PERFORMANCE_COMPONENT_CHANGE_CAP, value)
+  );
+}
+
+export function confidenceFromAvailableWeight(availableWeight, { dataLimited = false } = {}) {
+  const ratio = Number(availableWeight) / TOTAL_COMPONENT_WEIGHT;
+  if (!Number.isFinite(ratio) || ratio <= 0) {
+    return { level: 'low', ratio: 0, label: 'Low confidence' };
+  }
+  let level = 'low';
+  if (ratio >= PERFORMANCE_CONFIDENCE_HIGH) level = 'high';
+  else if (ratio >= PERFORMANCE_CONFIDENCE_MEDIUM) level = 'medium';
+  // Source outage must never claim High confidence after quiet renormalization.
+  if (dataLimited && level === 'high') level = 'medium';
+  const label = level === 'high'
+    ? 'High confidence'
+    : level === 'medium'
+      ? 'Medium confidence'
+      : 'Low confidence';
+  return { level, ratio, label };
+}
+
+function latestAtOrBefore(points, weekIndex, valueKey = 'value') {
+  const rows = (Array.isArray(points) ? points : [])
+    .filter((row) => Number.isFinite(Number(row?.weekIndex)) && Number(row.weekIndex) <= weekIndex)
+    .filter((row) => Number.isFinite(Number(row?.[valueKey] ?? row?.value ?? row?.index ?? row?.pct)))
+    .sort((a, b) => Number(a.weekIndex) - Number(b.weekIndex));
+  return rows.length ? rows[rows.length - 1] : null;
+}
+
+function firstValidPoint(points, valueKey = 'value') {
+  const rows = (Array.isArray(points) ? points : [])
+    .filter((row) => Number.isFinite(Number(row?.weekIndex)))
+    .filter((row) => Number.isFinite(Number(row?.[valueKey] ?? row?.value ?? row?.index ?? row?.pct)))
+    .sort((a, b) => Number(a.weekIndex) - Number(b.weekIndex));
+  return rows[0] || null;
+}
+
+function resolveCardioChange(cardioPoints, weekIndex) {
+  const first = firstValidPoint(cardioPoints, 'index');
+  const latest = latestAtOrBefore(cardioPoints, weekIndex, 'index');
+  if (!first || !latest) return null;
+  const latestIndex = Number(latest.index ?? latest.value);
+  if (!Number.isFinite(latestIndex)) return null;
+  const observationCount = (Array.isArray(cardioPoints) ? cardioPoints : [])
+    .filter((row) => Number.isFinite(Number(row.weekIndex)) && Number(row.weekIndex) <= weekIndex)
+    .filter((row) => Number.isFinite(Number(row.index ?? row.value)))
+    .length;
+  return {
+    available: true,
+    mature: observationCount >= 2 || Number(first.weekIndex) !== Number(latest.weekIndex),
+    rawChange: latestIndex - 100,
+    display: latestIndex - 100,
+    level: latestIndex,
+    baselineLevel: 100,
+    weekIndex: Number(latest.weekIndex),
+    label: Number(latest.weekIndex) === Number(first.weekIndex)
+      ? 'baseline'
+      : `${latestIndex - 100 >= 0 ? '+' : ''}${(latestIndex - 100).toFixed(1)}%`,
+  };
+}
+
+function resolveRecoveryChange(recoveryPoints, weekIndex) {
+  const first = firstValidPoint(recoveryPoints, 'value');
+  const latest = latestAtOrBefore(recoveryPoints, weekIndex, 'value');
+  if (!first || !latest) return null;
+  const baseline = Number(first.value ?? first.first5Avg);
+  const current = Number(latest.value ?? latest.first5Avg);
+  if (!(baseline > 0) || !Number.isFinite(current)) return null;
+  const rawChange = Number(first.weekIndex) === Number(latest.weekIndex)
+    ? 0
+    : ((current / baseline) - 1) * 100;
+  return {
+    available: true,
+    mature: Number(first.weekIndex) !== Number(latest.weekIndex),
+    rawChange,
+    display: rawChange,
+    latest: current,
+    baseline,
+    weekIndex: Number(latest.weekIndex),
+    label: Number(first.weekIndex) === Number(latest.weekIndex)
+      ? 'baseline'
+      : `${rawChange >= 0 ? '+' : ''}${rawChange.toFixed(1)}%`,
+  };
+}
+
+function resolvePaceChange(pacePoints, weekIndex) {
+  const first = firstValidPoint(pacePoints, 'value');
+  const latest = latestAtOrBefore(pacePoints, weekIndex, 'value');
+  if (!first || !latest) return null;
+  const rawChange = Number(latest.value ?? latest.pct);
+  if (!Number.isFinite(rawChange)) return null;
+  // First observation is baseline (typically 0%).
+  const change = Number(first.weekIndex) === Number(latest.weekIndex) ? 0 : rawChange;
+  return {
+    available: true,
+    mature: Number(first.weekIndex) !== Number(latest.weekIndex),
+    rawChange: change,
+    display: change,
+    weekIndex: Number(latest.weekIndex),
+    label: Number(first.weekIndex) === Number(latest.weekIndex)
+      ? 'baseline'
+      : `${change >= 0 ? '+' : ''}${change.toFixed(1)}%`,
+  };
+}
+
+function resolveHrAdherenceChange(hrPoints, weekIndex) {
+  const first = firstValidPoint(hrPoints, 'pct');
+  const latest = latestAtOrBefore(hrPoints, weekIndex, 'pct');
+  if (!first || !latest) return null;
+  const baselinePct = Number(first.pct ?? first.value);
+  const currentPct = Number(latest.pct ?? latest.value);
+  if (!Number.isFinite(baselinePct) || !Number.isFinite(currentPct)) return null;
+  // Percentage-point change, not relative %.
+  const rawChange = Number(first.weekIndex) === Number(latest.weekIndex)
+    ? 0
+    : currentPct - baselinePct;
+  return {
+    available: true,
+    mature: Number(first.weekIndex) !== Number(latest.weekIndex),
+    rawChange,
+    display: rawChange,
+    baselinePct,
+    currentPct,
+    weekIndex: Number(latest.weekIndex),
+    label: Number(first.weekIndex) === Number(latest.weekIndex)
+      ? 'baseline'
+      : `${rawChange >= 0 ? '+' : ''}${rawChange.toFixed(0)} pts`,
+  };
+}
+
+function resolveMileChange(mileHistory, weekIndex) {
+  const rows = (Array.isArray(mileHistory) ? mileHistory : [])
+    .map((row) => ({
+      ...row,
+      weekIndex: Number.isFinite(Number(row.weekIndex))
+        ? Number(row.weekIndex)
+        : (row.isBaseline ? 0 : null),
+      seconds: Number(row.seconds ?? row.timeSec),
+    }))
+    .filter((row) => Number.isFinite(row.seconds) && row.seconds > 0)
+    .sort((a, b) => {
+      if (a.isBaseline && !b.isBaseline) return -1;
+      if (!a.isBaseline && b.isBaseline) return 1;
+      const aWeek = Number.isFinite(a.weekIndex) ? a.weekIndex : Number.POSITIVE_INFINITY;
+      const bWeek = Number.isFinite(b.weekIndex) ? b.weekIndex : Number.POSITIVE_INFINITY;
+      return aWeek - bWeek;
+    });
+  if (!rows.length) return null;
+
+  const baseline = rows.find((row) => row.isBaseline) || rows[0];
+  const eligible = rows.filter((row) => {
+    if (!Number.isFinite(row.weekIndex)) return row === baseline || row.isBaseline;
+    return row.weekIndex <= weekIndex;
+  });
+  if (!eligible.length) return null;
+  const latest = eligible[eligible.length - 1];
+  const baselineSec = Number(baseline.seconds);
+  const currentSec = Number(latest.seconds);
+  if (!(baselineSec > 0) || !Number.isFinite(currentSec)) return null;
+  const rawChange = latest === baseline
+    ? 0
+    : ((baselineSec - currentSec) / baselineSec) * 100;
+  return {
+    available: true,
+    mature: latest !== baseline,
+    rawChange,
+    display: rawChange,
+    baselineSeconds: baselineSec,
+    currentSeconds: currentSec,
+    weekIndex: Number.isFinite(latest.weekIndex) ? latest.weekIndex : 0,
+    label: latest === baseline
+      ? 'baseline'
+      : `${rawChange >= 0 ? '+' : ''}${rawChange.toFixed(1)}%`,
+  };
+}
+
+function emptyComponent(key) {
+  return {
+    key,
+    available: false,
+    weight: PERFORMANCE_COMPONENT_WEIGHTS[key],
+    rawChange: null,
+    boundedChange: null,
+    label: 'unavailable',
+  };
+}
+
+function buildCardioPointsFromSources({ sessions = [], benchmarkTrendPoints = [] } = {}) {
+  const continuity = buildPerformanceContinuity(sessions);
+  if (Array.isArray(continuity.points) && continuity.points.length) {
+    // Collapse to latest observation per week for weekly PI series.
+    const byWeek = new Map();
+    continuity.points.forEach((row) => {
+      const weekIndex = Number(row.weekIndex);
+      if (!Number.isFinite(weekIndex) || !Number.isFinite(Number(row.index))) return;
+      byWeek.set(weekIndex, {
+        weekIndex,
+        index: Number(row.index),
+        modality: row.modality,
+      });
+    });
+    return {
+      points: [...byWeek.values()].sort((a, b) => a.weekIndex - b.weekIndex),
+      continuity,
+      source: 'continuity',
+    };
+  }
+
+  // RUN-only athletes may expose Benchmark points without session rows in tests/UI.
+  const fromBenchmark = (Array.isArray(benchmarkTrendPoints) ? benchmarkTrendPoints : [])
+    .map((row) => ({
+      weekIndex: Number(row.weekIndex),
+      index: Number(row.value ?? row.index),
+      modality: 'running',
+    }))
+    .filter((row) => Number.isFinite(row.weekIndex) && Number.isFinite(row.index));
+  return {
+    points: fromBenchmark,
+    continuity,
+    source: fromBenchmark.length ? 'benchmark' : 'none',
+  };
+}
+
+/**
+ * Canonical coach-facing Performance Index.
+ * Consumes component series from the individual metric engines — does not
+ * reimplement Benchmark / Recovery / Pace / HR / Mile math.
+ */
+export function buildCompositePerformanceIndex({
+  sessions = [],
+  benchmarkTrendPoints = [],
+  recoveryPoints = [],
+  pacePoints = [],
+  hrPoints = [],
+  mileHistory = [],
+  currentWeekIndex = 0,
+  sources = {},
+  completionsAvailable = true,
+  sprintsAvailable = true,
+  mileTestsAvailable = true,
+} = {}) {
+  const cardioSource = buildCardioPointsFromSources({ sessions, benchmarkTrendPoints });
+  const cardioPoints = cardioSource.points;
+
+  const outages = {
+    cardioOutput: completionsAvailable === false || sources.completions === false,
+    sprintRecovery: sprintsAvailable === false || sources.sprints === false,
+    pace: completionsAvailable === false || sources.completions === false,
+    hrAdherence: completionsAvailable === false || sources.completions === false,
+    mileTest: mileTestsAvailable === false || sources.mileTests === false,
+  };
+  const dataLimited = Object.values(outages).some(Boolean);
+
+  const weekCandidates = [
+    Number(currentWeekIndex),
+    ...cardioPoints.map((row) => Number(row.weekIndex)),
+    ...recoveryPoints.map((row) => Number(row.weekIndex)),
+    ...pacePoints.map((row) => Number(row.weekIndex)),
+    ...hrPoints.map((row) => Number(row.weekIndex)),
+    ...mileHistory.map((row) => Number(row.weekIndex)).filter(Number.isFinite),
+  ].filter(Number.isFinite);
+  // Carry forward through the current camp week only — never invent future weeks
+  // from campLength alone (that would flatten trajectory into false STABLE).
+  const maxWeek = weekCandidates.length ? Math.max(0, ...weekCandidates) : 0;
+
+  const trendPoints = [];
+  for (let weekIndex = 0; weekIndex <= maxWeek; weekIndex += 1) {
+    const rawComponents = {
+      cardioOutput: outages.cardioOutput ? null : resolveCardioChange(cardioPoints, weekIndex),
+      sprintRecovery: outages.sprintRecovery ? null : resolveRecoveryChange(recoveryPoints, weekIndex),
+      pace: outages.pace ? null : resolvePaceChange(pacePoints, weekIndex),
+      hrAdherence: outages.hrAdherence ? null : resolveHrAdherenceChange(hrPoints, weekIndex),
+      mileTest: outages.mileTest ? null : resolveMileChange(mileHistory, weekIndex),
+    };
+
+    let availableWeight = 0;
+    let weightedChange = 0;
+    const components = {};
+    let contributing = 0;
+    const matureKeys = [];
+    const establishingKeys = [];
+
+    COMPONENT_KEYS.forEach((key) => {
+      const weight = PERFORMANCE_COMPONENT_WEIGHTS[key];
+      const resolved = rawComponents[key];
+      if (!resolved?.available) {
+        components[key] = {
+          ...emptyComponent(key),
+          outage: Boolean(outages[key]),
+          mature: false,
+        };
+        return;
+      }
+      const boundedChange = clampPerformanceComponentChange(resolved.rawChange);
+      components[key] = {
+        key,
+        available: true,
+        mature: Boolean(resolved.mature),
+        weight,
+        rawChange: resolved.rawChange,
+        boundedChange,
+        label: resolved.label,
+        weekIndex: resolved.weekIndex,
+        outage: false,
+        detail: resolved,
+      };
+      contributing += 1;
+      if (resolved.mature) matureKeys.push(key);
+      else establishingKeys.push(key);
+    });
+
+    // First appearance of a component (baseline only) must not dilute mature
+    // signals. Weight establishing components only when nothing mature exists.
+    const keysForWeight = matureKeys.length ? matureKeys : establishingKeys;
+    keysForWeight.forEach((key) => {
+      const row = components[key];
+      availableWeight += row.weight;
+      weightedChange += row.boundedChange * row.weight;
+    });
+
+    if (availableWeight <= 0) continue;
+
+    const change = weightedChange / availableWeight;
+    const value = Number((100 + change).toFixed(1));
+    const prior = trendPoints[trendPoints.length - 1] || null;
+    const deltaFromPrior = prior ? Number((value - prior.value).toFixed(1)) : null;
+    const confidence = confidenceFromAvailableWeight(availableWeight, { dataLimited });
+
+    trendPoints.push({
+      weekIndex,
+      value,
+      deltaFromBaseline: Number((value - 100).toFixed(1)),
+      deltaFromPrior,
+      availableWeight: Number(availableWeight.toFixed(2)),
+      contributingComponents: contributing,
+      totalComponents: COMPONENT_KEYS.length,
+      confidence: confidence.level,
+      dataLimited,
+      components,
+    });
+  }
+
+  if (!trendPoints.length) {
+    return {
+      index: null,
+      baselineIndex: 100,
+      deltaFromBaseline: null,
+      deltaFromPrior: null,
+      status: dataLimited ? STATUS_UNAVAILABLE : STATUS_NO_DATA,
+      tone: statusToTone(dataLimited ? STATUS_UNAVAILABLE : STATUS_NO_DATA),
+      badge: statusBadgeLabel(dataLimited ? STATUS_UNAVAILABLE : STATUS_NO_DATA),
+      confidence: 'low',
+      confidenceLabel: 'Low confidence',
+      availableWeight: 0,
+      contributingComponents: 0,
+      totalComponents: COMPONENT_KEYS.length,
+      dataLimited,
+      hasData: false,
+      displayValue: '--',
+      detail: dataLimited
+        ? 'DATA LIMITED — Performance Index source outage'
+        : 'No Performance Index yet',
+      trajectoryLabel: dataLimited ? 'DATA LIMITED' : 'NO DATA',
+      components: Object.fromEntries(COMPONENT_KEYS.map((key) => [key, emptyComponent(key)])),
+      trendPoints: [],
+      cardioContinuity: cardioSource.continuity,
+      unavailable: dataLimited,
+    };
+  }
+
+  const latest = trendPoints[trendPoints.length - 1];
+  const trajectory = classifyCompositeTrajectory(latest.deltaFromPrior, trendPoints.length);
+  const confidence = confidenceFromAvailableWeight(latest.availableWeight, { dataLimited });
+  const deltaFromBaseline = latest.deltaFromBaseline;
+  const deltaFromPrior = latest.deltaFromPrior;
+
+  const trajectoryDetail = trajectory.hasPrior
+    ? `${trajectory.label === 'IMPROVING' ? '↑' : trajectory.label === 'DECLINING' ? '↓' : '→'} ${trajectory.label}${Number.isFinite(deltaFromPrior) ? ` ${deltaFromPrior >= 0 ? '+' : ''}${deltaFromPrior}` : ''}`
+    : 'BASELINE';
+  const baselineDetail = Number.isFinite(deltaFromBaseline)
+    ? `${deltaFromBaseline >= 0 ? '+' : ''}${deltaFromBaseline.toFixed(1)} vs camp baseline`
+    : '';
+  const confidenceDetail = `${confidence.label} · ${latest.contributingComponents}/${COMPONENT_KEYS.length} signals`;
+  const detailParts = [trajectoryDetail, baselineDetail, confidenceDetail];
+  if (dataLimited) detailParts.unshift('DATA LIMITED');
+
+  return {
+    index: latest.value,
+    baselineIndex: 100,
+    deltaFromBaseline,
+    deltaFromPrior,
+    status: trajectory.status === STATUS_STABLE ? STATUS_BASELINE : trajectory.status,
+    tone: trajectory.tone,
+    badge: trajectory.label,
+    confidence: confidence.level,
+    confidenceLabel: confidence.label,
+    availableWeight: latest.availableWeight,
+    contributingComponents: latest.contributingComponents,
+    totalComponents: COMPONENT_KEYS.length,
+    dataLimited,
+    hasData: true,
+    displayValue: formatPi(latest.value),
+    detail: detailParts.filter(Boolean).join(' · '),
+    trajectoryLabel: trajectory.label,
+    components: latest.components,
+    trendPoints,
+    cardioContinuity: cardioSource.continuity,
+    value: latest.value,
+    unavailable: false,
+  };
+}
+
 export function statusBadgeLabel(status) {
   switch (status) {
     case STATUS_IMPROVING: return 'IMPROVING';
     case STATUS_DECLINING: return 'DECLINING';
     case STATUS_BASELINE: return 'BASELINE';
+    case STATUS_STABLE: return 'STABLE';
     case STATUS_ON_TARGET: return 'ON TARGET';
     case STATUS_NEEDS_ATTENTION: return 'NEEDS ATTENTION';
     case STATUS_WATCH: return 'WATCH';
@@ -243,7 +735,7 @@ export function getBenchmarkEquivDistance(distance, avgBpm, targetBpm = BENCHMAR
 /**
  * Canonical Benchmark Index from valid Benchmark sessions only.
  * Week 1 = 100; later weeks = equivDistance / week1Equiv × 100.
- * Distinct from the cross-modality Performance Index (2-session baseline).
+ * Distinct from the coach-facing composite Performance Index.
  */
 export function buildBenchmarkMetricFromPoints(points = [], { unavailable = false, unavailableDetail = '' } = {}) {
   if (unavailable) {
@@ -354,7 +846,7 @@ function resolveBenchmarkPoints(athlete, helpers = {}) {
 export function statusToTone(status) {
   if (status === STATUS_IMPROVING || status === STATUS_ON_TARGET) return 'green';
   if (status === STATUS_DECLINING || status === STATUS_NEEDS_ATTENTION) return 'red';
-  if (status === STATUS_BASELINE || status === STATUS_WATCH) return 'amber';
+  if (status === STATUS_BASELINE || status === STATUS_WATCH || status === STATUS_STABLE) return 'amber';
   return 'neutral';
 }
 
@@ -726,15 +1218,6 @@ function unavailableMetric(detail) {
 }
 
 export function buildCoachAthleteAnalytics(athlete, helpers = {}) {
-  const performanceIndex = Number(athlete?.performance?.index ?? athlete?.scan?.performance?.index);
-  const performanceClassified = classifyPerformanceIndex(performanceIndex);
-  const performanceTrend = (athlete?.scan?.performance?.points || athlete?.performance?.points || [])
-    .map((row) => ({
-      weekIndex: row.weekIndex,
-      value: Number(row.pct ?? row.index),
-    }))
-    .filter((row) => Number.isFinite(row.value));
-
   const recoveryPoints = (athlete?.scan?.recovery?.points || [])
     .map((row) => ({
       weekIndex: row.weekIndex,
@@ -796,6 +1279,22 @@ export function buildCoachAthleteAnalytics(athlete, helpers = {}) {
   );
 
   const mileRows = mileTestsAvailable ? collectMileTestRows(athlete) : [];
+
+  // Composite PI consumes the same component series as the diagnostic tabs.
+  const compositePerformance = buildCompositePerformanceIndex({
+    sessions: athlete?.sessions || [],
+    benchmarkTrendPoints: benchmarkMetric.trendPoints || [],
+    recoveryPoints: sprintsAvailable ? recoveryPoints : [],
+    pacePoints: completionsAvailable ? pacePoints : [],
+    hrPoints: completionsAvailable ? hrTrend : [],
+    mileHistory: mileRows,
+    currentWeekIndex: athlete?.currentWeekIndex ?? 0,
+    sources,
+    completionsAvailable,
+    sprintsAvailable,
+    mileTestsAvailable,
+  });
+
   const mileBaselineRow = pickMileBaseline(mileRows);
   const mileLatestRow = pickMileLatest(mileRows);
   const mileBaseline = mileBaselineRow?.seconds ?? null;
@@ -827,26 +1326,37 @@ export function buildCoachAthleteAnalytics(athlete, helpers = {}) {
   return {
     athleteId: athlete?.id || null,
     athleteName: athlete?.name || 'Athlete',
-    performance: completionsAvailable
-      ? {
-        value: performanceClassified.hasData ? performanceIndex : null,
-        displayValue: performanceClassified.hasData ? formatPi(performanceIndex) : '--',
-        delta: performanceClassified.delta,
-        detail: performanceClassified.hasData
-          ? `W1 100 → ${formatPi(performanceIndex)}`
-          : (athlete?.scan?.performance?.detail || 'No Performance Index yet'),
-        status: performanceClassified.status,
-        badge: statusBadgeLabel(performanceClassified.status),
-        tone: statusToTone(performanceClassified.status),
-        hasData: performanceClassified.hasData,
-        trendPoints: performanceTrend,
-        unavailable: false,
-      }
-      : {
-        ...unavailableMetric('Completion source unavailable — Performance Index not classified'),
-        trendPoints: [],
-        unavailable: true,
-      },
+    performance: {
+      value: compositePerformance.hasData ? compositePerformance.index : null,
+      index: compositePerformance.hasData ? compositePerformance.index : null,
+      displayValue: compositePerformance.displayValue,
+      delta: compositePerformance.deltaFromBaseline,
+      deltaFromPrior: compositePerformance.deltaFromPrior,
+      detail: compositePerformance.detail,
+      status: compositePerformance.status,
+      badge: compositePerformance.badge,
+      tone: compositePerformance.tone,
+      hasData: compositePerformance.hasData,
+      trendPoints: (compositePerformance.trendPoints || []).map((row) => ({
+        weekIndex: row.weekIndex,
+        value: row.value,
+        deltaFromPrior: row.deltaFromPrior,
+        deltaFromBaseline: row.deltaFromBaseline,
+        components: row.components,
+        confidence: row.confidence,
+        dataLimited: row.dataLimited,
+      })),
+      confidence: compositePerformance.confidence,
+      confidenceLabel: compositePerformance.confidenceLabel,
+      availableWeight: compositePerformance.availableWeight,
+      contributingComponents: compositePerformance.contributingComponents,
+      totalComponents: compositePerformance.totalComponents,
+      dataLimited: compositePerformance.dataLimited,
+      trajectoryLabel: compositePerformance.trajectoryLabel,
+      components: compositePerformance.components,
+      cardioContinuity: compositePerformance.cardioContinuity,
+      unavailable: Boolean(compositePerformance.unavailable),
+    },
     benchmark: benchmarkMetric,
     recovery: sprintsAvailable
       ? {

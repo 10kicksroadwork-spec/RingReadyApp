@@ -1,7 +1,8 @@
 /**
- * Cardio modality + continuous Performance Index.
+ * Cardio modality helpers + Cardio Output continuity series.
+ * Used as the Cardio/Benchmark component inside the composite Performance Index.
  * No fake cross-modality distance conversions — each modality keeps its own
- * baseline and anchors to the current camp index when first introduced.
+ * baseline and anchors to the current cardio level when first introduced.
  */
 
 export const MODALITY_RUNNING = 'running';
@@ -45,7 +46,10 @@ export const MODALITIES = [
 ];
 
 const HR_TARGET_TOLERANCE_BPM = 5;
-const BASELINE_SESSION_TARGET = 2;
+const BENCHMARK_EQUIV_RATIO_MIN = 0.85;
+const BENCHMARK_EQUIV_RATIO_MAX = 1.15;
+const BENCHMARK_EQUIV_K = 0.5;
+const BENCHMARK_TARGET_BPM = 137;
 
 export function normalizeModality(value) {
   const id = String(value || '').trim().toLowerCase();
@@ -85,8 +89,26 @@ function isMileTestLike(type) {
   return /\bmile\b/.test(text) && /\b(test|re-?test|time trial)\b/.test(text);
 }
 
+function clampRatio(value, min, max) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return min;
+  return Math.min(max, Math.max(min, num));
+}
+
+/** HR-adjusted equivalent distance — same formula as coach Benchmark Index. */
+export function getRunningCardioOutput(distance, avgBpm, targetBpm = BENCHMARK_TARGET_BPM) {
+  const dist = Number(distance);
+  if (!Number.isFinite(dist) || dist <= 0) return null;
+  const avg = Number(avgBpm);
+  const tgt = Number(targetBpm) || BENCHMARK_TARGET_BPM;
+  if (!Number.isFinite(avg) || avg <= 0 || !Number.isFinite(tgt) || tgt <= 0) return dist;
+  const ratio = clampRatio(tgt / avg, BENCHMARK_EQUIV_RATIO_MIN, BENCHMARK_EQUIV_RATIO_MAX);
+  const equiv = dist * (ratio ** BENCHMARK_EQUIV_K);
+  return Number.isFinite(equiv) && equiv > 0 ? equiv : dist;
+}
+
 /**
- * Comparable cardio sessions only. Sprints and mile tests stay out of the index.
+ * Comparable cardio sessions only. Sprints and mile tests stay out of Cardio Output.
  * Running continuity uses Benchmark sessions so easy/long paces do not dilute the score.
  * Machine modalities use any steady cardio session with watts + valid HR.
  */
@@ -104,30 +126,31 @@ export function isPerformanceComparableSession(session = {}) {
 }
 
 /**
- * Higher is better for the index math.
- * Running uses distance / minutes (mi per min). Machines use watts.
+ * Higher is better for Cardio Output math.
+ * Running Benchmarks use HR-adjusted equivalent distance (canonical Benchmark formula).
+ * Machines use watts. No fake mile/watt conversions.
  */
 export function sessionPerformanceOutput(session = {}) {
   const modality = normalizeModality(session.modality);
   if (modality === MODALITY_RUNNING) {
-    const distance = Number(session.outputValue ?? session.distance);
-    const minutes = Number(session.minutes ?? session.totalMinutes);
-    if (!Number.isFinite(distance) || distance <= 0 || !Number.isFinite(minutes) || minutes <= 0) return null;
-    return distance / minutes;
+    return getRunningCardioOutput(
+      session.outputValue ?? session.distance,
+      session.avgBpm,
+      session.targetBPM ?? session.targetBpm ?? BENCHMARK_TARGET_BPM
+    );
   }
   const watts = Number(session.outputValue ?? session.avgWatts);
   return Number.isFinite(watts) && watts > 0 ? watts : null;
 }
 
-function average(values) {
-  const nums = values.filter((value) => Number.isFinite(value));
-  if (!nums.length) return null;
-  return nums.reduce((sum, value) => sum + value, 0) / nums.length;
-}
-
 /**
- * Walk sessions in camp order and build a continuous Performance Index.
- * New modalities inherit the current index; returning to an old modality resumes it.
+ * Walk sessions in camp order and build Cardio Output continuity.
+ * First valid observation establishes the modality baseline (component level 100
+ * for the first modality overall). The second valid session in a modality can
+ * move the score immediately. New modalities inherit the current cardio level.
+ *
+ * @deprecated Name retained for call-site compatibility — this is Cardio Output,
+ * not the coach-facing composite Performance Index.
  */
 export function buildPerformanceContinuity(sessions = []) {
   const comparable = [...sessions]
@@ -156,7 +179,6 @@ export function buildPerformanceContinuity(sessions = []) {
         modality: session.modality,
         baselineOutput: null,
         baselineIndex: null,
-        baselineSamples: [],
         sessionCount: 0,
       };
       modalityState.set(session.modality, state);
@@ -164,18 +186,12 @@ export function buildPerformanceContinuity(sessions = []) {
 
     state.sessionCount += 1;
 
+    // First valid session in this modality: establish baseline.
+    // Inherit current cardio level so a machine switch does not reset to 100.
     if (state.baselineOutput == null) {
-      state.baselineSamples.push(output);
-      const sampleCount = state.baselineSamples.length;
-      const provisionalBaseline = average(state.baselineSamples);
       if (currentIndex == null) currentIndex = 100;
       state.baselineIndex = currentIndex;
-      if (sampleCount >= BASELINE_SESSION_TARGET) {
-        state.baselineOutput = provisionalBaseline;
-      } else {
-        // Temporary single-session baseline until a second valid session lands.
-        state.baselineOutput = provisionalBaseline;
-      }
+      state.baselineOutput = output;
       const index = state.baselineIndex;
       points.push({
         weekIndex: session.weekIndex,
@@ -183,28 +199,14 @@ export function buildPerformanceContinuity(sessions = []) {
         modality: session.modality,
         output,
         index,
-        establishingBaseline: sampleCount < BASELINE_SESSION_TARGET,
+        establishingBaseline: true,
+        changeFromBaseline: index - 100,
       });
       currentIndex = index;
       return;
     }
 
-    if (state.baselineSamples.length < BASELINE_SESSION_TARGET) {
-      state.baselineSamples.push(output);
-      state.baselineOutput = average(state.baselineSamples);
-      const index = state.baselineIndex;
-      points.push({
-        weekIndex: session.weekIndex,
-        workoutIndex: session.workoutIndex,
-        modality: session.modality,
-        output,
-        index,
-        establishingBaseline: state.baselineSamples.length < BASELINE_SESSION_TARGET,
-      });
-      currentIndex = index;
-      return;
-    }
-
+    // Second+ session in this modality: may move immediately.
     const index = state.baselineIndex * (output / state.baselineOutput);
     points.push({
       weekIndex: session.weekIndex,
@@ -213,6 +215,7 @@ export function buildPerformanceContinuity(sessions = []) {
       output,
       index,
       establishingBaseline: false,
+      changeFromBaseline: index - 100,
     });
     currentIndex = index;
   });
@@ -221,7 +224,7 @@ export function buildPerformanceContinuity(sessions = []) {
     modality: state.modality,
     baselineOutput: state.baselineOutput,
     baselinePerformanceIndex: state.baselineIndex,
-    baselineSessions: Math.min(state.baselineSamples.length, BASELINE_SESSION_TARGET),
+    baselineSessions: state.baselineOutput != null ? 1 : 0,
     sessionCount: state.sessionCount,
   }));
 
@@ -234,6 +237,9 @@ export function buildPerformanceContinuity(sessions = []) {
     latestModality: latest?.modality || null,
   };
 }
+
+/** Alias clarifying that continuity is the Cardio Output component, not final PI. */
+export const buildCardioOutputContinuity = buildPerformanceContinuity;
 
 export function formatPerformanceIndex(value) {
   if (!Number.isFinite(Number(value))) return '--';
