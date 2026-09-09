@@ -8,7 +8,13 @@
  * the diagnostic instruments underneath.
  */
 
-import { buildPerformanceContinuity } from './modality.js';
+import {
+  buildPerformanceContinuity,
+  isMachineModality,
+  isPerformanceComparableSession,
+  normalizeModality,
+  sessionPerformanceOutput,
+} from './modality.js';
 
 export const LENS_BENCHMARK = 'benchmark';
 export const LENS_RECOVERY = 'recovery';
@@ -237,7 +243,18 @@ export function clampPerformanceComponentChange(rawChange) {
   );
 }
 
-export function confidenceFromAvailableWeight(availableWeight, { dataLimited = false } = {}) {
+export function confidenceFromAvailableWeight(availableWeight, {
+  dataLimited = false,
+  matureComponentCount = null,
+} = {}) {
+  // Trend confidence — baseline-only observations never claim High.
+  if (matureComponentCount === 0) {
+    return {
+      level: 'establishing',
+      ratio: 0,
+      label: 'Establishing baseline',
+    };
+  }
   const ratio = Number(availableWeight) / TOTAL_COMPONENT_WEIGHT;
   if (!Number.isFinite(ratio) || ratio <= 0) {
     return { level: 'low', ratio: 0, label: 'Low confidence' };
@@ -253,6 +270,14 @@ export function confidenceFromAvailableWeight(availableWeight, { dataLimited = f
       ? 'Medium confidence'
       : 'Low confidence';
   return { level, ratio, label };
+}
+
+/**
+ * Confidence in the composite TREND (not mere data presence).
+ * Alias kept for clearer call sites.
+ */
+export function confidenceFromTrendCoverage(args) {
+  return confidenceFromAvailableWeight(args.availableWeight, args);
 }
 
 function latestAtOrBefore(points, weekIndex, valueKey = 'value') {
@@ -421,39 +446,171 @@ function emptyComponent(key) {
   };
 }
 
-function buildCardioPointsFromSources({ sessions = [], benchmarkTrendPoints = [] } = {}) {
-  const continuity = buildPerformanceContinuity(sessions);
-  if (Array.isArray(continuity.points) && continuity.points.length) {
-    // Collapse to latest observation per week for weekly PI series.
-    const byWeek = new Map();
-    continuity.points.forEach((row) => {
-      const weekIndex = Number(row.weekIndex);
-      if (!Number.isFinite(weekIndex) || !Number.isFinite(Number(row.index))) return;
-      byWeek.set(weekIndex, {
-        weekIndex,
-        index: Number(row.index),
-        modality: row.modality,
-      });
-    });
-    return {
-      points: [...byWeek.values()].sort((a, b) => a.weekIndex - b.weekIndex),
-      continuity,
-      source: 'continuity',
-    };
-  }
-
-  // RUN-only athletes may expose Benchmark points without session rows in tests/UI.
-  const fromBenchmark = (Array.isArray(benchmarkTrendPoints) ? benchmarkTrendPoints : [])
+function normalizeBenchmarkCardioPoints(benchmarkTrendPoints = []) {
+  return (Array.isArray(benchmarkTrendPoints) ? benchmarkTrendPoints : [])
     .map((row) => ({
       weekIndex: Number(row.weekIndex),
       index: Number(row.value ?? row.index),
       modality: 'running',
+      source: 'benchmark',
     }))
-    .filter((row) => Number.isFinite(row.weekIndex) && Number.isFinite(row.index));
+    .filter((row) => Number.isFinite(row.weekIndex) && Number.isFinite(row.index))
+    .sort((a, b) => a.weekIndex - b.weekIndex);
+}
+
+function collapseContinuityPoints(continuity) {
+  const byWeek = new Map();
+  (continuity?.points || []).forEach((row) => {
+    const weekIndex = Number(row.weekIndex);
+    if (!Number.isFinite(weekIndex) || !Number.isFinite(Number(row.index))) return;
+    byWeek.set(weekIndex, {
+      weekIndex,
+      index: Number(row.index),
+      modality: row.modality,
+      source: 'continuity',
+    });
+  });
+  return [...byWeek.values()].sort((a, b) => a.weekIndex - b.weekIndex);
+}
+
+/**
+ * Machine-only Cardio Output continuity. Starts from an inherited index so a
+ * RUN → bike switch keeps continuity without re-deciding RUN Benchmark eligibility.
+ */
+function buildMachineCardioContinuity(sessions = [], startingIndex = 100) {
+  const comparable = [...sessions]
+    .filter(isPerformanceComparableSession)
+    .filter((session) => isMachineModality(session.modality))
+    .map((session, order) => ({
+      ...session,
+      modality: normalizeModality(session.modality),
+      order,
+      sortKey: Number.isFinite(Number(session.weekIndex))
+        ? Number(session.weekIndex) * 100 + (Number(session.workoutIndex) || 0)
+        : order,
+    }))
+    .sort((a, b) => a.sortKey - b.sortKey || a.order - b.order);
+
+  const modalityState = new Map();
+  let currentIndex = Number.isFinite(Number(startingIndex)) ? Number(startingIndex) : 100;
+  const points = [];
+
+  comparable.forEach((session) => {
+    const output = sessionPerformanceOutput(session);
+    if (!Number.isFinite(output) || output <= 0) return;
+
+    let state = modalityState.get(session.modality);
+    if (!state) {
+      state = {
+        modality: session.modality,
+        baselineOutput: null,
+        baselineIndex: null,
+        sessionCount: 0,
+      };
+      modalityState.set(session.modality, state);
+    }
+    state.sessionCount += 1;
+
+    if (state.baselineOutput == null) {
+      state.baselineIndex = currentIndex;
+      state.baselineOutput = output;
+      const index = state.baselineIndex;
+      points.push({
+        weekIndex: session.weekIndex,
+        index,
+        modality: session.modality,
+        source: 'machine-continuity',
+        establishingBaseline: true,
+      });
+      currentIndex = index;
+      return;
+    }
+
+    const index = state.baselineIndex * (output / state.baselineOutput);
+    points.push({
+      weekIndex: session.weekIndex,
+      index,
+      modality: session.modality,
+      source: 'machine-continuity',
+      establishingBaseline: false,
+    });
+    currentIndex = index;
+  });
+
+  const byWeek = new Map();
+  points.forEach((row) => {
+    const weekIndex = Number(row.weekIndex);
+    if (!Number.isFinite(weekIndex) || !Number.isFinite(Number(row.index))) return;
+    byWeek.set(weekIndex, {
+      weekIndex,
+      index: Number(row.index),
+      modality: row.modality,
+      source: row.source,
+    });
+  });
   return {
-    points: fromBenchmark,
+    points: [...byWeek.values()].sort((a, b) => a.weekIndex - b.weekIndex),
+    latestIndex: currentIndex,
+  };
+}
+
+function deriveBenchmarkPointsFromSessions(sessions = []) {
+  const points = (Array.isArray(sessions) ? sessions : [])
+    .filter((session) =>
+      (!session.status || session.status === 'logged')
+      && /benchmark/i.test(String(session.type || ''))
+      && normalizeModality(session.modality) === 'running'
+      && Number(session.distance ?? session.outputValue) > 0
+    )
+    .map((session) => ({
+      weekIndex: Number(session.weekIndex),
+      distance: Number(session.distance ?? session.outputValue),
+      avgBpm: Number(session.avgBpm),
+      targetBPM: Number(session.targetBPM ?? session.targetBpm) || 137,
+    }))
+    .filter((row) => Number.isFinite(row.weekIndex) && row.distance > 0);
+  if (!points.length) return [];
+  return normalizeBenchmarkCardioPoints(buildBenchmarkMetricFromPoints(points).trendPoints || []);
+}
+
+/**
+ * Cardio series for composite PI.
+ * RUN Benchmark eligibility/values come ONLY from the canonical Benchmark engine.
+ * Continuity owns machine baselines and cross-modality inheritance.
+ */
+function buildCardioPointsFromSources({ sessions = [], benchmarkTrendPoints = [] } = {}) {
+  const continuity = buildPerformanceContinuity(sessions);
+  let fromBenchmark = normalizeBenchmarkCardioPoints(benchmarkTrendPoints);
+  if (!fromBenchmark.length) {
+    // Same Benchmark engine path — never the ±5 continuity gate for RUN.
+    fromBenchmark = deriveBenchmarkPointsFromSessions(sessions);
+  }
+  const hasMachines = (Array.isArray(sessions) ? sessions : []).some(
+    (session) => isPerformanceComparableSession(session) && isMachineModality(session.modality)
+  );
+
+  if (!hasMachines) {
+    if (fromBenchmark.length) {
+      return { points: fromBenchmark, continuity, source: 'benchmark' };
+    }
+    return {
+      points: collapseContinuityPoints(continuity),
+      continuity,
+      source: continuity.points?.length ? 'continuity' : 'none',
+    };
+  }
+
+  const lastBenchmark = fromBenchmark.length ? fromBenchmark[fromBenchmark.length - 1] : null;
+  const inheritedIndex = lastBenchmark ? lastBenchmark.index : 100;
+  const machineSeries = buildMachineCardioContinuity(sessions, inheritedIndex);
+  const byWeek = new Map();
+  fromBenchmark.forEach((row) => byWeek.set(row.weekIndex, row));
+  machineSeries.points.forEach((row) => byWeek.set(row.weekIndex, row));
+
+  return {
+    points: [...byWeek.values()].sort((a, b) => a.weekIndex - b.weekIndex),
     continuity,
-    source: fromBenchmark.length ? 'benchmark' : 'none',
+    source: fromBenchmark.length ? 'hybrid' : 'machine-continuity',
   };
 }
 
@@ -512,9 +669,9 @@ export function buildCompositePerformanceIndex({
     let availableWeight = 0;
     let weightedChange = 0;
     const components = {};
-    let contributing = 0;
     const matureKeys = [];
     const establishingKeys = [];
+    let availableComponents = 0;
 
     COMPONENT_KEYS.forEach((key) => {
       const weight = PERFORMANCE_COMPONENT_WEIGHTS[key];
@@ -540,7 +697,7 @@ export function buildCompositePerformanceIndex({
         outage: false,
         detail: resolved,
       };
-      contributing += 1;
+      availableComponents += 1;
       if (resolved.mature) matureKeys.push(key);
       else establishingKeys.push(key);
     });
@@ -559,19 +716,38 @@ export function buildCompositePerformanceIndex({
     const change = weightedChange / availableWeight;
     const value = Number((100 + change).toFixed(1));
     const prior = trendPoints[trendPoints.length - 1] || null;
-    const deltaFromPrior = prior ? Number((value - prior.value).toFixed(1)) : null;
-    const confidence = confidenceFromAvailableWeight(availableWeight, { dataLimited });
+    const graphDeltaFromPrior = prior ? Number((value - prior.value).toFixed(1)) : null;
+    // Genuine evidence = at least one available component observed in this week.
+    const hasNewEvidence = COMPONENT_KEYS.some((key) => {
+      const row = components[key];
+      return row?.available && Number(row.weekIndex) === weekIndex;
+    });
+    const matureComponentCount = matureKeys.length;
+    const establishingComponentCount = establishingKeys.length;
+    const weightedComponentCount = keysForWeight.length;
+    const confidence = confidenceFromTrendCoverage({
+      availableWeight,
+      dataLimited,
+      matureComponentCount,
+    });
 
     trendPoints.push({
       weekIndex,
       value,
       deltaFromBaseline: Number((value - 100).toFixed(1)),
-      deltaFromPrior,
+      deltaFromPrior: graphDeltaFromPrior,
       availableWeight: Number(availableWeight.toFixed(2)),
-      contributingComponents: contributing,
+      availableComponents,
+      establishingComponents: establishingComponentCount,
+      weightedComponents: weightedComponentCount,
+      // "N/5 contributing" means actually weighted into the current calculation.
+      contributingComponents: weightedComponentCount,
       totalComponents: COMPONENT_KEYS.length,
+      matureComponentCount,
       confidence: confidence.level,
+      confidenceLabel: confidence.label,
       dataLimited,
+      hasNewEvidence,
       components,
     });
   }
@@ -588,10 +764,14 @@ export function buildCompositePerformanceIndex({
       confidence: 'low',
       confidenceLabel: 'Low confidence',
       availableWeight: 0,
+      availableComponents: 0,
+      establishingComponents: 0,
+      weightedComponents: 0,
       contributingComponents: 0,
       totalComponents: COMPONENT_KEYS.length,
       dataLimited,
       hasData: false,
+      noNewSignalThisWeek: false,
       displayValue: '--',
       detail: dataLimited
         ? 'DATA LIMITED — Performance Index source outage'
@@ -600,24 +780,52 @@ export function buildCompositePerformanceIndex({
       components: Object.fromEntries(COMPONENT_KEYS.map((key) => [key, emptyComponent(key)])),
       trendPoints: [],
       cardioContinuity: cardioSource.continuity,
+      cardioSource: cardioSource.source,
       unavailable: dataLimited,
     };
   }
 
   const latest = trendPoints[trendPoints.length - 1];
-  const trajectory = classifyCompositeTrajectory(latest.deltaFromPrior, trendPoints.length);
-  const confidence = confidenceFromAvailableWeight(latest.availableWeight, { dataLimited });
+  const evidencePoints = trendPoints.filter((row) => row.hasNewEvidence);
+  const evidenceLatest = evidencePoints[evidencePoints.length - 1] || latest;
+  const evidencePrior = evidencePoints.length >= 2
+    ? evidencePoints[evidencePoints.length - 2]
+    : null;
+  const evidenceDelta = evidencePrior
+    ? Number((evidenceLatest.value - evidencePrior.value).toFixed(1))
+    : null;
+  const trajectory = classifyCompositeTrajectory(evidenceDelta, evidencePoints.length);
+  const confidence = confidenceFromTrendCoverage({
+    availableWeight: latest.availableWeight,
+    dataLimited,
+    matureComponentCount: latest.matureComponentCount,
+  });
   const deltaFromBaseline = latest.deltaFromBaseline;
-  const deltaFromPrior = latest.deltaFromPrior;
+  const deltaFromPrior = evidenceDelta;
+  const noNewSignalThisWeek = !latest.hasNewEvidence && evidencePoints.length > 0;
 
-  const trajectoryDetail = trajectory.hasPrior
-    ? `${trajectory.label === 'IMPROVING' ? '↑' : trajectory.label === 'DECLINING' ? '↓' : '→'} ${trajectory.label}${Number.isFinite(deltaFromPrior) ? ` ${deltaFromPrior >= 0 ? '+' : ''}${deltaFromPrior}` : ''}`
-    : 'BASELINE';
+  let trajectoryDetail;
+  if (!trajectory.hasPrior) {
+    trajectoryDetail = confidence.level === 'establishing'
+      ? 'ESTABLISHING BASELINE'
+      : 'BASELINE';
+  } else {
+    const arrow = trajectory.label === 'IMPROVING' ? '↑' : trajectory.label === 'DECLINING' ? '↓' : '→';
+    const deltaText = Number.isFinite(deltaFromPrior)
+      ? ` ${deltaFromPrior >= 0 ? '+' : ''}${deltaFromPrior}`
+      : '';
+    trajectoryDetail = noNewSignalThisWeek
+      ? `${arrow} Last measured trend: ${trajectory.label}${deltaText}`
+      : `${arrow} ${trajectory.label}${deltaText}`;
+  }
   const baselineDetail = Number.isFinite(deltaFromBaseline)
     ? `${deltaFromBaseline >= 0 ? '+' : ''}${deltaFromBaseline.toFixed(1)} vs camp baseline`
     : '';
-  const confidenceDetail = `${confidence.label} · ${latest.contributingComponents}/${COMPONENT_KEYS.length} signals`;
+  const confidenceDetail = confidence.level === 'establishing'
+    ? confidence.label
+    : `${confidence.label} · ${latest.weightedComponents}/${COMPONENT_KEYS.length} trend signals`;
   const detailParts = [trajectoryDetail, baselineDetail, confidenceDetail];
+  if (noNewSignalThisWeek) detailParts.push('No new performance signal this week');
   if (dataLimited) detailParts.unshift('DATA LIMITED');
 
   return {
@@ -625,15 +833,19 @@ export function buildCompositePerformanceIndex({
     baselineIndex: 100,
     deltaFromBaseline,
     deltaFromPrior,
-    status: trajectory.status === STATUS_STABLE ? STATUS_BASELINE : trajectory.status,
+    status: trajectory.status,
     tone: trajectory.tone,
     badge: trajectory.label,
     confidence: confidence.level,
     confidenceLabel: confidence.label,
     availableWeight: latest.availableWeight,
-    contributingComponents: latest.contributingComponents,
+    availableComponents: latest.availableComponents,
+    establishingComponents: latest.establishingComponents,
+    weightedComponents: latest.weightedComponents,
+    contributingComponents: latest.weightedComponents,
     totalComponents: COMPONENT_KEYS.length,
     dataLimited,
+    noNewSignalThisWeek,
     hasData: true,
     displayValue: formatPi(latest.value),
     detail: detailParts.filter(Boolean).join(' · '),
@@ -641,6 +853,7 @@ export function buildCompositePerformanceIndex({
     components: latest.components,
     trendPoints,
     cardioContinuity: cardioSource.continuity,
+    cardioSource: cardioSource.source,
     value: latest.value,
     unavailable: false,
   };
@@ -1345,16 +1558,22 @@ export function buildCoachAthleteAnalytics(athlete, helpers = {}) {
         components: row.components,
         confidence: row.confidence,
         dataLimited: row.dataLimited,
+        hasNewEvidence: row.hasNewEvidence,
       })),
       confidence: compositePerformance.confidence,
       confidenceLabel: compositePerformance.confidenceLabel,
       availableWeight: compositePerformance.availableWeight,
+      availableComponents: compositePerformance.availableComponents,
+      establishingComponents: compositePerformance.establishingComponents,
+      weightedComponents: compositePerformance.weightedComponents,
       contributingComponents: compositePerformance.contributingComponents,
       totalComponents: compositePerformance.totalComponents,
       dataLimited: compositePerformance.dataLimited,
+      noNewSignalThisWeek: compositePerformance.noNewSignalThisWeek,
       trajectoryLabel: compositePerformance.trajectoryLabel,
       components: compositePerformance.components,
       cardioContinuity: compositePerformance.cardioContinuity,
+      cardioSource: compositePerformance.cardioSource,
       unavailable: Boolean(compositePerformance.unavailable),
     },
     benchmark: benchmarkMetric,

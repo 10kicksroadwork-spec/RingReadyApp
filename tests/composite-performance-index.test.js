@@ -5,6 +5,7 @@ import {
   STATUS_DECLINING,
   STATUS_IMPROVING,
   STATUS_NO_DATA,
+  STATUS_STABLE,
   STATUS_UNAVAILABLE,
   buildBenchmarkMetricFromPoints,
   buildCoachAthleteAnalytics,
@@ -68,6 +69,9 @@ describe('buildCompositePerformanceIndex', () => {
     expect(result.deltaFromBaseline).toBe(0);
     expect(result.status).toBe(STATUS_BASELINE);
     expect(result.trajectoryLabel).toBe('BASELINE');
+    expect(result.confidence).toBe('establishing');
+    expect(result.confidenceLabel).toMatch(/Establishing baseline/i);
+    expect(result.detail).not.toMatch(/High confidence/i);
   });
 
   it('lets the second week move immediately (no two-session wait)', () => {
@@ -320,6 +324,79 @@ describe('buildCompositePerformanceIndex', () => {
     expect(result.components.sprintRecovery.rawChange).toBeCloseTo(((36 / 29) - 1) * 100, 1);
     expect(result.components.pace.rawChange).toBeCloseTo(6.8, 5);
   });
+
+  it('uses canonical Benchmark for RUN even when avg HR is outside ±5 of target', () => {
+    const sessions = [
+      benchSession(0, 3.0, 143), // 6 BPM over target 137 — continuity would exclude
+      benchSession(1, 3.15, 144),
+    ];
+    const continuity = buildPerformanceContinuity(sessions);
+    expect(continuity.points).toHaveLength(0);
+
+    const bench = buildBenchmarkMetricFromPoints([
+      { weekIndex: 0, distance: 3.0, avgBpm: 143, targetBPM: 137 },
+      { weekIndex: 1, distance: 3.15, avgBpm: 144, targetBPM: 137 },
+    ]);
+    expect(bench.hasData).toBe(true);
+    expect(bench.index).toBeGreaterThan(100);
+
+    const result = buildCompositePerformanceIndex({
+      sessions,
+      benchmarkTrendPoints: bench.trendPoints,
+      currentWeekIndex: 1,
+    });
+    expect(result.cardioSource).toBe('benchmark');
+    expect(result.components.cardioOutput.available).toBe(true);
+    expect(result.components.cardioOutput.rawChange).toBeCloseTo(bench.index - 100, 1);
+    expect(result.index).toBeCloseTo(bench.index, 1);
+  });
+
+  it('keeps Declining after a no-evidence carry-forward week', () => {
+    const result = buildCompositePerformanceIndex({
+      sessions: [
+        benchSession(0, 3.0),
+        benchSession(1, 2.85),
+      ],
+      currentWeekIndex: 2, // Week 3 plotted with carry-forward only
+    });
+    expect(result.trendPoints.map((row) => row.value)).toEqual([
+      result.trendPoints[0].value,
+      result.trendPoints[1].value,
+      result.trendPoints[2].value,
+    ]);
+    expect(result.trendPoints).toHaveLength(3);
+    expect(result.trendPoints[0].value).toBe(100);
+    expect(result.trendPoints[1].value).toBeLessThan(100);
+    expect(result.trendPoints[2].value).toBe(result.trendPoints[1].value);
+    expect(result.trendPoints[2].hasNewEvidence).toBe(false);
+    expect(result.status).toBe(STATUS_DECLINING);
+    expect(result.noNewSignalThisWeek).toBe(true);
+    expect(result.detail).toMatch(/No new performance signal/i);
+    expect(result.trajectoryLabel).toBe('DECLINING');
+  });
+
+  it('counts only weighted components in N/5 contributing', () => {
+    const result = buildCompositePerformanceIndex({
+      sessions: [
+        benchSession(0, 3.0),
+        benchSession(1, 3.2),
+      ],
+      recoveryPoints: [
+        { weekIndex: 0, value: 30 },
+        { weekIndex: 1, value: 33 },
+      ],
+      // First recovery is mature; pace is establishing-only at week 1 if only one point —
+      // add a brand-new mile baseline observation that must not count as weighted.
+      mileHistory: [{ weekIndex: 1, seconds: 420, isBaseline: true }],
+      currentWeekIndex: 1,
+    });
+    expect(result.weightedComponents).toBe(2);
+    expect(result.establishingComponents).toBe(1);
+    expect(result.availableComponents).toBe(3);
+    expect(result.contributingComponents).toBe(2);
+    expect(result.detail).toMatch(/2\/5 trend signals/);
+    expect(result.detail).not.toMatch(/3\/5/);
+  });
 });
 
 describe('classifyCompositeTrajectory', () => {
@@ -327,6 +404,7 @@ describe('classifyCompositeTrajectory', () => {
     expect(classifyCompositeTrajectory(-1.2, 2).status).toBe(STATUS_DECLINING);
     expect(classifyCompositeTrajectory(1.2, 2).status).toBe(STATUS_IMPROVING);
     expect(classifyCompositeTrajectory(0.2, 2).label).toBe('STABLE');
+    expect(classifyCompositeTrajectory(0.2, 2).status).toBe(STATUS_STABLE);
     expect(classifyCompositeTrajectory(null, 1).status).toBe(STATUS_BASELINE);
   });
 });
@@ -368,7 +446,7 @@ describe('analytics wiring uses composite PI', () => {
     expect(analytics.performance.index).toBeGreaterThan(100);
     expect(analytics.performance.contributingComponents).toBeGreaterThanOrEqual(2);
     expect(analytics.performance).not.toEqual(analytics.benchmark);
-    expect(analytics.performance.confidence).toMatch(/high|medium|low/);
+    expect(analytics.performance.confidence).toMatch(/high|medium|low|establishing/);
   });
 
   it('marks full source absence as unavailable/no-data without inventing 100', () => {
