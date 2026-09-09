@@ -473,87 +473,6 @@ function collapseContinuityPoints(continuity) {
   return [...byWeek.values()].sort((a, b) => a.weekIndex - b.weekIndex);
 }
 
-/**
- * Machine-only Cardio Output continuity. Starts from an inherited index so a
- * RUN → bike switch keeps continuity without re-deciding RUN Benchmark eligibility.
- */
-function buildMachineCardioContinuity(sessions = [], startingIndex = 100) {
-  const comparable = [...sessions]
-    .filter(isPerformanceComparableSession)
-    .filter((session) => isMachineModality(session.modality))
-    .map((session, order) => ({
-      ...session,
-      modality: normalizeModality(session.modality),
-      order,
-      sortKey: Number.isFinite(Number(session.weekIndex))
-        ? Number(session.weekIndex) * 100 + (Number(session.workoutIndex) || 0)
-        : order,
-    }))
-    .sort((a, b) => a.sortKey - b.sortKey || a.order - b.order);
-
-  const modalityState = new Map();
-  let currentIndex = Number.isFinite(Number(startingIndex)) ? Number(startingIndex) : 100;
-  const points = [];
-
-  comparable.forEach((session) => {
-    const output = sessionPerformanceOutput(session);
-    if (!Number.isFinite(output) || output <= 0) return;
-
-    let state = modalityState.get(session.modality);
-    if (!state) {
-      state = {
-        modality: session.modality,
-        baselineOutput: null,
-        baselineIndex: null,
-        sessionCount: 0,
-      };
-      modalityState.set(session.modality, state);
-    }
-    state.sessionCount += 1;
-
-    if (state.baselineOutput == null) {
-      state.baselineIndex = currentIndex;
-      state.baselineOutput = output;
-      const index = state.baselineIndex;
-      points.push({
-        weekIndex: session.weekIndex,
-        index,
-        modality: session.modality,
-        source: 'machine-continuity',
-        establishingBaseline: true,
-      });
-      currentIndex = index;
-      return;
-    }
-
-    const index = state.baselineIndex * (output / state.baselineOutput);
-    points.push({
-      weekIndex: session.weekIndex,
-      index,
-      modality: session.modality,
-      source: 'machine-continuity',
-      establishingBaseline: false,
-    });
-    currentIndex = index;
-  });
-
-  const byWeek = new Map();
-  points.forEach((row) => {
-    const weekIndex = Number(row.weekIndex);
-    if (!Number.isFinite(weekIndex) || !Number.isFinite(Number(row.index))) return;
-    byWeek.set(weekIndex, {
-      weekIndex,
-      index: Number(row.index),
-      modality: row.modality,
-      source: row.source,
-    });
-  });
-  return {
-    points: [...byWeek.values()].sort((a, b) => a.weekIndex - b.weekIndex),
-    latestIndex: currentIndex,
-  };
-}
-
 function deriveBenchmarkPointsFromSessions(sessions = []) {
   const points = (Array.isArray(sessions) ? sessions : [])
     .filter((session) =>
@@ -567,24 +486,160 @@ function deriveBenchmarkPointsFromSessions(sessions = []) {
       distance: Number(session.distance ?? session.outputValue),
       avgBpm: Number(session.avgBpm),
       targetBPM: Number(session.targetBPM ?? session.targetBpm) || 137,
+      workoutIndex: Number(session.workoutIndex),
     }))
     .filter((row) => Number.isFinite(row.weekIndex) && row.distance > 0);
   if (!points.length) return [];
-  return normalizeBenchmarkCardioPoints(buildBenchmarkMetricFromPoints(points).trendPoints || []);
+  const trend = normalizeBenchmarkCardioPoints(buildBenchmarkMetricFromPoints(points).trendPoints || []);
+  // Preserve workoutIndex for chronological merging when available.
+  return trend.map((row) => {
+    const match = points.find((point) => Number(point.weekIndex) === Number(row.weekIndex));
+    return {
+      ...row,
+      workoutIndex: Number.isFinite(Number(match?.workoutIndex)) ? Number(match.workoutIndex) : 1,
+    };
+  });
+}
+
+/**
+ * Build Cardio Output chronologically so later Benchmarks cannot rewrite earlier
+ * machine weeks. Canonical RUN Benchmark owns any week it appears in.
+ */
+function buildChronologicalHybridCardio(fromBenchmark = [], sessions = []) {
+  const benchByWeek = new Map(
+    fromBenchmark.map((row) => [Number(row.weekIndex), row])
+  );
+
+  const events = [];
+  fromBenchmark.forEach((row, order) => {
+    const weekIndex = Number(row.weekIndex);
+    const workoutIndex = Number.isFinite(Number(row.workoutIndex))
+      ? Number(row.workoutIndex)
+      : 1;
+    events.push({
+      kind: 'benchmark',
+      weekIndex,
+      workoutIndex,
+      order,
+      sortKey: weekIndex * 100 + workoutIndex,
+      index: Number(row.index),
+      point: row,
+    });
+  });
+
+  (Array.isArray(sessions) ? sessions : []).forEach((session, order) => {
+    if (!isPerformanceComparableSession(session)) return;
+    if (!isMachineModality(session.modality)) return;
+    const weekIndex = Number(session.weekIndex);
+    if (!Number.isFinite(weekIndex)) return;
+    const workoutIndex = Number(session.workoutIndex) || 0;
+    events.push({
+      kind: 'machine',
+      weekIndex,
+      workoutIndex,
+      order,
+      sortKey: weekIndex * 100 + workoutIndex,
+      session: {
+        ...session,
+        modality: normalizeModality(session.modality),
+      },
+    });
+  });
+
+  events.sort((a, b) => {
+    if (a.sortKey !== b.sortKey) return a.sortKey - b.sortKey;
+    // Same slot: process machine state first, then benchmark so weekly ownership
+    // ends on canonical Benchmark when both exist.
+    if (a.kind !== b.kind) return a.kind === 'machine' ? -1 : 1;
+    return a.order - b.order;
+  });
+
+  const modalityState = new Map();
+  let currentIndex = 100;
+  const weeklyPoints = new Map();
+
+  events.forEach((event) => {
+    if (event.kind === 'benchmark') {
+      currentIndex = event.index;
+      weeklyPoints.set(event.weekIndex, {
+        weekIndex: event.weekIndex,
+        index: event.index,
+        modality: 'running',
+        source: 'benchmark',
+      });
+      return;
+    }
+
+    const output = sessionPerformanceOutput(event.session);
+    if (!Number.isFinite(output) || output <= 0) return;
+    const modality = event.session.modality;
+    let state = modalityState.get(modality);
+    if (!state) {
+      state = {
+        modality,
+        baselineOutput: null,
+        baselineIndex: null,
+        sessionCount: 0,
+      };
+      modalityState.set(modality, state);
+    }
+    state.sessionCount += 1;
+
+    let index;
+    if (state.baselineOutput == null) {
+      // Inherit the latest Cardio index available BEFORE this observation.
+      state.baselineIndex = currentIndex;
+      state.baselineOutput = output;
+      index = state.baselineIndex;
+    } else {
+      index = state.baselineIndex * (output / state.baselineOutput);
+    }
+    currentIndex = index;
+
+    // Canonical Benchmark owns the weekly PI point when both occur.
+    if (!benchByWeek.has(event.weekIndex)) {
+      weeklyPoints.set(event.weekIndex, {
+        weekIndex: event.weekIndex,
+        index: Number(index),
+        modality,
+        source: 'machine-continuity',
+      });
+    }
+  });
+
+  return {
+    points: [...weeklyPoints.values()].sort((a, b) => a.weekIndex - b.weekIndex),
+    modalityState,
+  };
 }
 
 /**
  * Cardio series for composite PI.
  * RUN Benchmark eligibility/values come ONLY from the canonical Benchmark engine.
- * Continuity owns machine baselines and cross-modality inheritance.
+ * Machine continuity is applied chronologically and never backfilled from the future.
  */
 function buildCardioPointsFromSources({ sessions = [], benchmarkTrendPoints = [] } = {}) {
   const continuity = buildPerformanceContinuity(sessions);
   let fromBenchmark = normalizeBenchmarkCardioPoints(benchmarkTrendPoints);
   if (!fromBenchmark.length) {
-    // Same Benchmark engine path — never the ±5 continuity gate for RUN.
     fromBenchmark = deriveBenchmarkPointsFromSessions(sessions);
+  } else {
+    // Attach workoutIndex from sessions when available for chronological merge.
+    fromBenchmark = fromBenchmark.map((row) => {
+      const match = (Array.isArray(sessions) ? sessions : []).find((session) =>
+        Number(session.weekIndex) === Number(row.weekIndex)
+        && /benchmark/i.test(String(session.type || ''))
+        && normalizeModality(session.modality) === 'running'
+      );
+      return {
+        ...row,
+        workoutIndex: Number.isFinite(Number(match?.workoutIndex))
+          ? Number(match.workoutIndex)
+          : (Number.isFinite(Number(row.workoutIndex)) ? Number(row.workoutIndex) : 1),
+      };
+    });
   }
+
   const hasMachines = (Array.isArray(sessions) ? sessions : []).some(
     (session) => isPerformanceComparableSession(session) && isMachineModality(session.modality)
   );
@@ -600,15 +655,9 @@ function buildCardioPointsFromSources({ sessions = [], benchmarkTrendPoints = []
     };
   }
 
-  const lastBenchmark = fromBenchmark.length ? fromBenchmark[fromBenchmark.length - 1] : null;
-  const inheritedIndex = lastBenchmark ? lastBenchmark.index : 100;
-  const machineSeries = buildMachineCardioContinuity(sessions, inheritedIndex);
-  const byWeek = new Map();
-  fromBenchmark.forEach((row) => byWeek.set(row.weekIndex, row));
-  machineSeries.points.forEach((row) => byWeek.set(row.weekIndex, row));
-
+  const hybrid = buildChronologicalHybridCardio(fromBenchmark, sessions);
   return {
-    points: [...byWeek.values()].sort((a, b) => a.weekIndex - b.weekIndex),
+    points: hybrid.points,
     continuity,
     source: fromBenchmark.length ? 'hybrid' : 'machine-continuity',
   };
@@ -717,8 +766,11 @@ export function buildCompositePerformanceIndex({
     const value = Number((100 + change).toFixed(1));
     const prior = trendPoints[trendPoints.length - 1] || null;
     const graphDeltaFromPrior = prior ? Number((value - prior.value).toFixed(1)) : null;
-    // Genuine evidence = at least one available component observed in this week.
-    const hasNewEvidence = COMPONENT_KEYS.some((key) => {
+    // Genuine trajectory evidence = a component that actually participates in
+    // the trend calculation observed a new value this week. Establishing-only
+    // first observations must not manufacture STABLE/IMPROVING/DECLINING flips
+    // while they are excluded from keysForWeight.
+    const hasNewEvidence = keysForWeight.some((key) => {
       const row = components[key];
       return row?.available && Number(row.weekIndex) === weekIndex;
     });
@@ -779,6 +831,7 @@ export function buildCompositePerformanceIndex({
       trajectoryLabel: dataLimited ? 'DATA LIMITED' : 'NO DATA',
       components: Object.fromEntries(COMPONENT_KEYS.map((key) => [key, emptyComponent(key)])),
       trendPoints: [],
+      cardioPoints: [],
       cardioContinuity: cardioSource.continuity,
       cardioSource: cardioSource.source,
       unavailable: dataLimited,
@@ -852,6 +905,7 @@ export function buildCompositePerformanceIndex({
     trajectoryLabel: trajectory.label,
     components: latest.components,
     trendPoints,
+    cardioPoints,
     cardioContinuity: cardioSource.continuity,
     cardioSource: cardioSource.source,
     value: latest.value,

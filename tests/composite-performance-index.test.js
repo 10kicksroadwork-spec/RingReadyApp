@@ -397,6 +397,98 @@ describe('buildCompositePerformanceIndex', () => {
     expect(result.detail).toMatch(/2\/5 trend signals/);
     expect(result.detail).not.toMatch(/3\/5/);
   });
+
+  it('does not let an establishing-only baseline clear prior DECLINING', () => {
+    // Cardio W0=100 → W1=95; first-ever Mile at W2 must not invent STABLE.
+    const result = buildCompositePerformanceIndex({
+      sessions: [
+        benchSession(0, 3.0),
+        benchSession(1, 2.85),
+      ],
+      mileHistory: [{ weekIndex: 2, seconds: 420, isBaseline: true }],
+      currentWeekIndex: 2,
+    });
+    expect(result.trendPoints).toHaveLength(3);
+    expect(result.trendPoints[0].value).toBe(100);
+    expect(result.trendPoints[1].value).toBeLessThan(100);
+    expect(result.trendPoints[2].value).toBe(result.trendPoints[1].value);
+    expect(result.trendPoints[2].hasNewEvidence).toBe(false);
+    expect(result.components.mileTest.available).toBe(true);
+    expect(result.components.mileTest.mature).toBe(false);
+    expect(result.establishingComponents).toBe(1);
+    expect(result.weightedComponents).toBe(1);
+    expect(result.status).toBe(STATUS_DECLINING);
+    expect(result.noNewSignalThisWeek).toBe(true);
+    expect(result.detail).toMatch(/No new performance signal this week/i);
+  });
+
+  it('does not backfill an earlier machine week from a future Benchmark', () => {
+    // RUN W0=100 → Bike W1 baseline → RUN W2=110. Bike must inherit 100, not 110.
+    const result = buildCompositePerformanceIndex({
+      sessions: [
+        benchSession(0, 3.0),
+        bikeSession(1, 180),
+        benchSession(2, 3.3),
+      ],
+      currentWeekIndex: 2,
+    });
+    expect(result.cardioSource).toBe('hybrid');
+    const byWeek = new Map(result.cardioPoints.map((row) => [row.weekIndex, row]));
+    expect(byWeek.get(0)?.source).toBe('benchmark');
+    expect(byWeek.get(0)?.index).toBe(100);
+    expect(byWeek.get(1)?.source).toBe('machine-continuity');
+    expect(byWeek.get(1)?.index).toBe(100);
+    expect(byWeek.get(1)?.index).not.toBe(byWeek.get(2)?.index);
+    expect(byWeek.get(2)?.source).toBe('benchmark');
+    expect(byWeek.get(2)?.index).toBeGreaterThan(105);
+  });
+
+  it('keeps canonical Benchmark as same-week Cardio authority', () => {
+    const result = buildCompositePerformanceIndex({
+      sessions: [
+        benchSession(0, 3.0),
+        bikeSession(0, 200, 137, { workoutIndex: 3 }),
+      ],
+      currentWeekIndex: 0,
+    });
+    expect(result.cardioSource).toBe('hybrid');
+    expect(result.cardioPoints).toHaveLength(1);
+    expect(result.cardioPoints[0].source).toBe('benchmark');
+    expect(result.cardioPoints[0].modality).toBe('running');
+    expect(result.cardioPoints[0].index).toBe(100);
+    expect(result.components.cardioOutput.detail.level).toBe(100);
+  });
+
+  it('preserves established machine baseline across alternating modalities', () => {
+    // RUN W0 → Bike W1 → Bike W2 → RUN W3 → Bike W4
+    const result = buildCompositePerformanceIndex({
+      sessions: [
+        benchSession(0, 3.0),
+        bikeSession(1, 180),
+        bikeSession(2, 198),
+        benchSession(3, 3.3),
+        bikeSession(4, 189),
+      ],
+      currentWeekIndex: 4,
+    });
+    const byWeek = new Map(result.cardioPoints.map((row) => [row.weekIndex, row]));
+    const w1 = byWeek.get(1);
+    const w2 = byWeek.get(2);
+    const w3 = byWeek.get(3);
+    const w4 = byWeek.get(4);
+    expect(w1?.source).toBe('machine-continuity');
+    expect(w1?.index).toBe(100);
+    // Second bike session moves from the W1-established baseline (180→198),
+    // and must not be rewritten by the later W3 Benchmark.
+    expect(w2?.source).toBe('machine-continuity');
+    expect(w2?.index).toBeCloseTo(100 * (198 / 180), 1);
+    expect(w3?.source).toBe('benchmark');
+    expect(w3?.index).toBeGreaterThan(105);
+    // Returning Bike resumes the established 180W @ 100 baseline, not W3.
+    expect(w4?.source).toBe('machine-continuity');
+    expect(w4?.index).toBeCloseTo(100 * (189 / 180), 1);
+    expect(w4?.index).not.toBeCloseTo(w3.index * (189 / 180), 1);
+  });
 });
 
 describe('classifyCompositeTrajectory', () => {
