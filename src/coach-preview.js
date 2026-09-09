@@ -449,27 +449,24 @@ function buildPaceSignal(sessions) {
   };
 }
 
-function buildPerformanceSignal(performance) {
-  if (!performance?.index) {
-    return emptySignal('performance', 'Needs HR-valid cardio sessions');
+function buildCardioOutputSignal(cardioOutput) {
+  if (!cardioOutput?.index) {
+    return emptySignal('cardioOutput', 'Needs HR-valid cardio sessions');
   }
-  const index = Number(performance.index);
-  let tone = 'amber';
-  if (index >= 100) tone = 'green';
-  else if (index < 95) tone = 'red';
-  const modalityLabel = performance.latestModality
-    ? formatModalityLabel(performance.latestModality)
+  const index = Number(cardioOutput.index);
+  const modalityLabel = cardioOutput.latestModality
+    ? formatModalityLabel(cardioOutput.latestModality)
     : 'camp';
-  const switchNote = performance.modalityCount > 1
-    ? ` · ${performance.modalityCount} modalities, score kept continuous`
+  const switchNote = cardioOutput.modalityCount > 1
+    ? ` · ${cardioOutput.modalityCount} modalities, cardio continuity kept`
     : '';
   return {
-    key: 'performance',
-    tone,
+    key: 'cardioOutput',
+    tone: 'neutral',
     value: formatPerformanceIndex(index),
     short: formatPerformanceIndex(index),
-    detail: `Camp index on ${modalityLabel}${switchNote}`,
-    points: (performance.points || []).map((row) => ({
+    detail: `Cardio Output on ${modalityLabel}${switchNote}`,
+    points: (cardioOutput.points || []).map((row) => ({
       weekIndex: row.weekIndex,
       pct: row.index,
     })),
@@ -517,11 +514,8 @@ function buildHeadline(athlete) {
   } else if (scan.recovery.tone === 'green') {
     bits.push(`Drop ${Math.round(scan.recovery.first)}→${Math.round(scan.recovery.latest)}.`);
   }
-  const piDisplay = athlete.analytics?.performance?.displayValue
-    || (Number.isFinite(Number(scan.performance?.index))
-      ? Number(scan.performance.index).toFixed(1)
-      : '');
-  if (piDisplay && athlete.performance?.modalityCount > 1) {
+  const piDisplay = athlete.analytics?.performance?.displayValue || '';
+  if (piDisplay && athlete.cardioOutput?.modalityCount > 1) {
     bits.push(`Index ${piDisplay} after modality switch.`);
   } else if (piDisplay && !bits.some((bit) => /Index /.test(bit))) {
     bits.push(`Index ${piDisplay}.`);
@@ -681,16 +675,16 @@ function buildAthleteRecord(config) {
 
   const benchPoints = collectBenchmarkPoints(config, sessions);
   const sprintPoints = collectSprintPoints(config, sessions);
-  const performance = buildPerformanceContinuity(sessions);
-  if (Number.isFinite(Number(config.forcePerformanceIndex))) {
-    performance.index = Number(Number(config.forcePerformanceIndex).toFixed(1));
-  }
+  // Cardio Output continuity only — never the coach-facing Performance Index.
+  const cardioOutput = buildPerformanceContinuity(sessions);
   const scan = {
     bench: buildBenchSignal(benchPoints),
     zone: buildZoneSignal(sessions, config.maxHr, config.restingHr),
     recovery: buildRecoverySignal(sprintPoints),
     pace: buildPaceSignal(sessions),
-    performance: buildPerformanceSignal(performance),
+    // Final PI comes exclusively from buildCompositePerformanceIndex via analytics.
+    performance: emptySignal('performance', 'No Performance Index yet'),
+    cardioOutput: buildCardioOutputSignal(cardioOutput),
   };
 
   const athlete = {
@@ -712,7 +706,7 @@ function buildAthleteRecord(config) {
     weekRows,
     sessions,
     scan,
-    performance,
+    cardioOutput,
   };
 
   // Canonical analytics — shared by Detailed Summary + aggregate pages.
@@ -751,10 +745,26 @@ function scanFromAnalytics(analytics, priorScan = {}) {
         weekIndex: row.weekIndex,
         pct: row.value,
         index: row.value,
+        deltaFromPrior: row.deltaFromPrior,
+        deltaFromBaseline: row.deltaFromBaseline,
+        components: row.components,
       })),
       index: performance.hasData ? performance.value : null,
       status: performance.status,
       badge: performance.badge,
+      confidence: performance.confidence,
+      confidenceLabel: performance.confidenceLabel,
+      contributingComponents: performance.contributingComponents,
+      weightedComponents: performance.weightedComponents,
+      availableComponents: performance.availableComponents,
+      establishingComponents: performance.establishingComponents,
+      totalComponents: performance.totalComponents,
+      dataLimited: performance.dataLimited,
+      noNewSignalThisWeek: performance.noNewSignalThisWeek,
+      trajectoryLabel: performance.trajectoryLabel,
+      deltaFromBaseline: performance.delta,
+      deltaFromPrior: performance.deltaFromPrior,
+      components: performance.components,
     },
     bench: {
       key: 'bench',
@@ -951,7 +961,6 @@ const MOCK_ATHLETES = [
       { weekIndex: 0, distance: 2.70, avgBpm: 140 },
       { weekIndex: 1, distance: 2.40, avgBpm: 145 },
     ],
-    forcePerformanceIndex: 92.4,
     sprints: [
       { weekIndex: 0, first5Avg: 24 },
       { weekIndex: 1, first5Avg: 24 },
@@ -1723,13 +1732,17 @@ function renderMetricCard(id, title, signal, clickable) {
   const secondary = signal.key === 'recovery' && signal.avg != null
     ? `<p class="coach-metric-secondary">Camp avg ${Math.round(Number(signal.avg))} BPM</p>`
     : '';
-  return `<${tag} class="coach-metric-card is-${signal.tone}${clickable ? ' is-clickable' : ''}${athleteDrill === id ? ' is-open' : ''}" ${clickAttrs}>
+  const isPerformance = signal.key === 'performance';
+  const headExtra = isPerformance && signal.trajectoryLabel
+    ? `<em>${escapeHTML(signal.trajectoryLabel)}</em>`
+    : (clickable ? '<em>Open sessions</em>' : '');
+  return `<${tag} class="coach-metric-card is-${signal.tone}${clickable ? ' is-clickable' : ''}${isPerformance ? ' is-performance-index' : ''}${athleteDrill === id ? ' is-open' : ''}" ${clickAttrs}>
     <div class="coach-metric-card-head">
       <span>${escapeHTML(title)}</span>
-      ${clickable ? '<em>Open sessions</em>' : ''}
+      ${headExtra}
     </div>
     <strong>${escapeHTML(signal.value)}${unit}</strong>
-    <p>${escapeHTML(signal.detail)}</p>
+    <p>${escapeHTML(signal.detail || '')}</p>
     ${secondary}
     ${spark}
   </${tag}>`;

@@ -1,6 +1,9 @@
 /**
- * Quick sanity checks for modality performance continuity.
+ * Cardio Output / modality continuity smoke checks.
  * Run: node scripts/modality-performance-smoke.mjs
+ *
+ * This is NOT the coach-facing composite Performance Index.
+ * It verifies cross-modality Cardio Output continuity (watts inherit index).
  */
 
 import {
@@ -35,14 +38,28 @@ const sessions = [
   { status: 'logged', type: 'Benchmark Run', modality: 'assault_bike', weekIndex: 4, workoutIndex: 1, minutes: 30, outputValue: 191, avgWatts: 191, avgBpm: 136, targetBPM: 137 },
 ];
 
-const performance = buildPerformanceContinuity(sessions);
-assert(performance.index != null, 'expected a performance index');
-assert(performance.modalityCount === 2, 'expected running + assault bike baselines');
-assert(performance.index > 108, `expected continuity well above 100 after bike improvement, got ${performance.index}`);
+const cardio = buildPerformanceContinuity(sessions);
+assert(cardio.index != null, 'expected a cardio output index');
+assert(cardio.modalityCount === 2, 'expected running + assault bike baselines');
+assert(cardio.index > 108, `expected continuity well above 100 after bike improvement, got ${cardio.index}`);
 
-const bikeBaseline = performance.baselines.find((row) => row.modality === MODALITY_ASSAULT_BIKE);
+// First bike session establishes baseline at inherited running level; second bike session may move.
+const firstBike = cardio.points.find((row) => row.modality === MODALITY_ASSAULT_BIKE);
+assert(firstBike?.establishingBaseline === true, 'first bike session should establish modality baseline');
+assert(firstBike.index > 105, `new modality should inherit prior running index, got ${firstBike.index}`);
+
+const bikeBaseline = cardio.baselines.find((row) => row.modality === MODALITY_ASSAULT_BIKE);
 assert(bikeBaseline, 'missing assault bike baseline');
-assert(bikeBaseline.baselinePerformanceIndex > 105, `new modality should inherit prior running index, got ${bikeBaseline.baselinePerformanceIndex}`);
+assert(bikeBaseline.baselinePerformanceIndex > 105, `bike baseline index should inherit running level, got ${bikeBaseline.baselinePerformanceIndex}`);
+assert(bikeBaseline.baselineSessions === 1, 'first valid session establishes the modality baseline');
+
+// Second session in a modality can move immediately (no two-session lock).
+const early = buildPerformanceContinuity([
+  { status: 'logged', type: 'Benchmark Run', modality: 'running', weekIndex: 0, workoutIndex: 1, minutes: 30, distance: 2.90, avgBpm: 137, targetBPM: 137 },
+  { status: 'logged', type: 'Benchmark Run', modality: 'running', weekIndex: 1, workoutIndex: 1, minutes: 30, distance: 3.045, avgBpm: 137, targetBPM: 137 },
+]);
+assert(early.points[0].index === 100, 'first observation is baseline 100');
+assert(early.points[1].index > 100, `second observation must move immediately, got ${early.points[1].index}`);
 
 console.log('modality-performance-smoke: ok');
-console.log(`index=${performance.index} modalities=${performance.modalityCount} bikeBaselineIndex=${bikeBaseline.baselinePerformanceIndex}`);
+console.log(`cardioIndex=${cardio.index} modalities=${cardio.modalityCount} bikeBaselineIndex=${bikeBaseline.baselinePerformanceIndex}`);
