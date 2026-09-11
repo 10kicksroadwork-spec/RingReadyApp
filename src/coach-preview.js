@@ -22,7 +22,7 @@ import {
   normalizeModality,
   readOutputFromWorkoutLog,
 } from './modality.js';
-import { sessionHasProof } from './coach-proof.js';
+import { sessionHasProof, isProofGapWaivedForOutage } from './coach-proof.js';
 import { readJSONValue, writeJSON } from './safe-storage.js';
 import {
   getSessionZoneTarget,
@@ -1308,7 +1308,14 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, mileTests, note
         isSprint: isSprintType(workout.type),
         weekIndex,
         workoutIndex,
-      })) missingProofs.push(key);
+      })) {
+        const waived = isProofGapWaivedForOutage({
+          completedAt: row.completed_at || record.completedAt || record.completed_at,
+          sessionAt: sprintRow?.session_at || sprintRow?.sessionAt,
+          updatedAt: row.updated_at || sprintRow?.updated_at,
+        });
+        if (!waived) missingProofs.push(key);
+      }
       const log = record.workoutLog || {};
       const output = readOutputFromWorkoutLog({
         modality: row.modality || log.modality,
