@@ -109,13 +109,13 @@ test.describe('coach decision dashboard drawer and lenses', () => {
 
   test('Jordan Tillman zone heatmap uses personalized HR bands', async ({ page }) => {
     await openCoachPreview(page);
-    await page.locator('#coach-roster-search').fill('Jordan');
-    const jordanCard = page.locator('.coach-roster-card[data-coach-athlete="jordan"]');
+    await page.locator('#coach-roster-search').fill('Tillman');
+    const jordanCard = page.locator('.coach-roster-card[data-coach-athlete="jordan-tillman"]');
     await expect(jordanCard).toBeVisible();
     await jordanCard.click();
 
     await expect(page.locator('#coach-athlete.screen.active')).toBeVisible({ timeout: 10000 });
-    await expect(page.locator('#coach-athlete-name')).toContainText(/Jordan/i);
+    await expect(page.locator('#coach-athlete-name')).toContainText(/Jordan Tillman/i);
     await expect(page.locator('#coach-athlete-zone-heatmap')).toBeVisible();
 
     const heat = page.locator('#coach-athlete-zone-heatmap-body');

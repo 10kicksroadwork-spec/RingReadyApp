@@ -1133,7 +1133,7 @@ const MOCK_ATHLETES = [
   }),
   // Jordan Tillman — coach personalized HR zone regression fixture (Max 197 / Rest 64).
   buildAthleteRecord({
-    id: 'jordan',
+    id: 'jordan-tillman',
     name: 'Jordan Tillman',
     campLength: 7,
     currentWeekIndex: 1,
