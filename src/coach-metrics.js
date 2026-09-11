@@ -1110,6 +1110,7 @@ function resolveBenchmarkPoints(athlete, helpers = {}) {
       weekIndex: session.weekIndex,
       distance: Number(session.distance),
       avgBpm: Number(session.avgBpm),
+      // Prefer session.targetBPM after coach personalized resolution in buildAthleteRecord.
       targetBPM: Number(session.targetBPM) || BENCHMARK_TARGET_BPM,
     }));
 }

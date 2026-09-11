@@ -24,11 +24,12 @@ import {
 } from './modality.js';
 import { sessionHasProof, isProofGapWaivedForOutage } from './coach-proof.js';
 import { readJSONValue, writeJSON } from './safe-storage.js';
+import { isSessionAvgOnTarget } from './hr-analytics.js';
 import {
-  getSessionZoneTarget,
-  isSessionAvgOnTarget,
-  scoreZoneAdherence,
-} from './hr-analytics.js';
+  getCoachPersonalizedTargetBpm,
+  getCoachSessionZoneTarget,
+  scoreCoachZoneAdherence,
+} from './coach-hr-targets.js';
 import {
   LENS_BENCHMARK,
   LENS_HR_ADHERENCE,
@@ -249,7 +250,8 @@ function buildZoneSignal(sessions, maxHr = null, restingHr = null) {
     const week = PROGRAM[session.weekIndex];
     return week?.workouts?.[session.workoutIndex] || null;
   };
-  const scoredResult = scoreZoneAdherence(sessions, workoutLookup, hrInfo);
+  // Coach-only scorer — must not seed scan.zone from legacy PROGRAM.targetBPM.
+  const scoredResult = scoreCoachZoneAdherence(sessions, workoutLookup, hrInfo);
   const { scored, onTarget, summaryLabel } = scoredResult;
   if (!scored) return emptySignal('zone', 'No HR vs target yet');
   const pct = Math.round((onTarget / scored) * 100);
@@ -314,12 +316,36 @@ function buildRecoverySignal(points) {
   };
 }
 
+function coachHrInfoFromConfig(config) {
+  return {
+    maxHr: config?.maxHr ?? null,
+    restingHr: config?.restingHr ?? null,
+  };
+}
+
 function collectBenchmarkPoints(config, sessions) {
+  const hrInfo = coachHrInfoFromConfig(config);
   if (Array.isArray(config.benchmarks) && config.benchmarks.length) {
     return config.benchmarks.map((row) => {
       const distance = Number(row.distance);
       const avgBpm = Number(row.avgBpm);
-      const targetBPM = Number(row.targetBPM) || BENCHMARK_TARGET_BPM;
+      const weekIndex = Number(row.weekIndex);
+      const workout = Number.isFinite(weekIndex)
+        ? (PROGRAM[weekIndex]?.workouts?.[1] || null)
+        : null;
+      const persisted = Number(row.persistedTargetBPM);
+      const targetBPM = getCoachPersonalizedTargetBpm(
+        workout,
+        {
+          weekIndex,
+          workoutIndex: 1,
+          persistedTargetBPM: Number.isFinite(persisted) && persisted > 0 ? persisted : null,
+          // Do not pass row.targetBPM as persisted — mock rows often omit it and
+          // legacy 137 must not block personalized HRR calculation.
+          targetZone: workout?.targetZone,
+        },
+        hrInfo
+      ) || Number(row.targetBPM) || BENCHMARK_TARGET_BPM;
       return {
         weekIndex: row.weekIndex,
         distance,
@@ -336,13 +362,18 @@ function collectBenchmarkPoints(config, sessions) {
       && normalizeModality(session.modality) === MODALITY_RUNNING
       && Number(session.distance) > 0
     )
-    .map((session) => ({
-      weekIndex: session.weekIndex,
-      distance: Number(session.distance),
-      avgBpm: Number(session.avgBpm),
-      targetBPM: Number(session.targetBPM) || BENCHMARK_TARGET_BPM,
-      equiv: getEquivDistance(session.distance, session.avgBpm, session.targetBPM || BENCHMARK_TARGET_BPM),
-    }))
+    .map((session) => {
+      const workout = PROGRAM[session.weekIndex]?.workouts?.[session.workoutIndex] || null;
+      const targetBPM = getCoachPersonalizedTargetBpm(workout, session, hrInfo)
+        || BENCHMARK_TARGET_BPM;
+      return {
+        weekIndex: session.weekIndex,
+        distance: Number(session.distance),
+        avgBpm: Number(session.avgBpm),
+        targetBPM,
+        equiv: getEquivDistance(session.distance, session.avgBpm, targetBPM),
+      };
+    })
     .filter((row) => Number.isFinite(row.equiv));
 }
 
@@ -619,6 +650,20 @@ function buildAthleteRecord(config) {
       }
       if (proof === 'missing' && completionsAvailable && attachmentsAvailable) proofGaps += 1;
       if (flag) watchCount += 1;
+      const persistedTarget = Number(config.targets?.[key]);
+      const hasPersistedTarget = Number.isFinite(persistedTarget) && persistedTarget > 0;
+      const hrInfo = coachHrInfoFromConfig(config);
+      const resolvedTarget = hasPersistedTarget
+        ? Math.round(persistedTarget)
+        : (
+          getCoachPersonalizedTargetBpm(
+            workout,
+            { targetZone: workout.targetZone, targetPct: workout.targetPct },
+            hrInfo
+          )
+          ?? workout.targetBPM
+          ?? null
+        );
       const session = overlaySeriesOntoSession({
         key,
         weekIndex,
@@ -628,7 +673,10 @@ function buildAthleteRecord(config) {
         day: workout.day,
         type: workout.type,
         targetZone: workout.targetZone || '',
-        targetBPM: workout.targetBPM ?? null,
+        // Coach session target: persisted completion BPM wins; else personalized;
+        // program targetBPM is last-resort compatibility only.
+        targetBPM: resolvedTarget,
+        persistedTargetBPM: hasPersistedTarget ? Math.round(persistedTarget) : null,
         status,
         scheduleState: isUpcoming ? 'upcoming' : scheduleState,
         proof,
@@ -719,9 +767,11 @@ function buildAthleteRecord(config) {
   };
 
   // Canonical analytics — shared by Detailed Summary + aggregate pages.
+  // Inject the coach-specific zone resolver so heatmap / trend / miss / PI
+  // share one target authority (never generic PROGRAM.targetBPM when personalized data exists).
   athlete.analytics = buildCoachAthleteAnalytics(athlete, {
-    scoreZoneAdherence,
-    getSessionZoneTarget,
+    scoreZoneAdherence: scoreCoachZoneAdherence,
+    getSessionZoneTarget: getCoachSessionZoneTarget,
     isSessionAvgOnTarget,
     normalizeModality,
     runningModalityId: MODALITY_RUNNING,
@@ -1081,6 +1131,42 @@ const MOCK_ATHLETES = [
       '3:2': 154, '3:3': 135, '3:4': 137,
     },
   }),
+  // Jordan Tillman — coach personalized HR zone regression fixture (Max 197 / Rest 64).
+  buildAthleteRecord({
+    id: 'jordan',
+    name: 'Jordan Tillman',
+    campLength: 7,
+    currentWeekIndex: 1,
+    fightDate: '2026-10-25',
+    tenure: '1-3 years',
+    maxHr: 197,
+    restingHr: 64,
+    lastSession: 'Thu · Easy Run',
+    missing: ['0:0', '1:0', '1:4'],
+    missingProofs: [],
+    avgs: {
+      '0:1': 154,
+      '0:2': 165,
+      '0:3': 142,
+      '0:4': 146,
+      '1:1': 153,
+      '1:2': 169,
+      '1:3': 144,
+    },
+    minutes: {
+      '0:1': 30,
+      '0:2': 16,
+      '0:3': 20,
+      '0:4': 45,
+      '1:1': 30,
+      '1:2': 22,
+      '1:3': 20,
+    },
+    distances: {
+      '0:1': 3.05,
+      '1:1': 3.10,
+    },
+  }),
 ];
 
 function inferCurrentWeekIndex(fightDate, campLength, completionWeeks, campStartDate) {
@@ -1264,8 +1350,13 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, mileTests, note
   const watts = {};
   const modalities = {};
   const drops = {};
+  const targets = {};
   const sessionNotes = {};
   const sprintPoints = [];
+  const athleteHrInfo = {
+    maxHr: hrRow?.max_hr ?? null,
+    restingHr: hrRow?.resting_hr ?? null,
+  };
 
   weeks.forEach((week, weekIndex) => {
     week.workouts.forEach((workout, workoutIndex) => {
@@ -1327,7 +1418,21 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, mileTests, note
       modalities[key] = output.modality;
       if (output.outputType === 'watts' && Number.isFinite(output.outputValue)) watts[key] = output.outputValue;
       const avg = Number(row.avg_bpm);
-      const tgt = Number(row.target_bpm || workout.targetBPM);
+      const persistedTarget = Number(row.target_bpm);
+      if (Number.isFinite(persistedTarget) && persistedTarget > 0) {
+        targets[key] = persistedTarget;
+      }
+      // Same coach target authority as zone adherence — do not fall back to
+      // static PROGRAM.targetBPM when persisted/personalized data exists.
+      const tgt = getCoachPersonalizedTargetBpm(
+        workout,
+        {
+          persistedTargetBPM: targets[key] ?? null,
+          targetZone: workout.targetZone,
+          targetPct: workout.targetPct,
+        },
+        athleteHrInfo
+      );
       if (Number.isFinite(avg) && avg > 0) avgs[key] = avg;
       if (Number.isFinite(Number(row.max_bpm)) && Number(row.max_bpm) > 0) maxes[key] = Number(row.max_bpm);
       if (Number.isFinite(Number(row.total_minutes)) && Number(row.total_minutes) > 0) minutes[key] = Number(row.total_minutes);
@@ -1375,6 +1480,7 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, mileTests, note
     watts,
     modalities,
     drops,
+    targets,
     sessionNotes,
     sprints: sprintPoints,
     coachNote: note || '',
