@@ -147,6 +147,8 @@ describe('scoreZoneAdherence miss summary parity', () => {
 });
 
 describe('coach zone heatmap + summary wiring', () => {
+  // Keep low-level miss-magnitude wiring tests, but do not pretend session.targetBPM
+  // is already the personalized truth — that mock hid the coach target bug.
   const helpers = {
     getSessionZoneTarget: (session) => (
       Number.isFinite(Number(session.targetBPM))

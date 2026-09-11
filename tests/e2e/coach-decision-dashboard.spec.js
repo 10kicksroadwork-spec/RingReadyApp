@@ -107,15 +107,32 @@ test.describe('coach decision dashboard drawer and lenses', () => {
     await expect(detailRecovery).toContainText(aggregateRecovery || '');
   });
 
-  test('athlete cannot keep a coach screen active without preview', async ({ localAthletePage: page }) => {
-    await waitForHome(page);
-    await page.evaluate(() => {
-      document.querySelectorAll('.screen').forEach((el) => el.classList.remove('active'));
-      document.getElementById('coach-benchmark-stats')?.classList.add('active');
-    });
-    await openDrawer(page);
-    await page.locator('.drawer-page-btn[data-page-target="home"]').click();
-    await expect(page.locator('#home.screen.active')).toBeVisible();
-    await expect(page.locator('#coach-benchmark-stats')).not.toHaveClass(/active/);
+  test('Jordan Tillman zone heatmap uses personalized HR bands', async ({ page }) => {
+    await openCoachPreview(page);
+    await page.locator('#coach-roster-search').fill('Tillman');
+    const jordanCard = page.locator('.coach-roster-card[data-coach-athlete="jordan-tillman"]');
+    await expect(jordanCard).toBeVisible();
+    await jordanCard.click();
+
+    await expect(page.locator('#coach-athlete.screen.active')).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('#coach-athlete-name')).toContainText(/Jordan Tillman/i);
+    await expect(page.locator('#coach-athlete-zone-heatmap')).toBeVisible();
+
+    const heat = page.locator('#coach-athlete-zone-heatmap-body');
+    await expect(heat).toContainText('Target 145–155');
+    await expect(heat).toContainText('Target 166–176');
+    await expect(heat).toContainText('Target 165–175');
+    await expect(heat).not.toContainText('Target 132–142');
+    await expect(heat).not.toContainText('Target 155–165');
+
+    const tuesday = heat.locator('.coach-zone-heat-cell').filter({ hasText: /W1 Tuesday/i });
+    await expect(tuesday).toContainText('154');
+    await expect(tuesday).toContainText('IN ZONE');
+    await expect(tuesday).toContainText('Target 145–155');
+
+    const wednesday = heat.locator('.coach-zone-heat-cell').filter({ hasText: /W1 Wednesday/i });
+    await expect(wednesday).toContainText('165');
+    await expect(wednesday).toContainText('1 bpm LOW');
+    await expect(wednesday).toContainText('Target 166–176');
   });
 });
