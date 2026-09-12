@@ -44,6 +44,7 @@ import {
   enqueueHRInfoForSync,
   enqueueMileTestForSync,
   enqueueProfileForSync,
+  enqueueWorkoutCompletionClearForSync,
   enqueueWorkoutProofForSync,
   flushSyncQueue,
   getAthleteProfile,
@@ -2044,6 +2045,11 @@ async function clearCompletionFromDetailOwned(weekIndex, workoutIndex, owner) {
   const removed = removeWorkoutCompletion(safeWeekIndex, safeWorkoutIndex);
   if (!removed.logicalOk) { shellHooks?.showToast?.('NO COMPLETION TO CLEAR'); return; }
   noteCompletionMutation();
+
+  const syncContext = existing?.workoutContext || existing?.cfg?.workoutContext || {};
+  if (enqueueWorkoutCompletionClearForSync(syncContext, existing?.id || '')) {
+    flushSyncQueue().catch((error) => console.warn('Workout clear sync failed', error));
+  }
 
   setDetailSkipCard(false);
   renderShell();
