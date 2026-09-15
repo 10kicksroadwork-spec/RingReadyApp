@@ -44,7 +44,9 @@ Coach **SELECT** policies use `using (public.is_coach())` on profiles, HR, compl
 
 `coach_roster_identities()` is **SECURITY DEFINER**: returns `auth.users` id/email **only when** `is_coach()` is true, so the dashboard can hide coach logins from the fighter roster.
 
-Coach writable: `coach_notes`, `coach_athlete_meta` (`002` / `005`).
+Coach writable: `coach_notes`, `coach_athlete_meta` (`002` / `005` / `024`).
+
+`coach_athlete_meta.notifications_cleared_at` / `notifications_cleared_by` (`024`) are a **shared coach watermark**, not athlete locker data. Any coach may SELECT/INSERT/UPDATE via existing `is_coach()` RLS. Athletes cannot read or write acknowledgement state. Clearing alerts does **not** mutate `workout_completions`, `workout_attachments`, or `hr_info`.
 
 Roster exclusions (`coach_roster_exclusions`, migration `005`):
 

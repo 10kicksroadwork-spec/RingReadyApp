@@ -13,7 +13,7 @@ function functionBody(source, name) {
 
 describe('athlete/coach authorization matrix', () => {
   it('keeps coach mutation helpers gated on isCoachUser()', () => {
-    for (const name of ['saveCoachNote', 'saveCoachCampStartDate', 'archiveAndResetCamp', 'loadCoachRosterPayload']) {
+    for (const name of ['saveCoachNote', 'saveCoachCampStartDate', 'saveCoachNotificationClear', 'restoreCoachNotificationClear', 'archiveAndResetCamp', 'loadCoachRosterPayload']) {
       const body = functionBody(AUTH_SRC, name);
       expect(body).toMatch(/isCoachUser\(/);
     }

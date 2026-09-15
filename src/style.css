@@ -3322,6 +3322,53 @@
     line-height: 1.4;
   }
 
+  .coach-attention-help {
+    margin-top: 10px;
+    color: rgba(240, 240, 240, 0.72) !important;
+    font-size: 13px !important;
+  }
+
+  .coach-clear-alerts-btn {
+    margin-top: 12px;
+    font-size: 16px;
+    letter-spacing: 1.2px;
+    padding: 14px;
+  }
+
+  .coach-clear-alerts-btn:disabled {
+    opacity: 0.55;
+    cursor: wait;
+  }
+
+  .coach-alerts-reviewed {
+    margin-top: 12px;
+    color: rgba(240, 240, 240, 0.78) !important;
+    font-size: 13px !important;
+  }
+
+  .coach-restore-alerts-btn {
+    display: inline;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--gold);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px;
+    letter-spacing: 1.4px;
+    text-transform: uppercase;
+    cursor: pointer;
+  }
+
+  .coach-attention-panel.is-reviewed-only {
+    border-color: var(--grey);
+    background: var(--dark2);
+  }
+
+  .coach-session-row.is-reviewed {
+    opacity: 0.88;
+  }
+
   .coach-session-list {
     display: grid;
     gap: 8px;

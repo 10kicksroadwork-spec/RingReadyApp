@@ -4,6 +4,7 @@ import {
   formatCampStartLabel,
   getSessionScheduleState,
   inferCampWeekIndex,
+  sessionBecameMissingAt,
 } from './coach-camp-schedule.js';
 import { buildCoachUserIdSet, buildRosterExclusionSet, isCoachEmail, isLocalCoachPreviewHost as isLocalHost, isRosterExcludedEmail, normalizeUserId } from './coach-access.js';
 import {
@@ -11,9 +12,17 @@ import {
   getCurrentUser,
   isCoachUser,
   loadCoachRosterPayload,
+  restoreCoachNotificationClear,
   saveCoachCampStartDate,
   saveCoachNote,
+  saveCoachNotificationClear,
 } from './auth.js';
+import {
+  formatAlertsReviewedAt,
+  hasClearableCoachAlerts,
+  isCoachAlertActive,
+  maxIsoTimestamp,
+} from './coach-notifications.js';
 import {
   buildPerformanceContinuity,
   formatModalityLabel,
@@ -47,6 +56,7 @@ import {
 } from './coach-metrics.js';
 
 const NOTES_KEY = 'ringReadyCoachPreviewNotes';
+const PREVIEW_ALERT_CLEARS_KEY = 'ringReadyCoachPreviewNotificationClears';
 const COACH_SCREENS = new Set([
   'coach-dashboard',
   'coach-athlete',
@@ -596,6 +606,11 @@ function overlaySeriesOntoSession(session, config) {
   return applyPaceWeeks(next, config);
 }
 
+function lookupEventAt(map, key) {
+  if (!map || typeof map !== 'object') return '';
+  return map[key] || '';
+}
+
 function buildAthleteRecord(config) {
   const weeks = campWeeks(config.campLength);
   const missing = new Set(config.missing || []);
@@ -606,10 +621,12 @@ function buildAthleteRecord(config) {
   const completionsAvailable = config.completionsAvailable !== false;
   const attachmentsAvailable = config.sources?.attachments !== false;
   const hrRowsAvailable = config.sources?.hrRows !== false;
+  const notificationsClearedAt = config.notificationsClearedAt || null;
   let logged = 0;
   let due = 0;
   let proofGaps = 0;
   let watchCount = 0;
+  let activeSkippedCount = 0;
   const weekRows = [];
   const sessions = [];
 
@@ -640,6 +657,23 @@ function buildAthleteRecord(config) {
             ? 'missing'
             : (status === 'logged' ? 'on-file' : 'none')));
       const flag = flags[key] || '';
+      const missingEventAt = lookupEventAt(config.missingEventAt, key)
+        || (status === 'missing'
+          ? sessionBecameMissingAt(config.campStartDate, weekIndex, workout.day)
+          : '');
+      const skipEventAt = lookupEventAt(config.skipEventAt, key);
+      const proofEventAt = lookupEventAt(config.proofEventAt, key);
+      const flagEventAt = lookupEventAt(config.flagEventAt, key);
+      const proofAlertActive = proof === 'missing'
+        && completionsAvailable
+        && attachmentsAvailable
+        && isCoachAlertActive(proofEventAt, notificationsClearedAt);
+      const flagAlertActive = Boolean(flag) && isCoachAlertActive(flagEventAt, notificationsClearedAt);
+      const missingAlertActive = status === 'missing'
+        && completionsAvailable
+        && isCoachAlertActive(missingEventAt, notificationsClearedAt);
+      const skipAlertActive = status === 'skipped'
+        && isCoachAlertActive(skipEventAt, notificationsClearedAt);
       // Open (still-due) sessions are excluded from adherence until grace expires.
       if (status === 'logged' || status === 'skipped' || status === 'missing') {
         due += 1;
@@ -648,8 +682,9 @@ function buildAthleteRecord(config) {
         logged += 1;
         done += 1;
       }
-      if (proof === 'missing' && completionsAvailable && attachmentsAvailable) proofGaps += 1;
-      if (flag) watchCount += 1;
+      if (proofAlertActive) proofGaps += 1;
+      if (flagAlertActive) watchCount += 1;
+      if (skipAlertActive) activeSkippedCount += 1;
       const persistedTarget = Number(config.targets?.[key]);
       const hasPersistedTarget = Number.isFinite(persistedTarget) && persistedTarget > 0;
       const hrInfo = coachHrInfoFromConfig(config);
@@ -680,7 +715,12 @@ function buildAthleteRecord(config) {
         status,
         scheduleState: isUpcoming ? 'upcoming' : scheduleState,
         proof,
+        proofAlertActive,
         flag,
+        flagAlertActive,
+        missingAlertActive,
+        skipAlertActive,
+        alertEventAt: flagEventAt || proofEventAt || missingEventAt || skipEventAt || '',
         note: notes[key] || '',
         avgBpm: config.avgs?.[key] ?? null,
         maxBpm: config.maxes?.[key] ?? null,
@@ -709,11 +749,16 @@ function buildAthleteRecord(config) {
     });
   });
 
+  const activeMissingCount = completionsAvailable
+    ? sessions.filter((session) => session.missingAlertActive).length
+    : 0;
+  const skippedCount = sessions.filter((session) => session.status === 'skipped').length;
+
   const attention = [];
   if (!completionsAvailable) {
     attention.push('Completion data unavailable — schedule adherence not classified');
-  } else if (due - logged > 0) {
-    attention.push(`${due - logged} session${due - logged === 1 ? '' : 's'} missing`);
+  } else if (activeMissingCount > 0) {
+    attention.push(`${activeMissingCount} session${activeMissingCount === 1 ? '' : 's'} missing`);
   }
   if (!attachmentsAvailable) {
     attention.push('Proof data unavailable — attachment source outage');
@@ -721,12 +766,11 @@ function buildAthleteRecord(config) {
     attention.push(`${proofGaps} proof gap${proofGaps === 1 ? '' : 's'}`);
   }
   if (watchCount > 0) attention.push(`${watchCount} HR flag${watchCount === 1 ? '' : 's'}`);
-  const skippedCount = sessions.filter((session) => session.status === 'skipped').length;
-  if (skippedCount > 0) attention.push(`${skippedCount} skipped`);
+  if (activeSkippedCount > 0) attention.push(`${activeSkippedCount} skipped`);
 
   let tone = 'on-track';
   if (!completionsAvailable) tone = 'data-unavailable';
-  else if (due - logged > 0) tone = 'behind';
+  else if (activeMissingCount > 0) tone = 'behind';
   else if (watchCount > 0) tone = 'watch';
   else if (proofGaps > 0) tone = 'proof';
 
@@ -749,15 +793,19 @@ function buildAthleteRecord(config) {
     completionPct: completionsAvailable && due ? Math.round((logged / due) * 100) : null,
     logged: completionsAvailable ? logged : null,
     due,
-    missingCount: completionsAvailable
+    missingCount: activeMissingCount,
+    factualMissingCount: completionsAvailable
       ? sessions.filter((session) => session.status === 'missing').length
       : 0,
     completionsAvailable,
     attachmentsAvailable,
     hrRowsAvailable,
     skippedCount,
+    activeSkippedCount,
     proofGaps,
     watchCount,
+    notificationsClearedAt,
+    notificationsClearedBy: config.notificationsClearedBy || null,
     attention,
     tone,
     weekRows,
@@ -904,8 +952,70 @@ function scanFromAnalytics(analytics, priorScan = {}) {
   };
 }
 
-const MOCK_ATHLETES = [
-  buildAthleteRecord({
+const MOCK_ATHLETE_CONFIGS = [];
+const MOCK_ATHLETES = [];
+const mockAthletePatches = {};
+
+function previewNotificationClears() {
+  return readJSONValue(PREVIEW_ALERT_CLEARS_KEY, {}) || {};
+}
+
+function persistPreviewNotificationClear(athleteId, clearedAt) {
+  const stored = { ...previewNotificationClears() };
+  if (clearedAt) stored[athleteId] = clearedAt;
+  else delete stored[athleteId];
+  writeJSON(PREVIEW_ALERT_CLEARS_KEY, stored);
+}
+
+function mockAthleteFromConfig(config) {
+  const patch = mockAthletePatches[config.id] || {};
+  const clears = previewNotificationClears();
+  const notificationsClearedAt = clears[config.id] || patch.notificationsClearedAt || config.notificationsClearedAt || null;
+  return buildAthleteRecord({
+    ...config,
+    ...patch,
+    flags: { ...(config.flags || {}), ...(patch.flags || {}) },
+    flagEventAt: { ...(config.flagEventAt || {}), ...(patch.flagEventAt || {}) },
+    missingProofs: patch.missingProofs ?? config.missingProofs,
+    proofEventAt: { ...(config.proofEventAt || {}), ...(patch.proofEventAt || {}) },
+    missing: patch.missing ?? config.missing,
+    missingEventAt: { ...(config.missingEventAt || {}), ...(patch.missingEventAt || {}) },
+    skipped: patch.skipped ?? config.skipped,
+    skipEventAt: { ...(config.skipEventAt || {}), ...(patch.skipEventAt || {}) },
+    notificationsClearedAt,
+    notificationsClearedBy: notificationsClearedAt ? (patch.notificationsClearedBy || config.notificationsClearedBy || 'preview-coach') : null,
+  });
+}
+
+function rebuildMockRoster() {
+  MOCK_ATHLETES.splice(0, MOCK_ATHLETES.length, ...MOCK_ATHLETE_CONFIGS.map(mockAthleteFromConfig));
+}
+
+function injectPreviewAthleteAlert(athleteId, patch = {}) {
+  const id = String(athleteId || '');
+  if (!id) return null;
+  mockAthletePatches[id] = {
+    ...(mockAthletePatches[id] || {}),
+    ...patch,
+    flags: { ...(mockAthletePatches[id]?.flags || {}), ...(patch.flags || {}) },
+    flagEventAt: { ...(mockAthletePatches[id]?.flagEventAt || {}), ...(patch.flagEventAt || {}) },
+    proofEventAt: { ...(mockAthletePatches[id]?.proofEventAt || {}), ...(patch.proofEventAt || {}) },
+    missingEventAt: { ...(mockAthletePatches[id]?.missingEventAt || {}), ...(patch.missingEventAt || {}) },
+    skipEventAt: { ...(mockAthletePatches[id]?.skipEventAt || {}), ...(patch.skipEventAt || {}) },
+  };
+  rebuildMockRoster();
+  renderRoster();
+  renderAthlete();
+  return getAthlete(id);
+}
+
+function rememberMock(config) {
+  MOCK_ATHLETE_CONFIGS.push(config);
+  MOCK_ATHLETES.push(mockAthleteFromConfig(config));
+  return MOCK_ATHLETES[MOCK_ATHLETES.length - 1];
+}
+
+rememberMock({
     id: 'alex',
     name: 'Alex Rivera',
     campLength: 7,
@@ -970,8 +1080,9 @@ const MOCK_ATHLETES = [
       { weekIndex: 0, timeSec: 402 },
       { weekIndex: 5, timeSec: 384 },
     ],
-  }),
-  buildAthleteRecord({
+  });
+
+rememberMock({
     id: 'maya',
     name: 'Maya Chen',
     campLength: 7,
@@ -1004,8 +1115,9 @@ const MOCK_ATHLETES = [
     },
     maxes: { '2:2': 171 },
     minutes: { '2:2': 16 },
-  }),
-  buildAthleteRecord({
+  });
+
+rememberMock({
     id: 'jordan',
     name: 'Jordan Hale',
     campLength: 7,
@@ -1018,6 +1130,12 @@ const MOCK_ATHLETES = [
     missing: ['0:4', '1:3'],
     skipped: ['0:3'],
     missingProofs: ['1:0'],
+    skipEventAt: { '0:3': '2026-08-05T18:00:00.000Z' },
+    proofEventAt: { '1:0': '2026-08-10T18:00:00.000Z' },
+    missingEventAt: {
+      '0:4': '2026-08-03T00:00:00.000Z',
+      '1:3': '2026-08-12T00:00:00.000Z',
+    },
     sessionNotes: {
       '0:3': 'Travel day. Gene approved the skip.',
     },
@@ -1036,8 +1154,9 @@ const MOCK_ATHLETES = [
       '0:2': 158,
       '1:2': 160,
     },
-  }),
-  buildAthleteRecord({
+  });
+
+rememberMock({
     id: 'sam',
     name: 'Sam Ortiz',
     campLength: 7,
@@ -1052,6 +1171,10 @@ const MOCK_ATHLETES = [
     flags: {
       '3:3': 'Easy-day HR sat in Tempo',
       '4:1': 'Benchmark avg 154 · Zone 2 is 106–123',
+    },
+    flagEventAt: {
+      '3:3': '2026-08-20T16:00:00.000Z',
+      '4:1': '2026-08-27T16:00:00.000Z',
     },
     benchmarks: [
       { weekIndex: 0, distance: 3.20, avgBpm: 138 },
@@ -1079,8 +1202,9 @@ const MOCK_ATHLETES = [
       '4:1': 154, '4:2': 164, '4:4': 170,
     },
     minutes: { '4:1': 30, '3:3': 15 },
-  }),
-  buildAthleteRecord({
+  });
+
+rememberMock({
     id: 'riley',
     name: 'Riley Brooks',
     campLength: 7,
@@ -1094,8 +1218,9 @@ const MOCK_ATHLETES = [
     missingProofs: [],
     benchmarks: [],
     sprints: [],
-  }),
-  buildAthleteRecord({
+  });
+
+rememberMock({
     id: 'avery',
     name: 'Avery Kim',
     campLength: 4,
@@ -1130,9 +1255,10 @@ const MOCK_ATHLETES = [
       '2:2': 163, '2:3': 136, '2:4': 138,
       '3:2': 154, '3:3': 135, '3:4': 137,
     },
-  }),
+  });
+
   // Jordan Tillman — coach personalized HR zone regression fixture (Max 197 / Rest 64).
-  buildAthleteRecord({
+rememberMock({
     id: 'jordan-tillman',
     name: 'Jordan Tillman',
     campLength: 7,
@@ -1166,8 +1292,7 @@ const MOCK_ATHLETES = [
       '0:1': 3.05,
       '1:1': 3.10,
     },
-  }),
-];
+  });
 
 function inferCurrentWeekIndex(fightDate, campLength, completionWeeks, campStartDate) {
   const fromStart = inferCampWeekIndex(campStartDate, campLength);
@@ -1312,7 +1437,23 @@ function isSkippedCloudCompletion(row, record = {}) {
     || log.status === 'skipped';
 }
 
-function liveAthleteConfig(profile, hrRow, completions, sprints, mileTests, note, email = '', campStartDate = '', attachments = [], sources = null) {
+function completionAlertEventAt(row, sprintRow = null, record = {}) {
+  const log = record.workoutLog || {};
+  return maxIsoTimestamp(
+    row?.updated_at,
+    row?.completed_at,
+    sprintRow?.updated_at,
+    sprintRow?.session_at,
+    sprintRow?.sessionAt,
+    record.updatedAt,
+    record.completedAt,
+    record.completed_at,
+    log.skippedAt,
+    log.updatedAt,
+  );
+}
+
+function liveAthleteConfig(profile, hrRow, completions, sprints, mileTests, note, email = '', campStartDate = '', attachments = [], sources = null, notificationsClearedAt = null, notificationsClearedBy = null) {
   const campLength = Number(profile.camp_length) === 4 ? 4 : 7;
   const sourceAvailability = sources || {};
   const completionsAvailable = sourceAvailability.completions !== false;
@@ -1343,6 +1484,10 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, mileTests, note
   const skipped = [];
   const missingProofs = [];
   const flags = {};
+  const flagEventAt = {};
+  const proofEventAt = {};
+  const skipEventAt = {};
+  const missingEventAt = {};
   const avgs = {};
   const maxes = {};
   const minutes = {};
@@ -1379,12 +1524,16 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, mileTests, note
         // Source outage must not fabricate Missing/Behind from an empty completions array.
         // Open-window unfinished sessions stay in `missing` so the UI can show Due Today
         // (not Logged); buildAthleteRecord maps open+unfinished → due-*, overdue → missing.
-        if (completionsAvailable) missing.push(key);
+        if (completionsAvailable) {
+          missing.push(key);
+          missingEventAt[key] = sessionBecameMissingAt(campStartDate, weekIndex, workout.day) || '';
+        }
         return;
       }
       const record = row.record_json && typeof row.record_json === 'object' ? row.record_json : {};
       if (isSkippedCloudCompletion(row, record)) {
         skipped.push(key);
+        skipEventAt[key] = completionAlertEventAt(row, sprintRow, record);
         const log = record.workoutLog || {};
         const skipNote = String(log.skipDetail || log.note || record.note || '').trim();
         const reason = String(log.skipReasonLabel || log.skipReason || '').trim();
@@ -1405,7 +1554,10 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, mileTests, note
           sessionAt: sprintRow?.session_at || sprintRow?.sessionAt,
           updatedAt: row.updated_at || sprintRow?.updated_at,
         });
-        if (!waived) missingProofs.push(key);
+        if (!waived) {
+          missingProofs.push(key);
+          proofEventAt[key] = completionAlertEventAt(row, sprintRow, record);
+        }
       }
       const log = record.workoutLog || {};
       const output = readOutputFromWorkoutLog({
@@ -1443,6 +1595,7 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, mileTests, note
       }
       if (Number.isFinite(avg) && Number.isFinite(tgt) && tgt > 0 && avg > tgt + 10 && !isSprintType(workout.type)) {
         flags[key] = `${workout.type} avg ${Math.round(avg)} · target ${Math.round(tgt)}`;
+        flagEventAt[key] = completionAlertEventAt(row, sprintRow, record);
       }
     });
   });
@@ -1473,6 +1626,12 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, mileTests, note
     skipped,
     missingProofs,
     flags,
+    flagEventAt,
+    proofEventAt,
+    skipEventAt,
+    missingEventAt,
+    notificationsClearedAt,
+    notificationsClearedBy,
     avgs,
     maxes,
     minutes,
@@ -1553,7 +1712,9 @@ function buildLiveRoster(payload) {
       emailByUser.get(normalizeUserId(profile.user_id)) || '',
       metaByUser.get(profile.user_id)?.camp_start_date || '',
       attachmentsByUser.get(profile.user_id) || [],
-      sourceAvailability
+      sourceAvailability,
+      metaByUser.get(profile.user_id)?.notifications_cleared_at || null,
+      metaByUser.get(profile.user_id)?.notifications_cleared_by || null
     )))
     .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
 }
@@ -1591,7 +1752,7 @@ function summaryCounts() {
     attention: list.filter((athlete) => athlete.tone !== 'on-track' && athlete.tone !== 'data-unavailable').length,
     onTrack: list.filter((athlete) => athlete.tone === 'on-track').length,
     unavailable: list.filter((athlete) => athlete.tone === 'data-unavailable').length,
-    missing: list.reduce((sum, athlete) => sum + (athlete.completionsAvailable === false ? 0 : athlete.missingCount), 0),
+    missing: list.reduce((sum, athlete) => sum + (athlete.completionsAvailable === false ? 0 : (athlete.factualMissingCount ?? athlete.missingCount)), 0),
   };
 }
 
@@ -1887,11 +2048,18 @@ function renderMetricCards(athlete) {
 
 function sessionDetail(session) {
   if (session.status === 'skipped') {
-    return session.note || 'Coach-approved skip. No workout proof required.';
+    const skipNote = session.note || 'Coach-approved skip. No workout proof required.';
+    return session.skipAlertActive === false ? `${skipNote} · reviewed` : skipNote;
   }
-  if (session.flag) return session.flag;
+  if (session.flag) {
+    return session.flagAlertActive === false ? `${session.flag} · reviewed` : session.flag;
+  }
   if (session.note) return session.note;
-  if (session.proof === 'missing') return 'Logged, but workout proof is missing.';
+  if (session.proof === 'missing') {
+    return session.proofAlertActive === false
+      ? 'Proof missing · reviewed'
+      : 'Logged, but workout proof is missing.';
+  }
   if (session.status === 'missing') return 'Assigned work not logged yet.';
   if (session.status === 'due-today') return 'Scheduled today — still inside the completion window.';
   if (session.status === 'due-weekend') return 'Scheduled this weekend — still inside the completion window.';
@@ -1916,7 +2084,7 @@ function sessionDetail(session) {
 function renderSessionRows(sessions) {
   if (!sessions.length) return '<p class="coach-trend-empty">No sessions in this view.</p>';
   return sessions.map((session) => `
-    <div class="coach-session-row is-${session.status}${session.flag ? ' has-flag' : ''}${session.proof === 'missing' ? ' has-proof-gap' : ''}">
+    <div class="coach-session-row is-${session.status}${session.flag ? ' has-flag' : ''}${session.proof === 'missing' ? ' has-proof-gap' : ''}${session.flagAlertActive === false || session.proofAlertActive === false ? ' is-reviewed' : ''}">
       <div>
         <span>${escapeHTML(session.weekLabel)} / ${escapeHTML(session.day)}</span>
         <strong>${escapeHTML(session.type)}</strong>
@@ -1943,6 +2111,28 @@ function renderDrill(athlete) {
     </div>
     <div class="coach-session-list">${renderSessionRows(rows)}</div>
   `;
+}
+
+function renderAttentionPanel(athlete) {
+  const clearable = hasClearableCoachAlerts(athlete);
+  const reviewedAt = athlete.notificationsClearedAt;
+  if (!athlete.attention.length && !reviewedAt) return '';
+  const bits = [];
+  if (athlete.attention.length) {
+    bits.push('<div class="info-kicker">Needs a look</div>');
+    bits.push(`<p>${escapeHTML(athlete.attention.join('. '))}.</p>`);
+  } else {
+    bits.push('<div class="info-kicker">Alerts reviewed</div>');
+  }
+  if (clearable) {
+    bits.push('<p class="coach-attention-help">Clear the current alerts after you\'ve reviewed or addressed them. Workout and proof data will not be changed. New alerts will still appear.</p>');
+    bits.push('<button type="button" class="page-save-btn coach-clear-alerts-btn" id="coach-clear-alerts-btn" data-coach-clear-alerts>CLEAR CURRENT ALERTS</button>');
+  }
+  if (reviewedAt) {
+    const when = formatAlertsReviewedAt(reviewedAt);
+    bits.push(`<p class="coach-alerts-reviewed">Alerts reviewed ${escapeHTML(when)} · <button type="button" class="coach-restore-alerts-btn" id="coach-restore-alerts-btn" data-coach-restore-alerts>RESTORE</button></p>`);
+  }
+  return bits.join('');
 }
 
 function renderAthlete() {
@@ -2014,10 +2204,10 @@ function renderAthlete() {
 
   const attention = document.getElementById('coach-athlete-attention');
   if (attention) {
-    attention.hidden = athlete.attention.length === 0;
-    attention.innerHTML = athlete.attention.length
-      ? `<div class="info-kicker">Needs a look</div><p>${escapeHTML(athlete.attention.join('. '))}.</p>`
-      : '';
+    const html = renderAttentionPanel(athlete);
+    attention.hidden = !html;
+    attention.innerHTML = html;
+    attention.classList.toggle('is-reviewed-only', Boolean(html) && !athlete.attention.length);
   }
 
   const missedRoot = document.getElementById('coach-athlete-missed');
@@ -2269,6 +2459,60 @@ async function saveOpenNote() {
   coachHooks?.showToast?.('COACH NOTE SAVED LOCALLY');
 }
 
+async function clearOpenAlerts() {
+  if (!selectedAthleteId) return;
+  const athlete = getAthlete(selectedAthleteId);
+  if (!hasClearableCoachAlerts(athlete)) return;
+  const name = athlete?.name || 'this athlete';
+  if (!window.confirm(`Mark all current alerts for ${name} as reviewed?\nThis does not change workout data. New alerts will appear normally.`)) {
+    return;
+  }
+  const btn = document.getElementById('coach-clear-alerts-btn');
+  if (btn) btn.disabled = true;
+  try {
+    if (rosterSource === 'live') {
+      await saveCoachNotificationClear(selectedAthleteId);
+      await loadLiveRoster();
+    } else {
+      persistPreviewNotificationClear(selectedAthleteId, new Date().toISOString());
+      rebuildMockRoster();
+    }
+    renderAthlete();
+    renderRoster();
+    coachHooks?.showToast?.('ALERTS REVIEWED');
+  } catch (error) {
+    console.warn('Coach alert clear failed', error);
+    coachHooks?.showToast?.('COULD NOT CLEAR ALERTS');
+  } finally {
+    const nextBtn = document.getElementById('coach-clear-alerts-btn');
+    if (nextBtn) nextBtn.disabled = false;
+  }
+}
+
+async function restoreOpenAlerts() {
+  if (!selectedAthleteId) return;
+  const btn = document.getElementById('coach-restore-alerts-btn');
+  if (btn) btn.disabled = true;
+  try {
+    if (rosterSource === 'live') {
+      await restoreCoachNotificationClear(selectedAthleteId);
+      await loadLiveRoster();
+    } else {
+      persistPreviewNotificationClear(selectedAthleteId, null);
+      rebuildMockRoster();
+    }
+    renderAthlete();
+    renderRoster();
+    coachHooks?.showToast?.('ALERTS RESTORED');
+  } catch (error) {
+    console.warn('Coach alert restore failed', error);
+    coachHooks?.showToast?.('COULD NOT RESTORE ALERTS');
+  } finally {
+    const nextBtn = document.getElementById('coach-restore-alerts-btn');
+    if (nextBtn) nextBtn.disabled = false;
+  }
+}
+
 async function loadLiveRoster() {
   if (!isCoachUser()) {
     rosterSource = 'mock';
@@ -2354,6 +2598,7 @@ export async function refreshCoachPreview() {
   else {
     rosterSource = 'mock';
     liveAthletes = null;
+    rebuildMockRoster();
   }
 }
 
@@ -2404,6 +2649,20 @@ export function initCoachPreview(hooks) {
       rosterFilter = filterBtn.dataset.coachFilter || 'all';
       renderRoster();
     }
+
+    const clearAlertsBtn = event.target.closest('[data-coach-clear-alerts]');
+    if (clearAlertsBtn && canAccessCoachScreens()) {
+      event.preventDefault();
+      if (clearAlertsBtn.disabled) return;
+      clearOpenAlerts();
+    }
+
+    const restoreAlertsBtn = event.target.closest('[data-coach-restore-alerts]');
+    if (restoreAlertsBtn && canAccessCoachScreens()) {
+      event.preventDefault();
+      if (restoreAlertsBtn.disabled) return;
+      restoreOpenAlerts();
+    }
   }, true);
 
   document.getElementById('coach-roster-search')?.addEventListener('input', (event) => {
@@ -2436,6 +2695,13 @@ export function initCoachPreview(hooks) {
     const screen = document.querySelector('.screen.active')?.id;
     if (isCoachScreen(screen)) renderCoachPage(screen);
   });
+
+  if (isLocalHost() && typeof window !== 'undefined') {
+    window.__ringReadyCoachPreview = {
+      injectAthleteAlert: injectPreviewAthleteAlert,
+      rebuildMockRoster,
+    };
+  }
 }
 
 
@@ -2444,4 +2710,5 @@ export {
   buildAthleteRecord,
   buildLiveRoster,
   liveAthleteConfig,
+  injectPreviewAthleteAlert,
 };

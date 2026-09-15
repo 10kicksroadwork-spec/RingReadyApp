@@ -259,7 +259,7 @@ export async function loadCoachRosterPayload() {
       return data || [];
     }),
     loadCoachTable('coach_roster_exclusions'),
-    loadCoachTable('coach_athlete_meta'),
+    loadCoachTable('coach_athlete_meta', 'athlete_user_id,camp_start_date,notifications_cleared_at,notifications_cleared_by,updated_by,updated_at'),
     loadCoachTable('workout_attachments', COACH_ATTACHMENT_COLUMNS),
   ]);
   const sourceErrors = {};
@@ -321,6 +321,50 @@ export async function saveCoachCampStartDate(athleteUserId, campStartDate) {
       updated_by: user.id,
       updated_at: new Date().toISOString(),
     }, { onConflict: 'athlete_user_id' });
+  if (error) throw error;
+  return true;
+}
+
+/**
+ * Acknowledge every current coach alert for an athlete.
+ * Writes only coach_athlete_meta watermark fields — never workout, proof, or HR rows.
+ */
+export async function saveCoachNotificationClear(athleteUserId) {
+  const user = getCurrentUser();
+  if (!isSupabaseConfigured || !supabase || !user || !isCoachUser() || !athleteUserId) return null;
+  const now = new Date().toISOString();
+  const { error } = await supabase
+    .from('coach_athlete_meta')
+    .upsert({
+      athlete_user_id: athleteUserId,
+      notifications_cleared_at: now,
+      notifications_cleared_by: user.id,
+      updated_by: user.id,
+      updated_at: now,
+    }, { onConflict: 'athlete_user_id' });
+  if (error) throw error;
+  return {
+    athlete_user_id: athleteUserId,
+    notifications_cleared_at: now,
+    notifications_cleared_by: user.id,
+  };
+}
+
+/**
+ * Undo an accidental acknowledgement so unresolved historical alerts return.
+ */
+export async function restoreCoachNotificationClear(athleteUserId) {
+  const user = getCurrentUser();
+  if (!isSupabaseConfigured || !supabase || !user || !isCoachUser() || !athleteUserId) return null;
+  const { error } = await supabase
+    .from('coach_athlete_meta')
+    .update({
+      notifications_cleared_at: null,
+      notifications_cleared_by: null,
+      updated_by: user.id,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('athlete_user_id', athleteUserId);
   if (error) throw error;
   return true;
 }
