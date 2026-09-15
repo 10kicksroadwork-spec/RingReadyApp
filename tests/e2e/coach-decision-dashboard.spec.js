@@ -165,7 +165,7 @@ test.describe('coach decision dashboard drawer and lenses', () => {
     await expect(page.locator('#coach-athlete-attention')).toContainText(/Alerts reviewed/i);
     await expect(page.locator('[data-coach-restore-alerts]')).toBeVisible();
 
-    await page.locator('[data-page-target="coach-dashboard"]').click();
+    await page.locator('#coach-athlete [data-page-target="coach-dashboard"]').click();
     await expect(page.locator('#coach-dashboard.screen.active')).toBeVisible();
     await expect(page.locator('.coach-roster-card[data-coach-athlete="sam"] .coach-status-chip')).toHaveText(/On track/i);
     const clearedCount = Number(await page.locator('#coach-attention-count').textContent());
