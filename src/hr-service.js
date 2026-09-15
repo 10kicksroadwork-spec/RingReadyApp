@@ -1,5 +1,11 @@
 import { HR_STALE_MS } from './constants.js';
-import { getPlatformInfo } from './platform.js';
+import {
+  getPlatformInfo,
+  isIOSWebBluetoothBlocked,
+  IOS_MANUAL_HR_MESSAGE,
+  IOS_MANUAL_HR_SETUP_COPY,
+  IOS_MANUAL_HR_STATUS,
+} from './platform.js';
 
 export const hrState = {
   source: 'manual',
@@ -32,6 +38,10 @@ export async function initHRTransport() {
     nativeModule = await import('./ble-native.js');
     await nativeModule.initNativeBLE({ onHR: handleTransportHR });
     transport = 'native';
+    return;
+  }
+
+  if (isIOSWebBluetoothBlocked(platform)) {
     return;
   }
 
@@ -134,17 +144,32 @@ export function setBLEUI(cls, name, status) {
   document.getElementById('ble-status').textContent = status;
 }
 
+function setBleConnectEnabled(btn, enabled) {
+  btn.disabled = !enabled;
+  btn.style.opacity = enabled ? '1' : '0.55';
+  if (enabled) {
+    btn.removeAttribute('aria-disabled');
+    btn.setAttribute('aria-label', 'Connect heart rate monitor');
+    return;
+  }
+  btn.setAttribute('aria-disabled', 'true');
+}
+
 export function applyPlatformBLEMode() {
   const info = getPlatformInfo();
   const btn = document.getElementById('ble-btn');
   const name = document.getElementById('ble-name');
   const status = document.getElementById('ble-status');
+  const disclaimer = document.getElementById('hr-setup-disclaimer');
+
+  if (disclaimer) {
+    disclaimer.hidden = isIOSWebBluetoothBlocked(info);
+  }
 
   if (!btn || !name || !status) return;
   if (hrState.connected) return;
 
-  btn.disabled = false;
-  btn.style.opacity = '1';
+  setBleConnectEnabled(btn, true);
 
   if (info.supportsNativeBLE) {
     name.textContent = 'Not Connected';
@@ -153,12 +178,14 @@ export function applyPlatformBLEMode() {
     return;
   }
 
-  if (info.isIOS && !info.isCapacitor && !info.supportsWebBLE) {
-    name.textContent = 'Manual Mode';
-    status.textContent = 'For BLE on iPhone/iPad, open Ring Ready in Bluefy';
-    btn.textContent = 'MANUAL';
-    btn.disabled = true;
-    btn.style.opacity = '0.55';
+  if (isIOSWebBluetoothBlocked(info)) {
+    name.textContent = 'Manual HR';
+    status.textContent = IOS_MANUAL_HR_STATUS;
+    btn.textContent = 'CONNECT';
+    setBleConnectEnabled(btn, false);
+    btn.setAttribute('aria-label', IOS_MANUAL_HR_MESSAGE);
+    const setupCopy = document.getElementById('hr-setup-copy');
+    if (setupCopy) setupCopy.textContent = IOS_MANUAL_HR_SETUP_COPY;
     return;
   }
 
@@ -166,8 +193,7 @@ export function applyPlatformBLEMode() {
     name.textContent = 'Manual Mode';
     status.textContent = 'Bluetooth unavailable in this browser';
     btn.textContent = 'MANUAL';
-    btn.disabled = true;
-    btn.style.opacity = '0.55';
+    setBleConnectEnabled(btn, false);
     return;
   }
 
@@ -182,18 +208,19 @@ export async function connectHR() {
     return;
   }
 
+  const info = getPlatformInfo();
+
+  if (isIOSWebBluetoothBlocked(info)) {
+    applyPlatformBLEMode();
+    uiHooks?.showToast(IOS_MANUAL_HR_MESSAGE);
+    return;
+  }
+
   // Intentional user connect re-opens transport ingress after an account boundary.
   acceptTransportHR = true;
 
-  const info = getPlatformInfo();
-
   if (info.supportsNativeBLE && nativeModule) {
     return connectNative();
-  }
-
-  if (info.isIOS && !info.isCapacitor && !info.supportsWebBLE) {
-    uiHooks?.showToast('USE BLUEFY FOR BLE ON IPHONE/IPAD');
-    return;
   }
 
   if (!info.supportsWebBLE || !webModule) {
@@ -253,11 +280,26 @@ export const hrServiceTestHooks = {
   beginAccountBoundaryHRDisconnect,
   isAcceptingTransportHR: () => acceptTransportHR,
   getBoundaryGeneration: () => hrBoundaryGeneration,
+  getTransportForTest: () => transport,
+  hasWebModuleForTest: () => !!webModule,
   setAcceptTransportHRForTest(value) {
     acceptTransportHR = !!value;
   },
   setDisconnectOverrideForTest(fn) {
     disconnectOverrideForTest = typeof fn === 'function' ? fn : null;
+  },
+  resetTransportForTest() {
+    transport = null;
+    webModule = null;
+    nativeModule = null;
+    acceptTransportHR = true;
+    uiHooks = null;
+    hrState.source = 'manual';
+    hrState.connected = false;
+    hrState.deviceName = null;
+    hrState.current = null;
+    hrState.avg = null;
+    hrState.lastAt = null;
   },
 };
 
