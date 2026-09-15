@@ -2126,7 +2126,7 @@ function renderAttentionPanel(athlete) {
   }
   if (clearable) {
     bits.push('<p class="coach-attention-help">Clear the current alerts after you\'ve reviewed or addressed them. Workout and proof data will not be changed. New alerts will still appear.</p>');
-    bits.push('<button type="button" class="page-save-btn coach-clear-alerts-btn" id="coach-clear-alerts-btn" data-coach-clear-alerts>CLEAR CURRENT ALERTS</button>');
+    bits.push('<button type="button" class="start-btn page-save-btn coach-clear-alerts-btn" id="coach-clear-alerts-btn" data-coach-clear-alerts>CLEAR CURRENT ALERTS</button>');
   }
   if (reviewedAt) {
     const when = formatAlertsReviewedAt(reviewedAt);
