@@ -160,9 +160,8 @@ export const BREATHING_VIDEO_URL = 'https://www.youtube.com/watch?v=oWfEcpmz8X8'
 export const SPRINT_GUIDANCE = [
   'Go all out on every sprint rep.',
   'Recover strong in the rest — that is the quality that matters.',
-  'Input Sprint HR immediately after the rep — don’t wait for it to climb as high as it will go. Then log Rest HR the instant 60 seconds is up.',
-  'Record HR after 60 seconds of rest. The timer will prompt you.',
-  'The 85% run is warmup only. Take a couple minutes of rest after it, then start the sprints. The 5 min walk is the cooldown after the last rep.',
+  'Input Sprint HR immediately after the sprint rep — don’t wait for it to climb as high as it will go. Then log Rest HR the instant 60 seconds rest is up, you will get 30 seconds of additional rest.',
+  'The 85% run is warmup only. Take a couple minutes of rest after it (do not sit and get cold), then start the sprints. The 5 min walk is the cooldown after the last rep.',
 ];
 
 export const SHADOWBOXING_GUIDANCE = [
