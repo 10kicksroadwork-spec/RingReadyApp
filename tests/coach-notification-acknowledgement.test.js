@@ -5,7 +5,7 @@ import {
   hasClearableCoachAlerts,
   isCoachAlertActive,
 } from '../src/coach-notifications.js';
-import { buildAthleteRecord, buildLiveRoster } from '../src/coach-preview.js';
+import { buildAthleteRecord, buildLiveRoster, completionOccurrenceAt, skipAlertEventAt } from '../src/coach-preview.js';
 
 const AUTH_SRC = readFileSync('src/auth.js', 'utf8');
 const MIGRATION_024 = readFileSync('scripts/migrations/024_coach_notification_acknowledgement.sql', 'utf8');
@@ -86,7 +86,21 @@ function loggedCompletion({
   };
 }
 
-function currentWeekLogged({ hotUpdatedAt = null } = {}) {
+function withNoteOnlyEdit(completions, updatedAt = '2026-09-16T18:00:00.000Z') {
+  return completions.map((row) => ({
+    ...row,
+    updated_at: updatedAt,
+    record_json: {
+      ...(row.record_json || {}),
+      workoutLog: {
+        ...((row.record_json && row.record_json.workoutLog) || {}),
+        note: 'Updated note after coach reviewed alerts',
+      },
+    },
+  }));
+}
+
+function currentWeekLogged() {
   return [
     loggedCompletion({
       workoutIndex: 0,
@@ -100,7 +114,6 @@ function currentWeekLogged({ hotUpdatedAt = null } = {}) {
       avgBpm: 160,
       targetBpm: 137,
       workoutType: 'Benchmark Run + S&C',
-      updatedAt: hotUpdatedAt || '2026-09-10T12:00:00.000Z',
       attachmentId: 'att-1',
     }),
   ];
@@ -116,8 +129,28 @@ describe('coach alert watermark helpers', () => {
     expect(isCoachAlertActive('2026-09-16T08:00:00.000Z', '2026-09-15T11:50:00.000Z')).toBe(true);
   });
 
-  it('dates a Tuesday miss to Wednesday local midnight after grace', () => {
-    expect(sessionBecameMissingAt('2026-09-07', 0, 'Tuesday')).toBe(new Date('2026-09-09T00:00:00').toISOString());
+  it('ignores generic updated_at when dating an HR/proof occurrence', () => {
+    expect(completionOccurrenceAt({
+      completed_at: '2026-09-10T12:00:00.000Z',
+      updated_at: '2026-09-16T18:00:00.000Z',
+      record_json: { workoutLog: { note: 'only a note', updatedAt: '2026-09-16T18:00:00.000Z' } },
+    }, null, {
+      updatedAt: '2026-09-16T18:00:00.000Z',
+      completedAt: '2026-09-10T12:00:00.000Z',
+    })).toBe('2026-09-10T12:00:00.000Z');
+  });
+
+  it('prefers skippedAt over generic completion updated_at', () => {
+    expect(skipAlertEventAt({
+      completed_at: '2026-09-10T12:00:00.000Z',
+      updated_at: '2026-09-16T18:00:00.000Z',
+    }, {
+      completedAt: '2026-09-10T12:00:00.000Z',
+      workoutLog: {
+        skippedAt: '2026-09-10T12:05:00.000Z',
+        note: 'updated later',
+      },
+    })).toBe('2026-09-10T12:05:00.000Z');
   });
 });
 
@@ -216,9 +249,9 @@ describe('coach alert acknowledgement', () => {
     expect(athlete.attention.join(' ')).toMatch(/proof gap/i);
   });
 
-  it('F) old completion edited after clear and newly violates HR rule => alert returns via updated_at', () => {
+  it('F) old completion updated_at after clear does not resurrect Watch HR', () => {
     const roster = buildLiveRoster(livePayload({
-      completions: currentWeekLogged({ hotUpdatedAt: '2026-09-16T12:00:00.000Z' }),
+      completions: withNoteOnlyEdit(currentWeekLogged()),
       attachments: [],
       meta: [{
         athlete_user_id: 'u-elizabeth',
@@ -227,8 +260,8 @@ describe('coach alert acknowledgement', () => {
       }],
     }));
     expect(roster).toHaveLength(1);
-    expect(roster[0].watchCount).toBeGreaterThan(0);
-    expect(roster[0].tone).toBe('watch');
+    expect(roster[0].watchCount).toBe(0);
+    expect(roster[0].tone).toBe('on-track');
   });
 
   it('G/H/I) clearing writes only coach_athlete_meta watermark fields', () => {
@@ -368,6 +401,94 @@ describe('coach alert acknowledgement', () => {
     expect(athlete.factualMissingCount).toBe(1);
     expect(athlete.missingCount).toBe(0);
     expect(athlete.tone).toBe('on-track');
+  });
+
+  it('M) HR flag cleared then note-only updated_at edit keeps Watch HR reviewed', () => {
+    const original = currentWeekLogged();
+    const edited = withNoteOnlyEdit(original);
+    expect(edited[1].avg_bpm).toBe(original[1].avg_bpm);
+    expect(edited[1].completed_at).toBe(original[1].completed_at);
+    expect(edited[1].updated_at > original[1].updated_at).toBe(true);
+
+    const roster = buildLiveRoster(livePayload({
+      completions: edited,
+      attachments: [],
+      meta: [{
+        athlete_user_id: 'u-elizabeth',
+        camp_start_date: '2026-09-14',
+        notifications_cleared_at: '2026-09-15T11:50:00.000Z',
+      }],
+    }));
+    expect(roster[0].watchCount).toBe(0);
+    expect(roster[0].tone).toBe('on-track');
+    expect(roster[0].sessions.find((session) => session.key === '0:1')?.flag).toBeTruthy();
+    expect(roster[0].sessions.find((session) => session.key === '0:1')?.flagAlertActive).toBe(false);
+  });
+
+  it('N) proof gap cleared then note-only updated_at edit keeps Proof Gap reviewed', () => {
+    const completions = withNoteOnlyEdit([
+      loggedCompletion({
+        workoutIndex: 0,
+        avgBpm: 160,
+        targetBpm: 172,
+        workoutType: 'Sprint Intervals',
+        attachmentId: 'att-0',
+        completedAt: '2026-09-14T18:00:00.000Z',
+      }),
+      loggedCompletion({
+        workoutIndex: 1,
+        avgBpm: 140,
+        targetBpm: 137,
+        workoutType: 'Benchmark Run + S&C',
+        attachmentId: null,
+        completedAt: '2026-09-15T12:00:00.000Z',
+      }),
+    ]);
+    const roster = buildLiveRoster(livePayload({
+      completions,
+      attachments: [],
+      meta: [{
+        athlete_user_id: 'u-elizabeth',
+        camp_start_date: '2026-09-14',
+        notifications_cleared_at: '2026-09-15T18:00:00.000Z',
+      }],
+    }));
+    expect(roster[0].proofGaps).toBe(0);
+    expect(roster[0].watchCount).toBe(0);
+    expect(roster[0].tone).toBe('on-track');
+    expect(roster[0].sessions.find((session) => session.key === '0:1')?.proof).toBe('missing');
+    expect(roster[0].sessions.find((session) => session.key === '0:1')?.proofAlertActive).toBe(false);
+  });
+
+  it('a genuinely newer session after clear still returns Watch HR', () => {
+    const roster = buildLiveRoster(livePayload({
+      completions: [
+        loggedCompletion({
+          workoutIndex: 0,
+          avgBpm: 160,
+          targetBpm: 172,
+          workoutType: 'Sprint Intervals',
+          attachmentId: 'att-0',
+          completedAt: '2026-09-14T18:00:00.000Z',
+        }),
+        loggedCompletion({
+          workoutIndex: 1,
+          avgBpm: 160,
+          targetBpm: 137,
+          workoutType: 'Benchmark Run + S&C',
+          attachmentId: 'att-1',
+          completedAt: '2026-09-16T12:00:00.000Z',
+        }),
+      ],
+      attachments: [],
+      meta: [{
+        athlete_user_id: 'u-elizabeth',
+        camp_start_date: '2026-09-14',
+        notifications_cleared_at: '2026-09-15T11:50:00.000Z',
+      }],
+    }));
+    expect(roster[0].watchCount).toBeGreaterThan(0);
+    expect(roster[0].tone).toBe('watch');
   });
 });
 

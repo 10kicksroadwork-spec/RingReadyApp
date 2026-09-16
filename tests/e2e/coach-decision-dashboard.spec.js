@@ -178,11 +178,54 @@ test.describe('coach decision dashboard drawer and lenses', () => {
 
     await page.evaluate(() => {
       window.__ringReadyCoachPreview.injectAthleteAlert('sam', {
+        sessionNotes: { '4:1': 'Updated workout note after alerts were reviewed' },
+      });
+    });
+    await expect(page.locator('.coach-roster-card[data-coach-athlete="sam"] .coach-status-chip')).toHaveText(/On track/i);
+    expect(Number(await page.locator('#coach-attention-count').textContent())).toBe(clearedCount);
+
+    await page.evaluate(() => {
+      window.__ringReadyCoachPreview.injectAthleteAlert('sam', {
         flags: { '4:3': 'Easy Run avg 165 · target 140' },
         flagEventAt: { '4:3': new Date().toISOString() },
       });
     });
     await expect(page.locator('.coach-roster-card[data-coach-athlete="sam"] .coach-status-chip')).toHaveText(/Watch HR/i);
     expect(Number(await page.locator('#coach-attention-count').textContent())).toBe(beforeCount);
+  });
+
+  test('cleared proof gap stays reviewed after a note-only edit', async ({ page }) => {
+    await page.goto('/?coach=1');
+    await expect(page.locator('#coach-dashboard.screen.active')).toBeVisible({ timeout: 15000 });
+
+    const jordanCard = page.locator('.coach-roster-card[data-coach-athlete="jordan"]');
+    await expect(jordanCard).toBeVisible();
+    await expect(jordanCard.locator('.coach-status-chip')).not.toHaveText(/On track/i);
+    const beforeCount = Number(await page.locator('#coach-attention-count').textContent());
+    expect(beforeCount).toBeGreaterThan(0);
+
+    await jordanCard.click();
+    await expect(page.locator('#coach-athlete.screen.active')).toBeVisible();
+    await expect(page.locator('#coach-athlete-name')).toContainText(/Jordan Hale/i);
+    await expect(page.locator('#coach-athlete-attention')).toContainText(/proof gap/i);
+    await expect(page.locator('[data-coach-clear-alerts]')).toBeVisible();
+
+    page.once('dialog', async (dialog) => {
+      await dialog.accept();
+    });
+    await page.locator('[data-coach-clear-alerts]').click();
+    await expect(page.locator('#coach-athlete-status')).toHaveText(/On track/i);
+
+    await page.locator('#coach-athlete [data-page-target="coach-dashboard"]').click();
+    await expect(page.locator('#coach-dashboard.screen.active')).toBeVisible();
+    await expect(page.locator('.coach-roster-card[data-coach-athlete="jordan"] .coach-status-chip')).toHaveText(/On track/i);
+
+    await page.evaluate(() => {
+      window.__ringReadyCoachPreview.injectAthleteAlert('jordan', {
+        sessionNotes: { '1:0': 'Updated workout note after proof alerts were reviewed' },
+      });
+    });
+    await expect(page.locator('.coach-roster-card[data-coach-athlete="jordan"] .coach-status-chip')).toHaveText(/On track/i);
+    expect(Number(await page.locator('#coach-attention-count').textContent())).toBe(beforeCount - 1);
   });
 });

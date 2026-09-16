@@ -1437,19 +1437,26 @@ function isSkippedCloudCompletion(row, record = {}) {
     || log.status === 'skipped';
 }
 
-function completionAlertEventAt(row, sprintRow = null, record = {}) {
-  const log = record.workoutLog || {};
+/**
+ * Timestamp of the finalized workout/session, not the last row mutation.
+ * Note edits bump workout_completions.updated_at without creating a new HR/proof event.
+ */
+function completionOccurrenceAt(row, sprintRow = null, record = {}) {
   return maxIsoTimestamp(
-    row?.updated_at,
     row?.completed_at,
-    sprintRow?.updated_at,
     sprintRow?.session_at,
     sprintRow?.sessionAt,
-    record.updatedAt,
     record.completedAt,
     record.completed_at,
+  );
+}
+
+function skipAlertEventAt(row, record = {}) {
+  const log = record.workoutLog || {};
+  return maxIsoTimestamp(
     log.skippedAt,
-    log.updatedAt,
+    row?.completed_at,
+    record.completedAt,
   );
 }
 
@@ -1533,7 +1540,7 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, mileTests, note
       const record = row.record_json && typeof row.record_json === 'object' ? row.record_json : {};
       if (isSkippedCloudCompletion(row, record)) {
         skipped.push(key);
-        skipEventAt[key] = completionAlertEventAt(row, sprintRow, record);
+        skipEventAt[key] = skipAlertEventAt(row, record);
         const log = record.workoutLog || {};
         const skipNote = String(log.skipDetail || log.note || record.note || '').trim();
         const reason = String(log.skipReasonLabel || log.skipReason || '').trim();
@@ -1556,7 +1563,7 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, mileTests, note
         });
         if (!waived) {
           missingProofs.push(key);
-          proofEventAt[key] = completionAlertEventAt(row, sprintRow, record);
+          proofEventAt[key] = completionOccurrenceAt(row, sprintRow, record);
         }
       }
       const log = record.workoutLog || {};
@@ -1595,7 +1602,7 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, mileTests, note
       }
       if (Number.isFinite(avg) && Number.isFinite(tgt) && tgt > 0 && avg > tgt + 10 && !isSprintType(workout.type)) {
         flags[key] = `${workout.type} avg ${Math.round(avg)} · target ${Math.round(tgt)}`;
-        flagEventAt[key] = completionAlertEventAt(row, sprintRow, record);
+        flagEventAt[key] = completionOccurrenceAt(row, sprintRow, record);
       }
     });
   });
@@ -2711,4 +2718,6 @@ export {
   buildLiveRoster,
   liveAthleteConfig,
   injectPreviewAthleteAlert,
+  completionOccurrenceAt,
+  skipAlertEventAt,
 };
