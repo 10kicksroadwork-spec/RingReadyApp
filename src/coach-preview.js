@@ -2597,8 +2597,33 @@ export function openCoachPreviewIfRequested() {
   return true;
 }
 
+function setCoachToolsNotesExpanded(expanded) {
+  const body = document.getElementById('coach-tools-notes-body');
+  const toggle = document.getElementById('coach-tools-notes-toggle');
+  const label = document.getElementById('coach-tools-notes-toggle-label');
+  if (!body || !toggle) return;
+  const open = Boolean(expanded);
+  body.hidden = !open;
+  toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (label) label.textContent = open ? 'HIDE' : 'SHOW';
+}
+
+function collapseCoachToolsNotes() {
+  setCoachToolsNotesExpanded(false);
+}
+
+function toggleCoachToolsNotes() {
+  const toggle = document.getElementById('coach-tools-notes-toggle');
+  const expanded = toggle?.getAttribute('aria-expanded') === 'true';
+  setCoachToolsNotesExpanded(!expanded);
+}
+
 export function setSelectedCoachAthlete(id) {
-  selectedAthleteId = String(id || '');
+  const nextId = String(id || '');
+  if (nextId !== String(selectedAthleteId || '')) {
+    collapseCoachToolsNotes();
+  }
+  selectedAthleteId = nextId;
   athleteDrill = '';
 }
 
@@ -2695,6 +2720,10 @@ export function initCoachPreview(hooks) {
   document.getElementById('coach-athlete-select')?.addEventListener('change', (event) => {
     setSelectedCoachAthlete(event.currentTarget.value);
     renderAthlete();
+  });
+
+  document.getElementById('coach-tools-notes-toggle')?.addEventListener('click', () => {
+    toggleCoachToolsNotes();
   });
 
   document.getElementById('coach-note-save-btn')?.addEventListener('click', saveOpenNote);

@@ -78,19 +78,24 @@ test.describe('coach decision dashboard drawer and lenses', () => {
     await expect(page.locator('#coach-athlete-name')).toContainText(/Alex/i);
     await expect(page.locator('#coach-athlete-select')).toHaveValue('alex');
     await expect(page.locator('#coach-athlete-guidance-label')).toContainText(/Generated guidance/i);
-    await expect(page.locator('#coach-athlete-notes-kicker')).toContainText(/Coach-authored notes/i);
+    await expect(page.locator('#coach-tools-notes-toggle')).toBeVisible();
+    await expect(page.locator('#coach-tools-notes-toggle')).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.locator('#coach-tools-notes-body')).toBeHidden();
+    await expect(page.locator('#coach-athlete-zone-heatmap')).toBeVisible();
+    await expect(page.locator('#coach-athlete-hr-pace')).toBeVisible();
 
     const detailBench = page.locator('.coach-metric-card').filter({ hasText: 'Benchmark Run' }).locator('strong');
     await expect(detailBench).toHaveText(aggregateBench || '');
     await expect(detailBench).toHaveText(/\d+\.\d/);
     await expect(page.locator('.coach-metric-card').filter({ hasText: 'Performance Index' }).locator('strong')).toHaveText(/\d+\.\d/);
 
+    await page.locator('#coach-tools-notes-toggle').click();
+    await expect(page.locator('#coach-tools-notes-toggle')).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.locator('#coach-athlete-notes-kicker')).toContainText(/Coach-authored notes/i);
     await expect(page.locator('#coach-athlete-mile-test')).toBeVisible();
     await expect(page.locator('#coach-athlete-mile-test-body')).toContainText(/Baseline/i);
     await expect(page.locator('#coach-athlete-mile-test-body')).toContainText(/Latest/i);
     await expect(page.locator('#coach-athlete-mile-test-body')).toContainText(/Delta/i);
-    await expect(page.locator('#coach-athlete-zone-heatmap')).toBeVisible();
-    await expect(page.locator('#coach-athlete-hr-pace')).toBeVisible();
   });
 
   test('recovery aggregate matches Detailed Summary latest First-5 value', async ({ page }) => {
@@ -227,5 +232,51 @@ test.describe('coach decision dashboard drawer and lenses', () => {
     });
     await expect(page.locator('.coach-roster-card[data-coach-athlete="jordan"] .coach-status-chip')).toHaveText(/On track/i);
     expect(Number(await page.locator('#coach-attention-count').textContent())).toBe(beforeCount - 1);
+  });
+
+  test('coach tools & notes collapse keeps values and collapses on athlete switch', async ({ page }) => {
+    await openCoachPreview(page);
+    await page.locator('.coach-roster-card[data-coach-athlete="alex"]').click();
+    await expect(page.locator('#coach-athlete.screen.active')).toBeVisible();
+    await expect(page.locator('#coach-athlete-name')).toContainText(/Alex/i);
+
+    const toggle = page.locator('#coach-tools-notes-toggle');
+    const body = page.locator('#coach-tools-notes-body');
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(toggle.locator('#coach-tools-notes-toggle-label')).toHaveText(/SHOW/i);
+    await expect(body).toBeHidden();
+    await expect(page.locator('#coach-athlete-zone-heatmap')).toBeVisible();
+    await expect(page.locator('#coach-athlete-hr-pace')).toBeVisible();
+
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    await expect(toggle.locator('#coach-tools-notes-toggle-label')).toHaveText(/HIDE/i);
+    await expect(body).toBeVisible();
+    await expect(page.locator('#coach-athlete-start-date')).toBeVisible();
+    await expect(page.locator('#coach-athlete-mile-test')).toBeVisible();
+    await expect(page.locator('#coach-athlete-note')).toBeVisible();
+    await expect(page.locator('#coach-clean-slate-btn')).toBeVisible();
+    await expect(page.locator('#coach-clean-slate-btn')).toBeEnabled();
+
+    const noteValue = 'Keep Z2 easy · draft note for collapse test';
+    await page.locator('#coach-athlete-note').fill(noteValue);
+    await page.locator('#coach-athlete-start-date').fill('2026-09-07');
+
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(body).toBeHidden();
+    await expect(page.locator('#coach-athlete-note')).toHaveValue(noteValue);
+    await expect(page.locator('#coach-athlete-start-date')).toHaveValue('2026-09-07');
+
+    await toggle.click();
+    await expect(body).toBeVisible();
+    await expect(page.locator('#coach-athlete-note')).toHaveValue(noteValue);
+    await expect(page.locator('#coach-athlete-start-date')).toHaveValue('2026-09-07');
+
+    await page.locator('#coach-athlete-select').selectOption('sam');
+    await expect(page.locator('#coach-athlete-name')).toContainText(/Sam Ortiz/i);
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(body).toBeHidden();
+    await expect(toggle.locator('#coach-tools-notes-toggle-label')).toHaveText(/SHOW/i);
   });
 });
