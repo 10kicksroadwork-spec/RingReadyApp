@@ -19,11 +19,20 @@ Athletes and coaches talk to Supabase with the **anon key + user JWT**. Row acce
 - `mile_test`
 - `sprint_session`
 - `daily_workout`
+- `daily_workout_skip`
+- `workout_completion_clear`
 - `workout_proof`
 
 ## 1. Add the Apps Script receiver
 
-Copy `scripts/RingReadyWebApp.gs` and `scripts/RingReadyWorkoutProof.gs` into the Apps Script project bound to the coach/master Google Sheet.
+Use the script that matches your spreadsheet setup:
+
+| Spreadsheet setup | Apps Script file(s) |
+|-------------------|---------------------|
+| Coach/master sheet with `Ring Ready Daily Workouts`, `Athlete Raw Data` Source URL markers, and `WebExtract()` | `scripts/RingReadyWebAppCoachMaster.gs` only |
+| Newer receiver tabs (`Athlete Raw Data` proof columns, relay secret) | `scripts/RingReadyWebApp.gs` and `scripts/RingReadyWorkoutProof.gs` |
+
+Copy the chosen file(s) into the Apps Script project bound to the coach/master Google Sheet.
 
 In Apps Script, run:
 
