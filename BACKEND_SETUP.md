@@ -19,11 +19,22 @@ Athletes and coaches talk to Supabase with the **anon key + user JWT**. Row acce
 - `mile_test`
 - `sprint_session`
 - `daily_workout`
+- `daily_workout_skip`
+- `workout_completion_clear`
 - `workout_proof`
 
 ## 1. Add the Apps Script receiver
 
-Copy `scripts/RingReadyWebApp.gs` and `scripts/RingReadyWorkoutProof.gs` into the Apps Script project bound to the coach/master Google Sheet.
+Use the script that matches your spreadsheet setup:
+
+| Spreadsheet setup | Apps Script file(s) |
+|-------------------|---------------------|
+| Coach/master sheet with `Ring Ready Daily Workouts`, `Athlete Raw Data` Source URL markers, and **Web App Extract** / `WebExtract()` | `scripts/RingReadyWebAppCoachMaster.gs` |
+| Newer receiver tabs (`Athlete Raw Data` proof columns, relay secret) | `scripts/RingReadyWebApp.gs` and `scripts/RingReadyWorkoutProof.gs` |
+
+Copy the chosen file(s) into the Apps Script project bound to the coach/master Google Sheet.
+
+**Athlete Raw Data grouping:** Web App Extract now sorts `Athlete Raw Data` by the Athlete column after import, so each athlete’s workouts stay together (instead of week/chronological order across the whole roster). Already on the live coach sheet? Add `scripts/RingReadyAthleteRawSortPatch.gs` to the same Apps Script project and re-run **Web App Extract**, or run `rrSortAthleteRawDataByAthlete()` once to regroup without re-importing.
 
 In Apps Script, run:
 
@@ -45,6 +56,8 @@ If `Athlete Raw Data` is rebuilt by older extraction tools and PWA rows disappea
 ```js
 rrImportPwaReceiverToAthleteRawData()
 ```
+
+That import also regroups rows by athlete when using `RingReadyWebAppCoachMaster.gs`.
 
 ## 2. Deploy as a Google Web App
 
