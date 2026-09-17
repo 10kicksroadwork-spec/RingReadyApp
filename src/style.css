@@ -3457,6 +3457,55 @@
     line-height: 1.45;
   }
 
+  .coach-tools-notes {
+    padding: 0;
+    overflow: hidden;
+  }
+
+  .coach-tools-notes-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    width: 100%;
+    min-height: 52px;
+    margin: 0;
+    padding: 14px 16px;
+    background: transparent;
+    border: 0;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .coach-tools-notes-toggle .info-kicker {
+    margin: 0;
+  }
+
+  .coach-tools-notes-toggle-label {
+    flex: 0 0 auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px;
+    letter-spacing: 1.4px;
+    text-transform: uppercase;
+    color: var(--gold);
+  }
+
+  .coach-tools-notes-body {
+    display: grid;
+    gap: 14px;
+    padding: 0 16px 16px;
+  }
+
+  .coach-tools-notes-body[hidden] {
+    display: none;
+  }
+
+  .coach-tools-notes-section {
+    padding-top: 14px;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
   #coach-athlete-note {
     width: 100%;
     min-height: 108px;

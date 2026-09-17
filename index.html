@@ -493,25 +493,6 @@
       <section class="page-panel coach-attention-panel" id="coach-athlete-attention" hidden></section>
       <section class="page-panel" id="coach-athlete-missed" hidden></section>
       <section class="page-panel" id="coach-athlete-skipped" hidden></section>
-      <section class="page-panel">
-        <div class="info-kicker">Camp start</div>
-        <p class="coach-note-copy">Missing flags only count once each workout day arrives on the calendar. Set this to the date they actually begin roadwork.</p>
-        <label class="app-input-wrap" for="coach-athlete-start-date">
-          <span>Start date</span>
-          <input type="date" id="coach-athlete-start-date">
-        </label>
-        <button type="button" class="start-btn page-save-btn" id="coach-start-save-btn">SAVE START DATE</button>
-      </section>
-      <section class="page-panel">
-        <div class="info-kicker">Clean slate</div>
-        <p class="coach-note-copy">Archives this fighter’s current camp, then clears live workouts so the next camp starts empty. Profile name, HR, and coach note stay.</p>
-        <button type="button" class="secondary-danger-btn" id="coach-clean-slate-btn">ARCHIVE CAMP &amp; CLEAN SLATE</button>
-      </section>
-      
-      <section class="page-panel" id="coach-athlete-mile-test" aria-label="Mile Test">
-        <div class="info-kicker">Mile Test &amp; Max HR</div>
-        <div id="coach-athlete-mile-test-body" class="coach-parity-body"></div>
-      </section>
       <section class="page-panel" id="coach-athlete-zone-heatmap" aria-label="Zone Adherence Heatmap">
         <div class="info-kicker">Zone Adherence Heatmap</div>
         <div id="coach-athlete-zone-heatmap-body" class="coach-parity-body"></div>
@@ -520,14 +501,46 @@
         <div class="info-kicker">HR vs Pace Efficiency</div>
         <div id="coach-athlete-hr-pace-body" class="coach-parity-body"></div>
       </section>
-<section class="page-panel">
-        <div class="info-kicker" id="coach-athlete-notes-kicker">Coach-authored notes</div>
-        <p class="coach-note-copy" id="coach-athlete-notes-copy">Shared with Gene and Daniel. Fighters do not see this note. Separate from generated guidance above.</p>
-        <label class="app-input-wrap" for="coach-athlete-note">
-          <span>Note</span>
-          <textarea id="coach-athlete-note" rows="4" maxlength="400" placeholder="What should the next session look like?"></textarea>
-        </label>
-        <button type="button" class="start-btn page-save-btn" id="coach-note-save-btn">SAVE NOTE</button>
+      <section class="page-panel coach-tools-notes" id="coach-tools-notes" aria-label="Coach Tools and Notes">
+        <button
+          type="button"
+          class="coach-tools-notes-toggle"
+          id="coach-tools-notes-toggle"
+          aria-expanded="false"
+          aria-controls="coach-tools-notes-body"
+        >
+          <span class="info-kicker">Coach Tools &amp; Notes</span>
+          <span class="coach-tools-notes-toggle-label" id="coach-tools-notes-toggle-label">SHOW</span>
+        </button>
+        <div id="coach-tools-notes-body" class="coach-tools-notes-body" hidden>
+          <section class="coach-tools-notes-section" aria-label="Camp start">
+            <div class="info-kicker">Camp start</div>
+            <p class="coach-note-copy">Missing flags only count once each workout day arrives on the calendar. Set this to the date they actually begin roadwork.</p>
+            <label class="app-input-wrap" for="coach-athlete-start-date">
+              <span>Start date</span>
+              <input type="date" id="coach-athlete-start-date">
+            </label>
+            <button type="button" class="start-btn page-save-btn" id="coach-start-save-btn">SAVE START DATE</button>
+          </section>
+          <section class="coach-tools-notes-section" id="coach-athlete-mile-test" aria-label="Mile Test">
+            <div class="info-kicker">Mile Test &amp; Max HR</div>
+            <div id="coach-athlete-mile-test-body" class="coach-parity-body"></div>
+          </section>
+          <section class="coach-tools-notes-section" aria-label="Coach-authored notes">
+            <div class="info-kicker" id="coach-athlete-notes-kicker">Coach-authored notes</div>
+            <p class="coach-note-copy" id="coach-athlete-notes-copy">Shared with Gene and Daniel. Fighters do not see this note. Separate from generated guidance above.</p>
+            <label class="app-input-wrap" for="coach-athlete-note">
+              <span>Note</span>
+              <textarea id="coach-athlete-note" rows="4" maxlength="400" placeholder="What should the next session look like?"></textarea>
+            </label>
+            <button type="button" class="start-btn page-save-btn" id="coach-note-save-btn">SAVE NOTE</button>
+          </section>
+          <section class="coach-tools-notes-section" aria-label="Clean slate">
+            <div class="info-kicker">Clean slate</div>
+            <p class="coach-note-copy">Archives this fighter’s current camp, then clears live workouts so the next camp starts empty. Profile name, HR, and coach note stay.</p>
+            <button type="button" class="secondary-danger-btn" id="coach-clean-slate-btn">ARCHIVE CAMP &amp; CLEAN SLATE</button>
+          </section>
+        </div>
       </section>
     </div>
   </div>
