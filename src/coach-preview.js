@@ -1294,8 +1294,8 @@ rememberMock({
     },
   });
 
-function inferCurrentWeekIndex(fightDate, campLength, completionWeeks, campStartDate) {
-  const fromStart = inferCampWeekIndex(campStartDate, campLength);
+function inferCurrentWeekIndex(fightDate, campLength, completionWeeks, campStartDate, now = new Date()) {
+  const fromStart = inferCampWeekIndex(campStartDate, campLength, now);
   if (fromStart !== null) return fromStart;
   const lastWeek = (campLength === 4 ? 4 : 7) - 1;
   if (fightDate) {
@@ -1303,7 +1303,7 @@ function inferCurrentWeekIndex(fightDate, campLength, completionWeeks, campStart
     if (!Number.isNaN(fight.getTime())) {
       const start = new Date(fight);
       start.setDate(start.getDate() - (lastWeek + 1) * 7);
-      const idx = Math.floor((Date.now() - start.getTime()) / (7 * 86400000));
+      const idx = Math.floor((new Date(now).getTime() - start.getTime()) / (7 * 86400000));
       return clampNumber(idx, 0, lastWeek);
     }
   }
@@ -1460,7 +1460,7 @@ function skipAlertEventAt(row, record = {}) {
   );
 }
 
-function liveAthleteConfig(profile, hrRow, completions, sprints, mileTests, note, email = '', campStartDate = '', attachments = [], sources = null, notificationsClearedAt = null, notificationsClearedBy = null) {
+function liveAthleteConfig(profile, hrRow, completions, sprints, mileTests, note, email = '', campStartDate = '', attachments = [], sources = null, notificationsClearedAt = null, notificationsClearedBy = null, now = new Date()) {
   const campLength = Number(profile.camp_length) === 4 ? 4 : 7;
   const sourceAvailability = sources || {};
   const completionsAvailable = sourceAvailability.completions !== false;
@@ -1485,7 +1485,8 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, mileTests, note
     profile.fight_date,
     campLength,
     completions.map((row) => Number(row.week_index)).filter(Number.isFinite),
-    campStartDate
+    campStartDate,
+    now
   );
   const missing = [];
   const skipped = [];
@@ -1515,7 +1516,7 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, mileTests, note
       const key = sessionKey(weekIndex, workoutIndex);
       if (weekIndex > currentWeekIndex) return;
       const scheduleState = campStartDate
-        ? getSessionScheduleState(campStartDate, weekIndex, workout.day)
+        ? getSessionScheduleState(campStartDate, weekIndex, workout.day, now)
         : 'overdue';
       if (scheduleState === 'upcoming') return;
       let row = byKey.get(key);
@@ -1639,6 +1640,7 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, mileTests, note
     missingEventAt,
     notificationsClearedAt,
     notificationsClearedBy,
+    now,
     avgs,
     maxes,
     minutes,
@@ -1721,7 +1723,8 @@ function buildLiveRoster(payload) {
       attachmentsByUser.get(profile.user_id) || [],
       sourceAvailability,
       metaByUser.get(profile.user_id)?.notifications_cleared_at || null,
-      metaByUser.get(profile.user_id)?.notifications_cleared_by || null
+      metaByUser.get(profile.user_id)?.notifications_cleared_by || null,
+      payload.now
     )))
     .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
 }

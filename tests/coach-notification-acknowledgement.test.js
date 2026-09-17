@@ -1,6 +1,5 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { sessionBecameMissingAt } from '../src/coach-camp-schedule.js';
 import {
   hasClearableCoachAlerts,
   isCoachAlertActive,
@@ -38,8 +37,10 @@ function livePayload({
   sourceErrors = {},
   sources = ALL_SOURCES,
   extraProfiles = [],
+  now = '2026-09-16T18:00:00.000Z',
 } = {}) {
   return {
+    now,
     profiles: [{
       user_id: userId,
       athlete_name: name,
