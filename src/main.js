@@ -6,7 +6,7 @@ import { openCoachPreviewIfRequested } from './coach-preview.js';
 import { MILE_TEST_STORAGE_KEY } from './app-content.js';
 import { readJSONValue } from './safe-storage.js';
 import { parseDurationMinutes, sanitizeDurationInput } from './workout.js';
-import { getHRMonitorSetupCopy, getSprintHRMonitorDisclaimer } from './platform.js';
+import { getHRMonitorSetupCopy, getSprintHRMonitorDisclaimer, isIOSWebBluetoothBlocked } from './platform.js';
 import { initSyncControls } from './sync.js';
 import {
   initHRService,
@@ -330,7 +330,11 @@ async function init() {
   if (setupCopy) setupCopy.textContent = getHRMonitorSetupCopy();
   const setupDisclaimer = document.getElementById('hr-setup-disclaimer');
   if (setupDisclaimer) {
-    setupDisclaimer.innerHTML = `<strong>Before connecting:</strong> ${getSprintHRMonitorDisclaimer()}`;
+    if (isIOSWebBluetoothBlocked()) {
+      setupDisclaimer.hidden = true;
+    } else {
+      setupDisclaimer.innerHTML = `<strong>Before connecting:</strong> ${getSprintHRMonitorDisclaimer()}`;
+    }
   }
 
   bindClick('ble-btn', () => connectHR());
