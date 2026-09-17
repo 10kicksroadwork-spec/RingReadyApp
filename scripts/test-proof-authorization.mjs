@@ -1284,6 +1284,24 @@ async function run() {
       });
       assertAuthorizationDenied(coachNotesError, 'Athlete coach_notes INSERT');
 
+      const { data: coachMetaRows, error: coachMetaSelectError } = await client
+        .from('coach_athlete_meta')
+        .select('athlete_user_id, notifications_cleared_at, notifications_cleared_by')
+        .limit(1);
+      if (coachMetaSelectError) {
+        assertAuthorizationDenied(coachMetaSelectError, 'Athlete coach_athlete_meta SELECT (024 columns must exist)');
+      } else {
+        assert(Array.isArray(coachMetaRows), 'coach_athlete_meta select must return an array');
+        assert(coachMetaRows.length === 0, 'Non-coach must not read coach_athlete_meta rows');
+      }
+
+      const { error: coachMetaInsertError } = await client.from('coach_athlete_meta').insert({
+        athlete_user_id: user.id,
+        notifications_cleared_at: new Date().toISOString(),
+        notifications_cleared_by: user.id,
+      });
+      assertAuthorizationDenied(coachMetaInsertError, 'Athlete coach_athlete_meta INSERT');
+
       const { error: foreignWorkoutError } = await client.from('workout_completions').insert({
         user_id: FOREIGN_USER_ID,
         completion_key: denialSlot.completionKey,

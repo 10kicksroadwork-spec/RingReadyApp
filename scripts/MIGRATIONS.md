@@ -8,7 +8,7 @@ RingReady uses a **per-athlete locker** (`user_id` + RLS). Coaches get extra SEL
 
 Full contract: [docs/AUTH_LOCKER_MODEL.md](../docs/AUTH_LOCKER_MODEL.md).
 
-Auth-touching migrations: `000`–`006`, `009`, `012`–`013`, `015`–`016`.
+Auth-touching migrations: `000`–`006`, `009`, `012`–`013`, `015`–`016`, `024`.
 
 | Order | File | Purpose |
 |------:|------|---------|
@@ -36,6 +36,7 @@ Auth-touching migrations: `000`–`006`, `009`, `012`–`013`, `015`–`016`.
 | 22 | [021_assigned_mile_serialized_transitions.sql](./migrations/021_assigned_mile_serialized_transitions.sql) | Shared per-assignment advisory lock + position-canonical identity resolve for Save/Skip/Clear (staging only; **do not apply to production** yet) |
 | 23 | [022_generic_clear_assignment_authority.sql](./migrations/022_generic_clear_assignment_authority.sql) | Generic clear joins assignment lock and removes subordinate Mile detail (staging only; protects stale clients) |
 | 24 | [023_assignment_mutation_perimeter.sql](./migrations/023_assignment_mutation_perimeter.sql) | Assigned Mile mutation perimeter — direct table writes from already-loaded clients join the assignment lock and converge to a legal state; current-proof authority + JSON/relational proof mirrors (staging only; **do not apply to production** yet) |
+| 25 | [024_coach_notification_acknowledgement.sql](./migrations/024_coach_notification_acknowledgement.sql) | Coach alert watermark on `coach_athlete_meta` (`notifications_cleared_at` / `notifications_cleared_by`) — acknowledgement without mutating workout/proof/HR data |
 
 ## Fresh database
 
@@ -52,7 +53,7 @@ For the Sprint proof-gap hotfix on an existing database that already ran 000–0
 
 ## Production deployment procedure
 
-1. Apply Supabase migrations **000–018** in the table above (required through attachment write revoke, modality output columns, transactional clear RPC, idempotent proof RPC, and positional workout uniqueness).
+1. Apply Supabase migrations **000–018** plus **024** in the table above (required through attachment write revoke, modality output columns, transactional clear RPC, idempotent proof RPC, positional workout uniqueness, and coach alert acknowledgement columns).
 2. Configure production Apps Script Script Property `RING_READY_SYNC_RELAY_SECRET` matching the Vercel relay environment.
 3. Deploy the compatible client to Vercel with client-side:
    - `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY`
@@ -75,7 +76,7 @@ Canonical migrations are schema-only. This file is the source of truth for migra
 RING_READY_REQUIRE_PROOF_TESTS=1 npm run test:proof-auth
 ```
 
-Verifies proof authorization **and** migrations **014** (modality/output columns), **015** (transactional clear RPC), **016** (idempotent proof RPC), and **017** (positional workout uniqueness + legacy identity reconcile).
+Verifies proof authorization **and** migrations **014** (modality/output columns), **015** (transactional clear RPC), **016** (idempotent proof RPC), **017** (positional workout uniqueness + legacy identity reconcile), and **024** (coach alert acknowledgement columns on `coach_athlete_meta` — athlete cannot read/write).
 
 Requires `RING_READY_SUPABASE_URL`, `RING_READY_SUPABASE_ANON_KEY`, `RING_READY_TEST_EMAIL`, and `RING_READY_TEST_PASSWORD`. Without credentials the script skips unless `RING_READY_REQUIRE_PROOF_TESTS=1` is set (then it fails). The CI job always sets `RING_READY_REQUIRE_PROOF_TESTS=1` and **fails closed** when secrets are missing.
 

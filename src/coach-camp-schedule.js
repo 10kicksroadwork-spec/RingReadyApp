@@ -71,6 +71,19 @@ export function isSessionDueYet(campStartDate, weekIndex, workoutDay, now = new 
   return getSessionScheduleState(campStartDate, weekIndex, workoutDay, now) !== 'upcoming';
 }
 
+/**
+ * Instant the scheduled workout becomes genuinely Missing (grace window closed).
+ * Matches getSessionScheduleState('overdue'): the local calendar day after openEnd.
+ */
+export function sessionBecameMissingAt(campStartDate, weekIndex, workoutDay) {
+  const openEnd = sessionOpenEndDate(campStartDate, weekIndex, workoutDay);
+  if (!openEnd) return null;
+  const at = new Date(openEnd);
+  at.setDate(at.getDate() + 1);
+  at.setHours(0, 0, 0, 0);
+  return at.toISOString();
+}
+
 export function dueStatusLabel(workoutDay) {
   return isWeekendProgramDay(workoutDay) ? 'due-weekend' : 'due-today';
 }
