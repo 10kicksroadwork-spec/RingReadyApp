@@ -210,12 +210,22 @@ function defaultSessionMinutes(session) {
 }
 
 /**
+ * Ascending numeric weekIndex without mutating the source array.
+ * Signal builders treat [0] as baseline and [last] as latest.
+ */
+function canonicalizeTrendPoints(points) {
+  if (!Array.isArray(points) || !points.length) return [];
+  return [...points].sort((a, b) => Number(a.weekIndex) - Number(b.weekIndex));
+}
+
+/**
  * Benchmark % vs Week 1. Amber if still above baseline but down from last week.
  */
 function buildBenchSignal(points) {
-  if (!points.length) return emptySignal('bench', 'No benchmark yet');
-  const baseline = points[0].equiv;
-  const weekly = points.map((row) => ({
+  const ordered = canonicalizeTrendPoints(points);
+  if (!ordered.length) return emptySignal('bench', 'No benchmark yet');
+  const baseline = ordered[0].equiv;
+  const weekly = ordered.map((row) => ({
     ...row,
     pct: baseline > 0 ? ((row.equiv - baseline) / baseline) * 100 : 0,
   }));
@@ -290,19 +300,20 @@ function buildZoneSignal(sessions, maxHr = null, restingHr = null) {
 }
 
 function buildRecoverySignal(points) {
-  if (!points.length) return emptySignal('recovery', 'No sprint yet');
-  const latest = points[points.length - 1].first5Avg;
-  const first = points[0].first5Avg;
-  const avg = points.reduce((sum, row) => sum + row.first5Avg, 0) / points.length;
+  const ordered = canonicalizeTrendPoints(points);
+  if (!ordered.length) return emptySignal('recovery', 'No sprint yet');
+  const latest = ordered[ordered.length - 1].first5Avg;
+  const first = ordered[0].first5Avg;
+  const avg = ordered.reduce((sum, row) => sum + row.first5Avg, 0) / ordered.length;
   // Canonical primary value is latest First-5 drop (camp average is secondary only).
-  if (points.length < 2) {
+  if (ordered.length < 2) {
     return {
       key: 'recovery',
       tone: 'neutral',
       value: `${Math.round(latest)}`,
       short: `${Math.round(latest)}`,
       detail: `Need another sprint week · target ${SPRINT_TARGET_DROP}+ · camp avg ${Math.round(avg)}`,
-      points,
+      points: ordered,
       latest,
       first,
       avg,
@@ -319,7 +330,7 @@ function buildRecoverySignal(points) {
     value: `${Math.round(latest)}`,
     short: `${Math.round(latest)}`,
     detail: `${Math.round(first)} → ${Math.round(latest)} bpm drop vs W1 · camp avg ${Math.round(avg)}`,
-    points,
+    points: ordered,
     latest,
     first,
     avg,
@@ -336,7 +347,7 @@ function coachHrInfoFromConfig(config) {
 function collectBenchmarkPoints(config, sessions) {
   const hrInfo = coachHrInfoFromConfig(config);
   if (Array.isArray(config.benchmarks) && config.benchmarks.length) {
-    return config.benchmarks.map((row) => {
+    return canonicalizeTrendPoints(config.benchmarks.map((row) => {
       const distance = Number(row.distance);
       const avgBpm = Number(row.avgBpm);
       const weekIndex = Number(row.weekIndex);
@@ -363,9 +374,9 @@ function collectBenchmarkPoints(config, sessions) {
         targetBPM,
         equiv: getEquivDistance(distance, avgBpm, targetBPM),
       };
-    }).filter((row) => Number.isFinite(row.equiv));
+    }).filter((row) => Number.isFinite(row.equiv)));
   }
-  return sessions
+  return canonicalizeTrendPoints(sessions
     .filter((session) =>
       session.status === 'logged'
       && isBenchmarkType(session.type)
@@ -384,7 +395,7 @@ function collectBenchmarkPoints(config, sessions) {
         equiv: getEquivDistance(session.distance, session.avgBpm, targetBPM),
       };
     })
-    .filter((row) => Number.isFinite(row.equiv));
+    .filter((row) => Number.isFinite(row.equiv)));
 }
 
 function hasSprintDrop(value) {
@@ -395,14 +406,14 @@ function hasSprintDrop(value) {
 
 function collectSprintPoints(config, sessions) {
   if (Array.isArray(config.sprints) && config.sprints.length) {
-    return config.sprints
+    return canonicalizeTrendPoints(config.sprints
       .map((row) => ({ weekIndex: row.weekIndex, first5Avg: Number(row.first5Avg) }))
-      .filter((row) => hasSprintDrop(row.first5Avg));
+      .filter((row) => hasSprintDrop(row.first5Avg)));
   }
   const fromSessions = sessions
     .filter((session) => session.status === 'logged' && isSprintType(session.type) && hasSprintDrop(session.drop))
     .map((session) => ({ weekIndex: session.weekIndex, first5Avg: Number(session.drop) }));
-  if (fromSessions.length) return fromSessions;
+  if (fromSessions.length) return canonicalizeTrendPoints(fromSessions);
   if (hasSprintDrop(config.sprintDrop)) {
     return [{ weekIndex: config.currentWeekIndex, first5Avg: Number(config.sprintDrop) }];
   }
@@ -1988,8 +1999,9 @@ function sparkRange(values) {
 }
 
 function renderSpark(points, valueKey, labelFn) {
-  if (!points.length) return '<p class="coach-trend-empty">No trend yet.</p>';
-  const values = points.map((row) => Number(row[valueKey]));
+  const ordered = canonicalizeTrendPoints(points);
+  if (!ordered.length) return '<p class="coach-trend-empty">No trend yet.</p>';
+  const values = ordered.map((row) => Number(row[valueKey]));
   const { min, max } = sparkRange(values);
   const span = Math.max(max - min, 0.001);
   const width = 100;
@@ -2008,7 +2020,7 @@ function renderSpark(points, valueKey, labelFn) {
     : '';
   return `<div class="coach-spark" aria-hidden="true">
     <svg class="coach-spark-line" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">${polyline}${dots}</svg>
-    <div class="coach-spark-labels">${points.map((row) =>
+    <div class="coach-spark-labels">${ordered.map((row) =>
       `<span>${escapeHTML(labelFn(row))}</span>`
     ).join('')}</div>
   </div>`;

@@ -450,6 +450,104 @@ describe('canonical analytics consistency', () => {
     expect(athlete.analytics.mileTest.deltaDisplay).toBe('-12s');
   });
 
+  it('orders recovery W3→W2→W1 chronologically before Latest / baseline / tone', () => {
+    const sprints = [
+      { weekIndex: 2, first5Avg: 56 },
+      { weekIndex: 1, first5Avg: 52 },
+      { weekIndex: 0, first5Avg: 48 },
+    ];
+    const originalOrder = sprints.map((row) => row.weekIndex);
+    const athlete = buildAthleteRecord({
+      id: 'rec-unsorted-a',
+      name: 'Recovery Unsorted A',
+      campLength: 7,
+      currentWeekIndex: 2,
+      fightDate: '2026-10-01',
+      maxHr: 190,
+      restingHr: 50,
+      missing: [],
+      sprints,
+    });
+    expect(sprints.map((row) => row.weekIndex)).toEqual(originalOrder);
+    expect(athlete.scan.recovery.points.map((row) => row.weekIndex)).toEqual([0, 1, 2]);
+    expect(athlete.scan.recovery.points.map((row) => row.first5Avg)).toEqual([48, 52, 56]);
+    expect(athlete.scan.recovery.first).toBe(48);
+    expect(athlete.scan.recovery.latest).toBe(56);
+    expect(athlete.scan.recovery.value).toBe('56');
+    expect(athlete.scan.recovery.tone).toBe('green');
+    expect(athlete.scan.recovery.avg).toBeCloseTo((48 + 52 + 56) / 3);
+    expect(athlete.analytics.recovery.displayValue).toBe(athlete.scan.recovery.value);
+    expect(athlete.analytics.recovery.latest).toBe(56);
+    expect(athlete.analytics.recovery.baseline).toBe(48);
+    expect(athlete.analytics.recovery.campAverage).toBeCloseTo(athlete.scan.recovery.avg);
+    expect(athlete.analytics.recovery.trendPoints.map((row) => row.weekIndex)).toEqual([0, 1, 2]);
+    const card = buildLensCard(athlete, LENS_RECOVERY);
+    expect(card.value).toBe('56');
+    expect(card.detail).toMatch(/Latest First-5 Drop:\s*56 BPM/i);
+    expect(card.status).toBe(athlete.analytics.recovery.status);
+  });
+
+  it('orders recovery W2→W3→W1 the same canonical W1→W2→W3 result', () => {
+    const athlete = buildAthleteRecord({
+      id: 'rec-unsorted-b',
+      name: 'Recovery Unsorted B',
+      campLength: 7,
+      currentWeekIndex: 2,
+      fightDate: '2026-10-01',
+      maxHr: 190,
+      restingHr: 50,
+      missing: [],
+      sprints: [
+        { weekIndex: 1, first5Avg: 27 },
+        { weekIndex: 2, first5Avg: 25 },
+        { weekIndex: 0, first5Avg: 30 },
+      ],
+    });
+    expect(athlete.scan.recovery.points.map((row) => row.weekIndex)).toEqual([0, 1, 2]);
+    expect(athlete.scan.recovery.first).toBe(30);
+    expect(athlete.scan.recovery.latest).toBe(25);
+    expect(athlete.scan.recovery.value).toBe('25');
+    expect(athlete.scan.recovery.tone).toBe('red');
+    expect(athlete.scan.recovery.avg).toBeCloseTo((30 + 27 + 25) / 3);
+    expect(athlete.analytics.recovery.displayValue).toBe('25');
+    expect(athlete.analytics.recovery.baseline).toBe(30);
+    expect(athlete.analytics.recovery.latest).toBe(25);
+    const card = buildLensCard(athlete, LENS_RECOVERY);
+    expect(card.value).toBe(athlete.scan.recovery.value);
+    expect(card.detail).toMatch(/Latest First-5 Drop:\s*25 BPM/i);
+  });
+
+  it('orders unsorted benchmark W3→W1→W2 chronologically before baseline / latest math', () => {
+    const benchmarks = [
+      { weekIndex: 2, distance: 3.2, avgBpm: 137 },
+      { weekIndex: 0, distance: 3.0, avgBpm: 137 },
+      { weekIndex: 1, distance: 3.1, avgBpm: 137 },
+    ];
+    const originalOrder = benchmarks.map((row) => row.weekIndex);
+    const athlete = buildAthleteRecord({
+      id: 'bench-unsorted',
+      name: 'Benchmark Unsorted',
+      campLength: 7,
+      currentWeekIndex: 2,
+      fightDate: '2026-10-01',
+      maxHr: 190,
+      restingHr: 50,
+      missing: [],
+      benchmarks,
+    });
+    expect(benchmarks.map((row) => row.weekIndex)).toEqual(originalOrder);
+    expect(athlete.scan.bench.points.map((row) => row.weekIndex)).toEqual([0, 1, 2]);
+    const ordered = athlete.scan.bench.points;
+    expect(ordered[ordered.length - 1].equiv).toBeGreaterThan(ordered[0].equiv);
+    expect(athlete.analytics.benchmark.status).toBe(STATUS_IMPROVING);
+    expect(Number(athlete.analytics.benchmark.index)).toBeGreaterThan(100);
+    expect(athlete.scan.bench.value).toBe(athlete.analytics.benchmark.displayValue);
+    expect(athlete.scan.bench.status).toBe(athlete.analytics.benchmark.status);
+    const card = buildLensCard(athlete, LENS_BENCHMARK);
+    expect(card.value).toBe(athlete.scan.bench.value);
+    expect(card.status).toBe(athlete.analytics.benchmark.status);
+  });
+
   it('builds weekly HR trend points when zone helpers score sessions', () => {
     const athlete = {
       id: 'hr',
