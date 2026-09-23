@@ -3,6 +3,7 @@ import {
   PROGRAM,
   formatWorkoutDayLabel,
 } from '../src/program.js';
+import { buildWorkoutCloudPayload } from '../src/cloud-record-mapper.js';
 
 describe('formatWorkoutDayLabel', () => {
   it('maps Saturday/Sunday to athlete display copy', () => {
@@ -29,5 +30,27 @@ describe('PROGRAM weekend day canonical value', () => {
     for (const workout of weekendWorkouts) {
       expect(workout.day).toBe('Saturday/Sunday');
     }
+  });
+
+  it('maps weekend completions to canonical day_of_week for Supabase', () => {
+    const weekend = PROGRAM[0].workouts.find((workout) => workout.day === 'Saturday/Sunday');
+    expect(weekend).toBeTruthy();
+
+    const payload = buildWorkoutCloudPayload({
+      id: 'weekend-completion',
+      workoutContext: {
+        weekIndex: 0,
+        workoutIndex: 4,
+        dayOfWeek: weekend.day,
+        workoutType: weekend.type,
+      },
+      workoutLog: {
+        totalMinutes: 45,
+        completedAt: '2026-09-12T12:00:00.000Z',
+      },
+    }, 'user-a');
+
+    expect(payload.day_of_week).toBe('Saturday/Sunday');
+    expect(payload.day_of_week).not.toBe('Saturday or Sunday');
   });
 });
