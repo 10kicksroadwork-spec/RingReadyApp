@@ -17,7 +17,12 @@ import {
   clearSyncQueueForUser,
   quarantineLegacySyncQueue,
 } from './sync.js';
-import { PROGRAM, getWeek, getSprintConfig } from './program.js';
+import {
+  PROGRAM,
+  getWeek,
+  getSprintConfig,
+  formatWorkoutDayLabel,
+} from './program.js';
 import {
   HR_INFO_DEFAULTS,
   HR_INFO_STORAGE_KEY,
@@ -2255,7 +2260,9 @@ function renderAthleteProfileDashboard() {
     return { done, total, pct: total ? Math.round((done / total) * 100) : 0 };
   });
   const nextWorkout = slots.find((slot) => !getWorkoutCompletion(slot.weekIndex, slot.workoutIndex));
-  const nextCopy = nextWorkout ? `${nextWorkout.week.label} / ${nextWorkout.workout.day} / ${nextWorkout.workout.type}` : 'Camp complete';
+  const nextCopy = nextWorkout
+    ? `${nextWorkout.week.label} / ${formatWorkoutDayLabel(nextWorkout.workout.day)} / ${nextWorkout.workout.type}`
+    : 'Camp complete';
   const latestRunCopy = latestRun
     ? `${latestRun.week.label} / ${latestRun.workout.type} / ${
       normalizeModality(latestRun.log.modality) !== MODALITY_RUNNING && Number(latestRun.log.avgWatts || latestRun.log.outputValue) > 0
@@ -2481,7 +2488,7 @@ function renderShell() {
     const actionCopy = sprintState
       ? sprintState.action
       : getActionCopy(workout, completion);
-    return `<button type="button" class="week-workout-card ${cardState}" data-week-index="${activeWeekIndex}" data-workout-index="${index}"><div><div class="field-label week-card-day">${escapeHTML(workout.day)}</div><div class="week-card-title">${escapeHTML(workout.type)}</div><div class="week-card-desc">${escapeHTML(workout.description)}</div></div><div class="week-card-side"><div class="workout-tag">${escapeHTML(tag)}</div><div class="workout-target">${targetCopy}</div><div class="workout-action">${escapeHTML(actionCopy)}</div></div></button>`;
+    return `<button type="button" class="week-workout-card ${cardState}" data-week-index="${activeWeekIndex}" data-workout-index="${index}"><div><div class="field-label week-card-day">${escapeHTML(formatWorkoutDayLabel(workout.day))}</div><div class="week-card-title">${escapeHTML(workout.type)}</div><div class="week-card-desc">${escapeHTML(workout.description)}</div></div><div class="week-card-side"><div class="workout-tag">${escapeHTML(tag)}</div><div class="workout-target">${targetCopy}</div><div class="workout-action">${escapeHTML(actionCopy)}</div></div></button>`;
   }).join('');
   renderDrawerWeeks();
 }
@@ -2951,7 +2958,10 @@ function openWorkoutDetail(weekIndex, workoutIndex) {
   const sprintResultRecord = isSprintWorkout(workout)
     ? pickAssignedSprintResultRecord(completion, sprintSession)
     : null;
-  setText('detail-week', `${week.label} / ${workout.day}`);
+  setText(
+    'detail-week',
+    `${week.label} / ${formatWorkoutDayLabel(workout.day)}`
+  );
   setText('detail-title', workout.type);
   setText('detail-desc', workout.description);
   renderWarmupCard(workout);

@@ -139,6 +139,17 @@ export function getWeek(index) {
   return PROGRAM[Math.max(0, Math.min(PROGRAM.length - 1, index))];
 }
 
+/** Presentation-only. Do not use for persistence, identity, scheduling, or sync. */
+export function formatWorkoutDayLabel(day) {
+  const value = String(day ?? '');
+
+  if (value.trim().toLowerCase() === 'saturday/sunday') {
+    return 'Saturday or Sunday';
+  }
+
+  return value;
+}
+
 export function getTodayWorkout(week) {
   const today = DAY_INDEX[new Date().getDay()];
 
