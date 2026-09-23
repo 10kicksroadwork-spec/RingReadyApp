@@ -39,11 +39,11 @@ function getAudioContextCtor() {
   return window.AudioContext || window.webkitAudioContext || null;
 }
 
-/** Prefer playback session so iOS is less likely to keep alerts muted. */
-function setAudioSessionPlayback() {
+/** Prefer ambient session so timer beeps mix with music instead of taking exclusive playback. */
+function setAudioSessionForTimer() {
   try {
     if (navigator.audioSession) {
-      navigator.audioSession.type = 'playback';
+      navigator.audioSession.type = 'ambient';
     }
   } catch {
     /* older WebKit */
@@ -206,7 +206,7 @@ async function createFreshAudioContext(reason) {
  */
 export async function unlockAudio(reason = 'unlock', options = {}) {
   const fromGesture = Boolean(options && options.fromGesture);
-  setAudioSessionPlayback();
+  setAudioSessionForTimer();
 
   try {
     const AudioContext = getAudioContextCtor();
