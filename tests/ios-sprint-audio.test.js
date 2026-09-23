@@ -88,6 +88,7 @@ describe('iOS sprint audio recovery', () => {
     delete window.AudioContext;
     delete window.webkitAudioContext;
     delete globalThis.Audio;
+    delete navigator.audioSession;
     vi.restoreAllMocks();
   });
 
@@ -238,10 +239,32 @@ describe('iOS sprint audio recovery', () => {
     });
   });
 
-  it('sets navigator.audioSession type to playback when available', async () => {
+  it('sets navigator.audioSession to ambient so timer audio can mix with other audio', async () => {
     navigator.audioSession = { type: 'auto' };
     await unlockAudio('session', { fromGesture: true });
-    expect(navigator.audioSession.type).toBe('playback');
-    delete navigator.audioSession;
+    expect(navigator.audioSession.type).toBe('ambient');
+    expect(getAudioContextState()).toBe('running');
+  });
+
+  it('unlocks audio when navigator.audioSession is missing', async () => {
+    expect(navigator.audioSession).toBeUndefined();
+    const ok = await unlockAudio('no-session', { fromGesture: true });
+    expect(ok).toBe(true);
+    expect(getAudioContextState()).toBe('running');
+  });
+
+  it('continues unlock when audioSession assignment throws', async () => {
+    navigator.audioSession = {
+      get type() {
+        return 'auto';
+      },
+      set type(_value) {
+        throw new Error('audioSession unsupported');
+      },
+    };
+    const ok = await unlockAudio('session-throw', { fromGesture: true });
+    expect(ok).toBe(true);
+    expect(getAudioContextState()).toBe('running');
+    expect(htmlPlay).toHaveBeenCalled();
   });
 });
