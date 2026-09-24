@@ -1,3 +1,14 @@
+export const IOS_MANUAL_HR_MESSAGE =
+  "Bluetooth heart-rate connection isn't supported on iPhone right now. Use Manual HR instead.";
+
+export const IOS_MANUAL_HR_STATUS = 'Manual HR is the supported iPhone option.';
+
+export const IOS_MANUAL_HR_SETUP_COPY =
+  `${IOS_MANUAL_HR_MESSAGE} Your workout can be completed normally using Manual HR.`;
+
+export const HR_MONITOR_OPTIONAL_COPY =
+  'Optional. Works with most BLE chest straps. ANT+ is not supported. Manual HR entry is always available.';
+
 export function getPlatformInfo() {
   const ua = navigator.userAgent || '';
 
@@ -29,12 +40,24 @@ export function getPlatformInfo() {
   };
 }
 
+/** Reuses getPlatformInfo().isIOS — do not add a second UA sniffer. */
+export function isIOSDevice(info = getPlatformInfo()) {
+  return !!info.isIOS;
+}
+
+/**
+ * iPhone/iPad web surfaces use Manual HR. Native Capacitor BLE stays available.
+ */
+export function isIOSWebBluetoothBlocked(info = getPlatformInfo()) {
+  return isIOSDevice(info) && !info.supportsNativeBLE;
+}
+
 export function getHRMonitorSetupCopy() {
   const info = getPlatformInfo();
-  if (info.isNativeApp) {
-    return 'Optional. Works with most BLE chest straps. ANT+ is not supported. Manual HR entry is always available.';
+  if (isIOSWebBluetoothBlocked(info)) {
+    return IOS_MANUAL_HR_SETUP_COPY;
   }
-  return 'Optional. Works with most BLE chest straps. ANT+ is not supported. On iPhone/iPad, use the Bluefy browser for BLE support; manual HR entry is always available.';
+  return HR_MONITOR_OPTIONAL_COPY;
 }
 
 export function getSprintHRMonitorDisclaimer() {

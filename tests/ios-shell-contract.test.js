@@ -125,6 +125,15 @@ describe('ios shell contract', () => {
     expect(pwaJs).toContain('HOW TO INSTALL');
   });
 
+  it('does not tell athletes to use Bluefy for BLE', () => {
+    const hrService = readFileSync(join(root, 'src/hr-service.js'), 'utf8');
+    const platformJs = readFileSync(join(root, 'src/platform.js'), 'utf8');
+    expect(indexHtml).not.toMatch(/Bluefy/i);
+    expect(hrService).not.toMatch(/Bluefy/i);
+    expect(platformJs).not.toMatch(/Bluefy/i);
+    expect(indexHtml).toContain('Manual HR entry is always available');
+  });
+
   it('includes an npm script to regenerate pwa icons', () => {
     expect(packageJson.scripts['generate:pwa-icons']).toBe('node scripts/generate-pwa-icons.mjs');
   });
