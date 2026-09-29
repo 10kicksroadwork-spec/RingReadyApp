@@ -10,16 +10,24 @@
 -- Session time is approximate (Monday 2026-09-21 21:00 UTC). The phone did not
 -- record a timestamp. No workout photo is attached; proof stays empty.
 --
--- Run manually in the Supabase SQL editor (production). Safe to re-run: it only
--- updates this backfill id, and it stops if a different Week 4 sprint or
--- Monday completion is already stored.
+-- Run the whole file as one statement in the Supabase SQL editor.
+-- Safe to re-run: it only updates this backfill id, and it stops if a different
+-- Week 4 sprint or Monday completion is already stored.
+-- Uses dollar-quoting so the SQL editor does not mangle newline escape strings.
 
-begin;
-
-do $$
+do $backfill$
 declare
   athlete uuid := 'd0cc92f3-c9c7-44cb-a87a-599635061c7b';
   backfill_id text := 'manual-backfill:w4:sprints:elizabeth-kremer';
+  session_at timestamptz := timestamptz '2026-09-21 21:00:00+00';
+  warmup_copy text := $warmup$5 min easy jog; 2x80 m strides; 2x40 m A skips; 1x40 m B skips; 5 min run at 85%.
+
+Take a couple minutes of rest before the sprints.
+
+Cooldown (after the sprints): 5 min walk$warmup$;
+  description_copy text := $desc$5x150 m Sprints (90s rest). Record HR after 60 seconds rest$desc$;
+  session_json jsonb;
+  record_json jsonb;
 begin
   if not exists (
     select 1
@@ -51,12 +59,10 @@ begin
   ) then
     raise exception 'Week 4 Monday completion already exists; not overwriting';
   end if;
-end $$;
 
-with session_record as (
-  select jsonb_build_object(
-    'id', 'manual-backfill:w4:sprints:elizabeth-kremer',
-    'date', '2026-09-21T21:00:00+00:00',
+  session_json := jsonb_build_object(
+    'id', backfill_id,
+    'date', to_char(session_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"+00:00"'),
     'hrSource', 'manual',
     'note', 'Phone died during the workout. Sprint HR and rest HR entered manually.',
     'avgDrop', 30,
@@ -69,7 +75,7 @@ with session_record as (
       'workoutContext', jsonb_build_object(
         'reps', 5,
         'maxHr', 185,
-        'warmup', E'5 min easy jog; 2x80 m strides; 2x40 m A skips; 1x40 m B skips; 5 min run at 85%.\n\nTake a couple minutes of rest before the sprints.\n\nCooldown (after the sprints): 5 min walk',
+        'warmup', warmup_copy,
         'weekTab', 'Week 4 (Deload)',
         'dayOfWeek', 'Monday',
         'targetBPM', 174,
@@ -78,7 +84,7 @@ with session_record as (
         'weekLabel', 'Week 4',
         'weekTitle', 'Deload',
         'targetZone', '90-95%',
-        'description', '5x150 m Sprints (90s rest). Record HR after 60 seconds rest',
+        'description', description_copy,
         'restSeconds', 90,
         'workoutType', 'Sprint Intervals',
         'sprintConfig', jsonb_build_object(
@@ -99,156 +105,152 @@ with session_record as (
       jsonb_build_object('sprintHR', 164, 'restHR', 139, 'drop', 25, 'suspicious', false),
       jsonb_build_object('sprintHR', 161, 'restHR', 133, 'drop', 28, 'suspicious', false)
     )
-  ) as session_json
-)
-insert into public.sprint_sessions (
-  user_id,
-  session_id,
-  session_at,
-  completed_at,
-  week_index,
-  workout_index,
-  workout_type,
-  hr_source,
-  reps_planned,
-  rest_seconds,
-  max_hr,
-  target_pct,
-  target_bpm,
-  intervals_completed,
-  avg_drop,
-  peak_hr,
-  session_json,
-  proof_policy_version,
-  attachment_id,
-  updated_at
-)
-select
-  'd0cc92f3-c9c7-44cb-a87a-599635061c7b',
-  'manual-backfill:w4:sprints:elizabeth-kremer',
-  timestamptz '2026-09-21 21:00:00+00',
-  timestamptz '2026-09-21 21:00:00+00',
-  3,
-  0,
-  'Sprint Intervals',
-  'manual',
-  5,
-  90,
-  185,
-  92.5,
-  174,
-  5,
-  30,
-  164,
-  session_json,
-  null,
-  null,
-  now()
-from session_record
-on conflict (user_id, session_id) do update
-set
-  session_at = excluded.session_at,
-  completed_at = excluded.completed_at,
-  week_index = excluded.week_index,
-  workout_index = excluded.workout_index,
-  workout_type = excluded.workout_type,
-  hr_source = excluded.hr_source,
-  reps_planned = excluded.reps_planned,
-  rest_seconds = excluded.rest_seconds,
-  max_hr = excluded.max_hr,
-  target_pct = excluded.target_pct,
-  target_bpm = excluded.target_bpm,
-  intervals_completed = excluded.intervals_completed,
-  avg_drop = excluded.avg_drop,
-  peak_hr = excluded.peak_hr,
-  session_json = excluded.session_json,
-  proof_policy_version = excluded.proof_policy_version,
-  attachment_id = excluded.attachment_id,
-  updated_at = now();
+  );
 
-with completion_record as (
-  select session_json || jsonb_build_object(
-    'completedAt', '2026-09-21T21:00:00+00:00',
+  insert into public.sprint_sessions (
+    user_id,
+    session_id,
+    session_at,
+    completed_at,
+    week_index,
+    workout_index,
+    workout_type,
+    hr_source,
+    reps_planned,
+    rest_seconds,
+    max_hr,
+    target_pct,
+    target_bpm,
+    intervals_completed,
+    avg_drop,
+    peak_hr,
+    session_json,
+    proof_policy_version,
+    attachment_id,
+    updated_at
+  )
+  values (
+    athlete,
+    backfill_id,
+    session_at,
+    session_at,
+    3,
+    0,
+    'Sprint Intervals',
+    'manual',
+    5,
+    90,
+    185,
+    92.5,
+    174,
+    5,
+    30,
+    164,
+    session_json,
+    null,
+    null,
+    now()
+  )
+  on conflict (user_id, session_id) do update
+  set
+    session_at = excluded.session_at,
+    completed_at = excluded.completed_at,
+    week_index = excluded.week_index,
+    workout_index = excluded.workout_index,
+    workout_type = excluded.workout_type,
+    hr_source = excluded.hr_source,
+    reps_planned = excluded.reps_planned,
+    rest_seconds = excluded.rest_seconds,
+    max_hr = excluded.max_hr,
+    target_pct = excluded.target_pct,
+    target_bpm = excluded.target_bpm,
+    intervals_completed = excluded.intervals_completed,
+    avg_drop = excluded.avg_drop,
+    peak_hr = excluded.peak_hr,
+    session_json = excluded.session_json,
+    proof_policy_version = excluded.proof_policy_version,
+    attachment_id = excluded.attachment_id,
+    updated_at = now();
+
+  record_json := session_json || jsonb_build_object(
+    'completedAt', to_char(session_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"+00:00"'),
     'completionKey', '3:0'
-  ) as record_json
-  from public.sprint_sessions
-  where user_id = 'd0cc92f3-c9c7-44cb-a87a-599635061c7b'
-    and session_id = 'manual-backfill:w4:sprints:elizabeth-kremer'
-)
-insert into public.workout_completions (
-  user_id,
-  client_record_id,
-  completion_key,
-  week_index,
-  workout_index,
-  week_label,
-  week_title,
-  day_of_week,
-  workout_type,
-  description,
-  warmup,
-  target_zone,
-  target_bpm,
-  max_bpm,
-  modality,
-  output_type,
-  output_value,
-  completed_at,
-  proof_policy_version,
-  attachment_id,
-  proof_pending,
-  record_json,
-  updated_at
-)
-select
-  'd0cc92f3-c9c7-44cb-a87a-599635061c7b',
-  'manual-backfill:w4:sprints:elizabeth-kremer',
-  '3:0',
-  3,
-  0,
-  'Week 4',
-  'Deload',
-  'Monday',
-  'Sprint Intervals',
-  '5x150 m Sprints (90s rest). Record HR after 60 seconds rest',
-  E'5 min easy jog; 2x80 m strides; 2x40 m A skips; 1x40 m B skips; 5 min run at 85%.\n\nTake a couple minutes of rest before the sprints.\n\nCooldown (after the sprints): 5 min walk',
-  '90-95%',
-  174,
-  164,
-  'running',
-  'distance',
-  null,
-  timestamptz '2026-09-21 21:00:00+00',
-  null,
-  null,
-  false,
-  record_json,
-  now()
-from completion_record
-on conflict (user_id, week_index, workout_index) do update
-set
-  client_record_id = excluded.client_record_id,
-  completion_key = excluded.completion_key,
-  week_label = excluded.week_label,
-  week_title = excluded.week_title,
-  day_of_week = excluded.day_of_week,
-  workout_type = excluded.workout_type,
-  description = excluded.description,
-  warmup = excluded.warmup,
-  target_zone = excluded.target_zone,
-  target_bpm = excluded.target_bpm,
-  max_bpm = excluded.max_bpm,
-  modality = excluded.modality,
-  output_type = excluded.output_type,
-  output_value = excluded.output_value,
-  completed_at = excluded.completed_at,
-  proof_policy_version = excluded.proof_policy_version,
-  attachment_id = excluded.attachment_id,
-  proof_pending = excluded.proof_pending,
-  record_json = excluded.record_json,
-  updated_at = now();
+  );
 
-commit;
+  insert into public.workout_completions (
+    user_id,
+    client_record_id,
+    completion_key,
+    week_index,
+    workout_index,
+    week_label,
+    week_title,
+    day_of_week,
+    workout_type,
+    description,
+    warmup,
+    target_zone,
+    target_bpm,
+    max_bpm,
+    modality,
+    output_type,
+    output_value,
+    completed_at,
+    proof_policy_version,
+    attachment_id,
+    proof_pending,
+    record_json,
+    updated_at
+  )
+  values (
+    athlete,
+    backfill_id,
+    '3:0',
+    3,
+    0,
+    'Week 4',
+    'Deload',
+    'Monday',
+    'Sprint Intervals',
+    description_copy,
+    warmup_copy,
+    '90-95%',
+    174,
+    164,
+    'running',
+    'distance',
+    null,
+    session_at,
+    null,
+    null,
+    false,
+    record_json,
+    now()
+  )
+  on conflict (user_id, week_index, workout_index) do update
+  set
+    client_record_id = excluded.client_record_id,
+    completion_key = excluded.completion_key,
+    week_label = excluded.week_label,
+    week_title = excluded.week_title,
+    day_of_week = excluded.day_of_week,
+    workout_type = excluded.workout_type,
+    description = excluded.description,
+    warmup = excluded.warmup,
+    target_zone = excluded.target_zone,
+    target_bpm = excluded.target_bpm,
+    max_bpm = excluded.max_bpm,
+    modality = excluded.modality,
+    output_type = excluded.output_type,
+    output_value = excluded.output_value,
+    completed_at = excluded.completed_at,
+    proof_policy_version = excluded.proof_policy_version,
+    attachment_id = excluded.attachment_id,
+    proof_pending = excluded.proof_pending,
+    record_json = excluded.record_json,
+    updated_at = now();
+end;
+$backfill$;
 
 -- Review the stored reps after running.
 select
