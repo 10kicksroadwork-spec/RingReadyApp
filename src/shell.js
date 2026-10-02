@@ -18,8 +18,7 @@ import {
   quarantineLegacySyncQueue,
 } from './sync.js';
 import {
-  PROGRAM,
-  getWeek,
+  getProgramForCampLength,
   getSprintConfig,
   formatWorkoutDayLabel,
 } from './program.js';
@@ -1136,8 +1135,12 @@ function getRecordDate(record) {
   const date = new Date(record?.completedAt || record?.date || record?.workoutLog?.completedAt || '');
   return Number.isNaN(date.getTime()) ? 0 : date.getTime();
 }
-function getCampWeekLimit() { return Math.min(PROGRAM.length, getAthleteProfile().campLength === '4' ? 4 : PROGRAM.length); }
-function getVisibleProgram() { return PROGRAM.slice(0, getCampWeekLimit()); }
+function getVisibleProgram() { return getProgramForCampLength(getAthleteProfile().campLength); }
+function getCampWeekLimit() { return getVisibleProgram().length; }
+function getVisibleWeek(index) {
+  const program = getVisibleProgram();
+  return program[Math.max(0, Math.min(program.length - 1, Number(index) || 0))];
+}
 function clampWeek(index) { const limit = Math.max(1, getCampWeekLimit()); return Math.max(0, Math.min(limit - 1, Number(index) || 0)); }
 function clampSCWeek(week) { return Math.max(1, Math.min(getCampWeekLimit(), Number(week) || 1)); }
 function saveWeek(index) { activeWeekIndex = clampWeek(index); setStorageItem(WEEK_INDEX_KEY, String(activeWeekIndex)); }
@@ -1925,7 +1928,7 @@ async function completeWorkoutFromDetail(weekIndex, workoutIndex) {
   }
 
   return runAssignmentMutation(safeWeekIndex, safeWorkoutIndex, 'complete', async () => withSavingButton(action, async () => {
-    const week = getWeek(safeWeekIndex);
+    const week = getVisibleWeek(safeWeekIndex);
     const workout = week.workouts[safeWorkoutIndex] || week.workouts[0];
     const workoutLog = readDetailWorkoutLog();
     if (!workoutLog) return;
@@ -2005,7 +2008,7 @@ async function clearCompletionFromDetailOwned(weekIndex, workoutIndex, owner) {
     : 'Clear this workout log from this device and your account?';
   if (!window.confirm(label)) return;
 
-  const week = getWeek(safeWeekIndex);
+  const week = getVisibleWeek(safeWeekIndex);
   const workout = week?.workouts?.[safeWorkoutIndex];
   const isAssignedMile = workout?.action === 'mile-test';
   const campLength = Number(getAthleteProfile().campLength) || 7;
@@ -2108,7 +2111,7 @@ async function confirmSkipWorkoutOwned(owner) {
     return;
   }
 
-  const week = getWeek(weekIndex);
+  const week = getVisibleWeek(weekIndex);
   const workout = week.workouts[workoutIndex] || week.workouts[0];
   const existing = getWorkoutCompletion(weekIndex, workoutIndex);
   const record = buildSkippedWorkoutCompletion(week, workout, weekIndex, workoutIndex, {
@@ -2201,7 +2204,7 @@ function cacheAssignedMileCompletion(result, explicitContext = null) {
   const match = /^program:\d+:(\d+):(\d+)$/.exec(result?.testKey || '');
   if (!match) return;
   const weekIndex = Number(match[1]), workoutIndex = Number(match[2]);
-  const week = getWeek(weekIndex), workout = week.workouts[workoutIndex];
+  const week = getVisibleWeek(weekIndex), workout = week.workouts[workoutIndex];
   if (workout?.action !== 'mile-test') return;
   // workout_completions is canonical assignment authority. Never synthesize a
   // completed Mile over an authoritative SKIPPED assignment (multi-tab/device).
@@ -2457,7 +2460,7 @@ function syncProgramGuideCollapse() {
 function renderShell() {
   cacheAssignedMileCompletion(getMileTestResult());
   activeWeekIndex = clampWeek(activeWeekIndex);
-  const week = getWeek(activeWeekIndex);
+  const week = getVisibleWeek(activeWeekIndex);
   setText('current-week-label', `${week.label}: ${week.title}`);
   setText('current-week-focus', week.focus || '');
   renderHeaderProfile();
@@ -2775,7 +2778,7 @@ async function saveMileTestResult() {
         if (isAssignedMile) {
           const weekIndex = Number(proofContext.weekIndex);
           const workoutIndex = Number(proofContext.workoutIndex);
-          const week = getWeek(weekIndex);
+          const week = getVisibleWeek(weekIndex);
           const workout = week.workouts[workoutIndex] || week.workouts[0];
           const context = {
             ...buildWorkoutContext(week, workout, weekIndex, workoutIndex),
@@ -2948,7 +2951,7 @@ function openWorkoutDetail(weekIndex, workoutIndex) {
   }
   const safeWeekIndex = Number(weekIndex);
   const safeWorkoutIndex = Number(workoutIndex);
-  const week = getWeek(safeWeekIndex);
+  const week = getVisibleWeek(safeWeekIndex);
   const workout = week.workouts[safeWorkoutIndex] || week.workouts[0];
   const completion = getWorkoutCompletion(safeWeekIndex, safeWorkoutIndex);
   const skipped = isSkippedCompletion(completion);
@@ -3127,7 +3130,7 @@ function bindShellEvents() {
     } else if (event.currentTarget.dataset.action === 'sprint') {
       const weekIndex = Number(event.currentTarget.dataset.weekIndex || activeWeekIndex);
       const workoutIndex = Number(event.currentTarget.dataset.workoutIndex || 0);
-      const week = getWeek(weekIndex);
+      const week = getVisibleWeek(weekIndex);
       const workout = week.workouts[workoutIndex] || week.workouts[0];
       shellHooks?.setWorkoutContext?.(buildWorkoutContext(week, workout, weekIndex, workoutIndex));
       shellHooks?.showScreen('setup');
@@ -3135,7 +3138,7 @@ function bindShellEvents() {
     } else if (event.currentTarget.dataset.action === 'mile-test') {
       const weekIndex = Number(event.currentTarget.dataset.weekIndex || activeWeekIndex);
       const workoutIndex = Number(event.currentTarget.dataset.workoutIndex || 0);
-      const week = getWeek(weekIndex);
+      const week = getVisibleWeek(weekIndex);
       const workout = week.workouts[workoutIndex] || week.workouts[0];
       const context = buildWorkoutContext(week, workout, weekIndex, workoutIndex);
       activeMileTestContext = { testKey: buildProgramProofKey(getAthleteProfile().campLength, weekIndex, workoutIndex), workoutContext: context };

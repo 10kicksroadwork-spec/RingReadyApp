@@ -1,4 +1,4 @@
-import { PROGRAM } from './program.js';
+import { PROGRAM, getProgramForCampLength } from './program.js';
 import {
   dueStatusLabel,
   formatCampStartLabel,
@@ -152,7 +152,7 @@ function isMileTestType(type) {
 }
 
 function campWeeks(campLength) {
-  return PROGRAM.slice(0, campLength === 4 ? 4 : PROGRAM.length);
+  return getProgramForCampLength(campLength);
 }
 
 function sessionKey(weekIndex, workoutIndex) {
