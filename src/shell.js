@@ -1137,9 +1137,33 @@ function getRecordDate(record) {
 }
 function getVisibleProgram() { return getProgramForCampLength(getAthleteProfile().campLength); }
 function getCampWeekLimit() { return getVisibleProgram().length; }
+/** Presentation-only week lookup. May clamp. Never use for authoritative identity. */
 function getVisibleWeek(index) {
   const program = getVisibleProgram();
   return program[Math.max(0, Math.min(program.length - 1, Number(index) || 0))];
+}
+/**
+ * Strict exact assignment resolver against the athlete's current camp program.
+ * No week clamping and no workouts[0] fallback — missing identity returns null.
+ */
+function resolveVisibleAssignment(weekIndex, workoutIndex) {
+  const program = getVisibleProgram();
+  const wi = Number(weekIndex);
+  const oi = Number(workoutIndex);
+  if (!Number.isInteger(wi) || !Number.isInteger(oi) || wi < 0 || oi < 0) return null;
+  const week = program[wi];
+  const workout = week?.workouts?.[oi];
+  if (!week || !workout) return null;
+  return { week, workout, weekIndex: wi, workoutIndex: oi };
+}
+function rejectRetiredAssignment() {
+  shellHooks?.showToast?.('WORKOUT NO LONGER ASSIGNED');
+  activeWeekIndex = clampWeek(activeWeekIndex);
+  saveWeek(activeWeekIndex);
+  renderShell();
+  renderAthleteProfileDashboard();
+  navigateTo('home');
+  return null;
 }
 function clampWeek(index) { const limit = Math.max(1, getCampWeekLimit()); return Math.max(0, Math.min(limit - 1, Number(index) || 0)); }
 function clampSCWeek(week) { return Math.max(1, Math.min(getCampWeekLimit(), Number(week) || 1)); }
@@ -1544,8 +1568,16 @@ async function saveWorkoutNoteFromDetail(event) {
   const weekIndex = Number(button.dataset.weekIndex);
   const workoutIndex = Number(button.dataset.workoutIndex);
   if (!Number.isFinite(weekIndex) || !Number.isFinite(workoutIndex)) return;
+  if (!resolveVisibleAssignment(weekIndex, workoutIndex)) {
+    rejectRetiredAssignment();
+    return;
+  }
 
   return runAssignmentMutation(weekIndex, workoutIndex, 'note-save', async (owner) => {
+    if (!resolveVisibleAssignment(weekIndex, workoutIndex)) {
+      rejectRetiredAssignment();
+      return;
+    }
     const input = document.getElementById('detail-note-input');
     const note = setStoredWorkoutNote(weekIndex, workoutIndex, sanitizeWorkoutNote(input?.value || ''));
     const completion = getWorkoutCompletion(weekIndex, workoutIndex);
@@ -1922,14 +1954,22 @@ async function completeWorkoutFromDetail(weekIndex, workoutIndex) {
   const safeWorkoutIndex = Number(workoutIndex);
   const action = document.getElementById('detail-action-btn');
 
+  if (!resolveVisibleAssignment(safeWeekIndex, safeWorkoutIndex)) {
+    rejectRetiredAssignment();
+    return;
+  }
   if (!hasWorkoutProof('detail')) {
     shellHooks?.showToast?.('ADD WORKOUT PROOF');
     return;
   }
 
   return runAssignmentMutation(safeWeekIndex, safeWorkoutIndex, 'complete', async () => withSavingButton(action, async () => {
-    const week = getVisibleWeek(safeWeekIndex);
-    const workout = week.workouts[safeWorkoutIndex] || week.workouts[0];
+    const assignment = resolveVisibleAssignment(safeWeekIndex, safeWorkoutIndex);
+    if (!assignment) {
+      rejectRetiredAssignment();
+      return;
+    }
+    const { week, workout } = assignment;
     const workoutLog = readDetailWorkoutLog();
     if (!workoutLog) return;
     setStoredWorkoutNote(safeWeekIndex, safeWorkoutIndex, workoutLog.note);
@@ -2002,14 +2042,18 @@ async function clearCompletionFromDetailOwned(weekIndex, workoutIndex, owner) {
   const safeWeekIndex = Number(weekIndex);
   const safeWorkoutIndex = Number(workoutIndex);
   if (!Number.isFinite(safeWeekIndex) || !Number.isFinite(safeWorkoutIndex)) return;
+  const assignment = resolveVisibleAssignment(safeWeekIndex, safeWorkoutIndex);
+  if (!assignment) {
+    rejectRetiredAssignment();
+    return;
+  }
   const existing = getWorkoutCompletion(safeWeekIndex, safeWorkoutIndex);
   const label = isSkippedCompletion(existing)
     ? 'Clear this skipped workout from this device and your account?'
     : 'Clear this workout log from this device and your account?';
   if (!window.confirm(label)) return;
 
-  const week = getVisibleWeek(safeWeekIndex);
-  const workout = week?.workouts?.[safeWorkoutIndex];
+  const { workout } = assignment;
   const isAssignedMile = workout?.action === 'mile-test';
   const campLength = Number(getAthleteProfile().campLength) || 7;
   const testKey = isAssignedMile
@@ -2111,8 +2155,12 @@ async function confirmSkipWorkoutOwned(owner) {
     return;
   }
 
-  const week = getVisibleWeek(weekIndex);
-  const workout = week.workouts[workoutIndex] || week.workouts[0];
+  const assignment = resolveVisibleAssignment(weekIndex, workoutIndex);
+  if (!assignment) {
+    rejectRetiredAssignment();
+    return;
+  }
+  const { week, workout } = assignment;
   const existing = getWorkoutCompletion(weekIndex, workoutIndex);
   const record = buildSkippedWorkoutCompletion(week, workout, weekIndex, workoutIndex, {
     reason,
@@ -2204,8 +2252,9 @@ function cacheAssignedMileCompletion(result, explicitContext = null) {
   const match = /^program:\d+:(\d+):(\d+)$/.exec(result?.testKey || '');
   if (!match) return;
   const weekIndex = Number(match[1]), workoutIndex = Number(match[2]);
-  const week = getVisibleWeek(weekIndex), workout = week.workouts[workoutIndex];
-  if (workout?.action !== 'mile-test') return;
+  const assignment = resolveVisibleAssignment(weekIndex, workoutIndex);
+  if (!assignment || assignment.workout?.action !== 'mile-test') return;
+  const { week, workout } = assignment;
   // workout_completions is canonical assignment authority. Never synthesize a
   // completed Mile over an authoritative SKIPPED assignment (multi-tab/device).
   const existing = getWorkoutCompletion(weekIndex, workoutIndex);
@@ -2667,6 +2716,10 @@ async function clearAssignedMileResult() {
   const weekIndex = Number(proofContext.weekIndex);
   const workoutIndex = Number(proofContext.workoutIndex);
   if (!Number.isFinite(weekIndex) || !Number.isFinite(workoutIndex)) return;
+  if (!resolveVisibleAssignment(weekIndex, workoutIndex)) {
+    rejectRetiredAssignment();
+    return;
+  }
   const completion = getWorkoutCompletion(weekIndex, workoutIndex);
   if (!completion) return;
   if (!window.confirm('Clear this mile result from this device and your account?')) return;
@@ -2727,9 +2780,20 @@ async function saveMileTestResult() {
   const proofContext = getActiveMileProofContext();
   const testKey = proofContext.testKey || 'mile';
   const mutationKey = getMileMutationKey(proofContext, testKey);
+  const assignedWeekIndex = Number(proofContext.weekIndex);
+  const assignedWorkoutIndex = Number(proofContext.workoutIndex);
+  const isAssignedMileContext = Number.isFinite(assignedWeekIndex) && Number.isFinite(assignedWorkoutIndex);
+  if (isAssignedMileContext && !resolveVisibleAssignment(assignedWeekIndex, assignedWorkoutIndex)) {
+    rejectRetiredAssignment();
+    return;
+  }
 
   try {
     return await runAthleteMutation(mutationKey, 'mile-save', async () => withSavingButton(button, async () => {
+    if (isAssignedMileContext && !resolveVisibleAssignment(assignedWeekIndex, assignedWorkoutIndex)) {
+      rejectRetiredAssignment();
+      return;
+    }
     const existingMile = getMileTestResult();
     const assignedCompletion = getAssignedMileCompletion();
     const result = { id: makeWorkoutCompletionId(), testKey: proofContext.testKey, distance, totalMinutes, totalSeconds: duration?.totalSeconds ?? Math.round(totalMinutes * 60), totalTimeDisplay: duration?.display || '', avgBpm, maxBpm, paceMinPerMile: distance > 0 ? totalMinutes / distance : '', savedAt: new Date().toISOString() };
@@ -2778,8 +2842,12 @@ async function saveMileTestResult() {
         if (isAssignedMile) {
           const weekIndex = Number(proofContext.weekIndex);
           const workoutIndex = Number(proofContext.workoutIndex);
-          const week = getVisibleWeek(weekIndex);
-          const workout = week.workouts[workoutIndex] || week.workouts[0];
+          const assignment = resolveVisibleAssignment(weekIndex, workoutIndex);
+          if (!assignment) {
+            rejectRetiredAssignment();
+            return;
+          }
+          const { week, workout } = assignment;
           const context = {
             ...buildWorkoutContext(week, workout, weekIndex, workoutIndex),
             ...testContext,
@@ -2949,10 +3017,12 @@ function openWorkoutDetail(weekIndex, workoutIndex) {
     );
     return;
   }
-  const safeWeekIndex = Number(weekIndex);
-  const safeWorkoutIndex = Number(workoutIndex);
-  const week = getVisibleWeek(safeWeekIndex);
-  const workout = week.workouts[safeWorkoutIndex] || week.workouts[0];
+  const assignment = resolveVisibleAssignment(weekIndex, workoutIndex);
+  if (!assignment) {
+    rejectRetiredAssignment();
+    return;
+  }
+  const { week, workout, weekIndex: safeWeekIndex, workoutIndex: safeWorkoutIndex } = assignment;
   const completion = getWorkoutCompletion(safeWeekIndex, safeWorkoutIndex);
   const skipped = isSkippedCompletion(completion);
   const sprintSession = isSprintWorkout(workout)
@@ -3130,16 +3200,24 @@ function bindShellEvents() {
     } else if (event.currentTarget.dataset.action === 'sprint') {
       const weekIndex = Number(event.currentTarget.dataset.weekIndex || activeWeekIndex);
       const workoutIndex = Number(event.currentTarget.dataset.workoutIndex || 0);
-      const week = getVisibleWeek(weekIndex);
-      const workout = week.workouts[workoutIndex] || week.workouts[0];
+      const assignment = resolveVisibleAssignment(weekIndex, workoutIndex);
+      if (!assignment) {
+        rejectRetiredAssignment();
+        return;
+      }
+      const { week, workout } = assignment;
       shellHooks?.setWorkoutContext?.(buildWorkoutContext(week, workout, weekIndex, workoutIndex));
       shellHooks?.showScreen('setup');
       setActiveNavigation('');
     } else if (event.currentTarget.dataset.action === 'mile-test') {
       const weekIndex = Number(event.currentTarget.dataset.weekIndex || activeWeekIndex);
       const workoutIndex = Number(event.currentTarget.dataset.workoutIndex || 0);
-      const week = getVisibleWeek(weekIndex);
-      const workout = week.workouts[workoutIndex] || week.workouts[0];
+      const assignment = resolveVisibleAssignment(weekIndex, workoutIndex);
+      if (!assignment) {
+        rejectRetiredAssignment();
+        return;
+      }
+      const { week, workout } = assignment;
       const context = buildWorkoutContext(week, workout, weekIndex, workoutIndex);
       activeMileTestContext = { testKey: buildProgramProofKey(getAthleteProfile().campLength, weekIndex, workoutIndex), workoutContext: context };
       navigateTo('mile-test-page');
@@ -3246,6 +3324,10 @@ export { completeWorkoutFromDetail, saveMileTestResult, saveWorkoutNoteFromDetai
 export const cloudHydrationTestHooks = {
   renderShell,
   openWorkoutDetail,
+  resolveVisibleAssignment,
+  rejectRetiredAssignment,
+  clearCompletionFromDetail,
+  confirmSkipWorkoutFromDetail,
   cacheAssignedMileCompletion,
   getSavedSprintSessionForWorkout,
   shouldApplyCloudHydration,
