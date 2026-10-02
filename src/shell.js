@@ -2042,8 +2042,7 @@ async function clearCompletionFromDetailOwned(weekIndex, workoutIndex, owner) {
   const safeWeekIndex = Number(weekIndex);
   const safeWorkoutIndex = Number(workoutIndex);
   if (!Number.isFinite(safeWeekIndex) || !Number.isFinite(safeWorkoutIndex)) return;
-  const assignment = resolveVisibleAssignment(safeWeekIndex, safeWorkoutIndex);
-  if (!assignment) {
+  if (!resolveVisibleAssignment(safeWeekIndex, safeWorkoutIndex)) {
     rejectRetiredAssignment();
     return;
   }
@@ -2053,6 +2052,12 @@ async function clearCompletionFromDetailOwned(weekIndex, workoutIndex, owner) {
     : 'Clear this workout log from this device and your account?';
   if (!window.confirm(label)) return;
 
+  // Re-resolve after confirm — camp length can change while the dialog is open.
+  const assignment = resolveVisibleAssignment(safeWeekIndex, safeWorkoutIndex);
+  if (!assignment) {
+    rejectRetiredAssignment();
+    return;
+  }
   const { workout } = assignment;
   const isAssignedMile = workout?.action === 'mile-test';
   const campLength = Number(getAthleteProfile().campLength) || 7;
