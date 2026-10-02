@@ -294,7 +294,9 @@ describe('coach schedule for 4-week final week', () => {
     expect(config.missing).not.toContain('3:4');
     const athlete = buildAthleteRecord(config);
     expect(athlete.sessions.some((s) => s.key === '3:4')).toBe(false);
-    expect(athlete.missingCount).toBe(0);
+    expect(athlete.sessions.some((s) => s.key === '3:4' && s.status === 'missing')).toBe(false);
+    // Week 4 Mon–Thu were provided — none of those should be missing either.
+    expect(config.missing.filter((key) => key.startsWith('3:'))).toEqual([]);
   });
 });
 
