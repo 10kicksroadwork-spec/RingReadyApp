@@ -368,6 +368,12 @@ function seedAthleteRuntimeStateForTest(partial = {}) {
   if (partial.detailModalityInitialized != null) {
     detailModalityInitialized = !!partial.detailModalityInitialized;
   }
+  if (partial.activeMileTestContext != null) {
+    activeMileTestContext = {
+      testKey: partial.activeMileTestContext.testKey || 'mile-test:baseline',
+      workoutContext: partial.activeMileTestContext.workoutContext ?? null,
+    };
+  }
 }
 
 /** True when shared locker and runtime must be wiped for the incoming identity. */
@@ -2729,11 +2735,23 @@ async function clearAssignedMileResult() {
   if (!completion) return;
   if (!window.confirm('Clear this mile result from this device and your account?')) return;
 
+  // Re-resolve after confirm — camp length can change while the dialog is open.
+  if (!resolveVisibleAssignment(weekIndex, workoutIndex)) {
+    rejectRetiredAssignment();
+    return;
+  }
+  const currentCompletion = getWorkoutCompletion(weekIndex, workoutIndex);
+  if (!currentCompletion) {
+    renderShell();
+    renderAthleteProfileDashboard();
+    return;
+  }
+
   const testKey = proofContext.testKey;
   const mutationKey = getMileMutationKey(proofContext, testKey);
   try {
     return await runAthleteMutation(mutationKey, 'mile-clear', async (owner) => {
-      const attachmentId = completion?.attachment?.id || null;
+      const attachmentId = currentCompletion?.attachment?.id || null;
       if (isSupabaseConfigured && getCurrentUser()) {
         try {
           await ownedResult(owner, clearCloudAssignedMileWithProof({
@@ -3332,6 +3350,7 @@ export const cloudHydrationTestHooks = {
   resolveVisibleAssignment,
   rejectRetiredAssignment,
   clearCompletionFromDetail,
+  clearAssignedMileResult,
   confirmSkipWorkoutFromDetail,
   cacheAssignedMileCompletion,
   getSavedSprintSessionForWorkout,

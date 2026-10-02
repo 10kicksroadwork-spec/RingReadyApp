@@ -5,6 +5,7 @@ import { getWorkoutCompletion, getWorkoutCompletions, persistWorkoutCompletion }
 const mockUser = { id: 'user-stale' };
 const showToast = vi.fn();
 const showScreen = vi.fn();
+const clearCloudAssignedMileWithProof = vi.fn();
 
 vi.mock('../src/auth.js', () => ({
   getCurrentUser: vi.fn(() => mockUser),
@@ -13,7 +14,7 @@ vi.mock('../src/auth.js', () => ({
   saveCloudMileTest: vi.fn(),
   saveCloudAssignedMileResult: vi.fn(),
   skipCloudAssignedMile: vi.fn(),
-  clearCloudAssignedMileWithProof: vi.fn(),
+  clearCloudAssignedMileWithProof: (...args) => clearCloudAssignedMileWithProof(...args),
   saveCloudHRInfo: vi.fn(),
   saveCloudProfile: vi.fn(),
   loadCloudWorkoutCompletions: vi.fn(),
@@ -41,7 +42,7 @@ vi.mock('../src/auth.js', () => ({
 }));
 
 vi.mock('../src/supabase-client.js', () => ({
-  isSupabaseConfigured: false,
+  isSupabaseConfigured: true,
   supabase: {},
 }));
 
@@ -109,7 +110,64 @@ function setupShellDom() {
     <div id="detail-skip-card" hidden></div>
     <div id="detail-log-card"></div>
     <div data-proof-host="detail"></div>
+    <div id="mile-test-page" class="screen"></div>
+    <div id="mile-test-title"></div>
+    <div id="mile-test-desc"></div>
+    <div id="mile-test-day"></div>
+    <div id="mile-test-warmup"></div>
+    <a id="mile-warmup-link"></a>
+    <div id="mile-last-result"></div>
+    <div id="mile-location-list"></div>
+    <div id="mile-test-guidance-list"></div>
+    <div id="mile-completion-hints"></div>
+    <input id="mile-distance-input" />
+    <input id="mile-time-input" />
+    <input id="mile-avg-bpm-input" />
+    <input id="mile-max-bpm-input" />
+    <button id="save-mile-test-btn"></button>
+    <div data-proof-host="mile"></div>
   `;
+}
+
+function seedWeek6MileCompletion() {
+  return persistWorkoutCompletion({
+    id: 'mile-w6',
+    completionKey: '5:3',
+    completedAt: '2026-10-10T12:00:00.000Z',
+    updatedAt: '2026-10-10T12:00:00.000Z',
+    testKey: 'program:7:5:3',
+    workoutContext: {
+      weekIndex: 5,
+      workoutIndex: 3,
+      workoutType: 'Mile Re-Test',
+      dayOfWeek: 'Saturday/Sunday',
+    },
+    cfg: { workoutContext: { weekIndex: 5, workoutIndex: 3 } },
+    workoutLog: {
+      distance: 1,
+      totalMinutes: 7,
+      avgBpm: 180,
+      maxBpm: 190,
+      completedAt: '2026-10-10T12:00:00.000Z',
+    },
+    attachment: { id: 'mile-proof-1' },
+    proofPolicyVersion: 1,
+  });
+}
+
+function seedActiveWeek6MileContext() {
+  cloudHydrationTestHooks.seedAthleteRuntimeStateForTest({
+    activeWeekIndex: 5,
+    activeMileTestContext: {
+      testKey: 'program:7:5:3',
+      workoutContext: {
+        weekIndex: 5,
+        workoutIndex: 3,
+        workoutType: 'Mile Re-Test',
+        dayOfWeek: 'Saturday/Sunday',
+      },
+    },
+  });
 }
 
 describe('stale retired assignment resolution', () => {
@@ -241,5 +299,43 @@ describe('stale retired assignment resolution', () => {
     });
     expect(getWorkoutCompletion(5, 3)).toBeFalsy();
     expect(getWorkoutCompletion(3, 3)).toBeFalsy();
+  });
+
+  it('rejects assigned Mile Clear when camp shrinks while confirm is open', async () => {
+    seedWeek6MileCompletion();
+    seedActiveWeek6MileContext();
+    clearCloudAssignedMileWithProof.mockResolvedValue(true);
+
+    window.confirm = vi.fn(() => {
+      // Simulate another tab switching to 4-week while the dialog is open.
+      getAthleteProfile.mockReturnValue({ athleteName: 'Stale Tab Athlete', campLength: '4' });
+      return true;
+    });
+
+    await cloudHydrationTestHooks.clearAssignedMileResult();
+
+    expect(showToast).toHaveBeenCalledWith('WORKOUT NO LONGER ASSIGNED');
+    expect(clearCloudAssignedMileWithProof).not.toHaveBeenCalled();
+    expect(getWorkoutCompletion(5, 3)?.id).toBe('mile-w6');
+    expect(getWorkoutCompletion(5, 3)?.testKey).toBe('program:7:5:3');
+  });
+
+  it('clears assigned Mile normally when camp stays 7-week through confirm', async () => {
+    seedWeek6MileCompletion();
+    seedActiveWeek6MileContext();
+    clearCloudAssignedMileWithProof.mockResolvedValue(true);
+    window.confirm = vi.fn(() => true);
+
+    await cloudHydrationTestHooks.clearAssignedMileResult();
+
+    expect(clearCloudAssignedMileWithProof).toHaveBeenCalledWith({
+      testKey: 'program:7:5:3',
+      weekIndex: 5,
+      workoutIndex: 3,
+      attachmentId: 'mile-proof-1',
+    });
+    expect(getWorkoutCompletion(5, 3)).toBeFalsy();
+    expect(showToast).toHaveBeenCalledWith('MILE RESULT CLEARED');
+    expect(showToast).not.toHaveBeenCalledWith('WORKOUT NO LONGER ASSIGNED');
   });
 });
