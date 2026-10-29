@@ -68,7 +68,7 @@ For the Sprint proof-gap hotfix on an existing database that already ran 000–0
 
 ## Production seeds
 
-Canonical migrations are schema-only. This file is the source of truth for migration order. Environment-specific data lives under [../seeds/](../seeds/), e.g. [production-coach-roster-exclusions.sql](../seeds/production-coach-roster-exclusions.sql) (run after auth users exist).
+Canonical migrations are schema-only. This file is the source of truth for migration order. Environment-specific data lives under [../seeds/](../seeds/), e.g. [production-coach-roster-exclusions.sql](../seeds/production-coach-roster-exclusions.sql) (run after auth users exist). To temporarily show only a fixed athlete allowlist on the coaches app, re-run [production-coach-roster-allowlist-only.sql](../seeds/production-coach-roster-allowlist-only.sql).
 
 ## Deploy gate: production contract
 
