@@ -159,6 +159,11 @@ describe('coach zone heatmap + summary wiring', () => {
   };
 
   it('exposes HIGH/LOW headlines and band labels on heatmap cells', () => {
+    const proofLink = {
+      attachmentId: 'zone-att',
+      url: 'https://drive.google.com/file/d/ZoneProofFile1/view',
+      state: 'ready',
+    };
     const athlete = {
       id: 'zone-heat',
       name: 'Zone Heat',
@@ -166,7 +171,7 @@ describe('coach zone heatmap + summary wiring', () => {
       restingHr: 60,
       scan: { recovery: {}, pace: {}, zone: {} },
       sessions: [
-        { status: 'logged', type: 'Easy Run', day: 'Tuesday', weekIndex: 0, workoutIndex: 3, avgBpm: 150, targetBPM: 137 },
+        { status: 'logged', type: 'Easy Run', day: 'Tuesday', weekIndex: 0, workoutIndex: 3, avgBpm: 150, targetBPM: 137, proofLink },
         { status: 'logged', type: 'Long Run', day: 'Thursday', weekIndex: 0, workoutIndex: 4, avgBpm: 130, targetBPM: 137 },
         { status: 'logged', type: 'Easy Run', day: 'Tuesday', weekIndex: 1, workoutIndex: 3, avgBpm: 138, targetBPM: 137 },
       ],
@@ -179,7 +184,9 @@ describe('coach zone heatmap + summary wiring', () => {
       avgBpm: 150,
       bandLabel: 'Target 132–142',
       onTarget: false,
+      proofLink,
     });
+    expect(analytics.zoneHeatmap[1].proofLink).toBeUndefined();
     expect(analytics.zoneHeatmap[1]).toMatchObject({
       headline: '2 bpm LOW',
       onTarget: false,

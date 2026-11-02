@@ -31,7 +31,13 @@ import {
   normalizeModality,
   readOutputFromWorkoutLog,
 } from './modality.js';
-import { sessionHasProof, isProofGapWaivedForOutage } from './coach-proof.js';
+import {
+  sessionHasProof,
+  isProofGapWaivedForOutage,
+  resolveSessionProofLink,
+  proofLinkCueLabel,
+  isValidCoachDriveScreenshotUrl,
+} from './coach-proof.js';
 import { readJSONValue, writeJSON } from './safe-storage.js';
 import { isSessionAvgOnTarget } from './hr-analytics.js';
 import {
@@ -741,6 +747,11 @@ function buildAthleteRecord(config) {
         modality: normalizeModality(config.modalities?.[key] || MODALITY_RUNNING),
         avgWatts: config.watts?.[key] ?? null,
         outputValue: config.outputValues?.[key] ?? null,
+        // Only set when live config resolved proofLinks for this key. Mock/preview
+        // sessions without proof metadata stay undefined (neutral — no cue).
+        ...(Object.prototype.hasOwnProperty.call(config.proofLinks || {}, key)
+          ? { proofLink: config.proofLinks[key] }
+          : {}),
       }, config);
       const override = config.sessionOverrides?.[key];
       if (override) Object.assign(session, override);
@@ -1516,11 +1527,13 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, mileTests, note
   const drops = {};
   const targets = {};
   const sessionNotes = {};
+  const proofLinks = {};
   const sprintPoints = [];
   const athleteHrInfo = {
     maxHr: hrRow?.max_hr ?? null,
     restingHr: hrRow?.resting_hr ?? null,
   };
+  const athleteUserId = profile.user_id;
 
   weeks.forEach((week, weekIndex) => {
     week.workouts.forEach((workout, workoutIndex) => {
@@ -1560,6 +1573,15 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, mileTests, note
         return;
       }
       const attachmentsAvailable = sourceAvailability.attachments !== false;
+      // Resolve clickable screenshot against the selected completion/sprint row.
+      // Never read embedded record_json.attachment.driveUrl snapshots.
+      proofLinks[key] = resolveSessionProofLink({
+        athleteUserId,
+        attachmentId: row.attachment_id || sprintRow?.attachment_id || null,
+        sprintRow: isSprintType(workout.type) ? sprintRow : null,
+        attachments,
+        attachmentsAvailable,
+      });
       if (attachmentsAvailable && !sessionHasProof({
         row,
         sprintRow,
@@ -1661,6 +1683,7 @@ function liveAthleteConfig(profile, hrRow, completions, sprints, mileTests, note
     drops,
     targets,
     sessionNotes,
+    proofLinks,
     sprints: sprintPoints,
     coachNote: note || '',
     mileTests: normalizedMileTests,
@@ -2103,18 +2126,85 @@ function sessionDetail(session) {
   return bits.join(' · ') || `Logged · ${session.targetZone || 'in zone'}`;
 }
 
+function proofScreenshotAriaLabel(subject) {
+  const type = String(subject?.type || 'Workout').trim() || 'Workout';
+  let weekPart = String(subject?.weekLabel || '').trim();
+  if (!weekPart && Number.isFinite(Number(subject?.weekIndex))) {
+    weekPart = `Week ${Number(subject.weekIndex) + 1}`;
+  }
+  const day = String(subject?.day || '').trim();
+  const when = [weekPart, day].filter(Boolean).join(' ');
+  if (when) return `${when}, ${type} screenshot — opens in a new tab`;
+  const fallbackLabel = String(subject?.label || '').trim();
+  if (fallbackLabel) return `${fallbackLabel}, ${type} screenshot — opens in a new tab`;
+  return `${type} screenshot — opens in a new tab`;
+}
+
+function renderProofScreenshotCue(proofLink) {
+  const label = proofLinkCueLabel(proofLink);
+  if (!label) return '';
+  const muted = proofLink?.state === 'ready' && proofLink?.url ? '' : ' is-muted';
+  return `<span class="coach-proof-link-cue${muted}">${escapeHTML(label)}</span>`;
+}
+
+function canOpenProofScreenshot(proofLink) {
+  return proofLink?.state === 'ready'
+    && isValidCoachDriveScreenshotUrl(proofLink.url);
+}
+
 function renderSessionRows(sessions) {
   if (!sessions.length) return '<p class="coach-trend-empty">No sessions in this view.</p>';
-  return sessions.map((session) => `
-    <div class="coach-session-row is-${session.status}${session.flag ? ' has-flag' : ''}${session.proof === 'missing' ? ' has-proof-gap' : ''}${session.flagAlertActive === false || session.proofAlertActive === false ? ' is-reviewed' : ''}">
+  return sessions.map((session) => {
+    const rowClass = `coach-session-row is-${session.status}${session.flag ? ' has-flag' : ''}${session.proof === 'missing' ? ' has-proof-gap' : ''}${session.flagAlertActive === false || session.proofAlertActive === false ? ' is-reviewed' : ''}`;
+    const body = `
       <div>
         <span>${escapeHTML(session.weekLabel)} / ${escapeHTML(session.day)}</span>
         <strong>${escapeHTML(session.type)}</strong>
         <p>${escapeHTML(sessionDetail(session))}</p>
+        ${session.status === 'logged' ? renderProofScreenshotCue(session.proofLink) : ''}
       </div>
       <em>${escapeHTML(statusCopy(session.status))}</em>
-    </div>
-  `).join('');
+    `;
+    if (session.status === 'logged' && canOpenProofScreenshot(session.proofLink)) {
+      return `
+    <a class="${rowClass} is-proof-link" href="${escapeHTML(session.proofLink.url)}" target="_blank" rel="noopener noreferrer" aria-label="${escapeHTML(proofScreenshotAriaLabel(session))}">
+      ${body}
+    </a>`;
+    }
+    return `
+    <div class="${rowClass}">
+      ${body}
+    </div>`;
+  }).join('');
+}
+
+function renderZoneHeatmapCells(cells) {
+  if (!cells.length) return '<p class="coach-parity-empty">No scored zone sessions yet.</p>';
+  return `<div class="coach-zone-heatmap" role="list">${cells.map((cell) => {
+    const cellClass = `coach-zone-heat-cell is-${escapeHTML(cell.status)}${canOpenProofScreenshot(cell.proofLink) ? ' is-proof-link' : ''}`;
+    const body = `
+          <span>${escapeHTML(cell.label || '')}</span>
+          <strong>${escapeHTML(cell.headline || (cell.onTarget ? 'IN ZONE' : 'Off'))}</strong>
+          <em>${cell.avgBpm != null ? `${Math.round(cell.avgBpm)} bpm` : '--'}</em>
+          ${cell.bandLabel ? `<em class="coach-zone-heat-band">${escapeHTML(cell.bandLabel)}</em>` : ''}
+          ${renderProofScreenshotCue(cell.proofLink)}
+        `;
+    // Keep listitem on a wrapper so the anchor retains native link semantics.
+    if (canOpenProofScreenshot(cell.proofLink)) {
+      return `
+        <div class="coach-zone-heat-item" role="listitem">
+          <a class="${cellClass}" href="${escapeHTML(cell.proofLink.url)}" target="_blank" rel="noopener noreferrer" aria-label="${escapeHTML(proofScreenshotAriaLabel(cell))}" title="${escapeHTML(cell.type || '')}">
+            ${body}
+          </a>
+        </div>`;
+    }
+    return `
+        <div class="coach-zone-heat-item" role="listitem">
+          <div class="${cellClass}" title="${escapeHTML(cell.type || '')}">
+            ${body}
+          </div>
+        </div>`;
+  }).join('')}</div>`;
 }
 
 function renderDrill(athlete) {
@@ -2311,18 +2401,7 @@ function renderAthleteParitySections(athlete) {
   const heatBody = document.getElementById('coach-athlete-zone-heatmap-body');
   if (heatBody) {
     const cells = Array.isArray(analytics.zoneHeatmap) ? analytics.zoneHeatmap : [];
-    if (!cells.length) {
-      heatBody.innerHTML = '<p class="coach-parity-empty">No scored zone sessions yet.</p>';
-    } else {
-      heatBody.innerHTML = `<div class="coach-zone-heatmap" role="list">${cells.map((cell) => `
-        <div class="coach-zone-heat-cell is-${escapeHTML(cell.status)}" role="listitem" title="${escapeHTML(cell.type || '')}">
-          <span>${escapeHTML(cell.label || '')}</span>
-          <strong>${escapeHTML(cell.headline || (cell.onTarget ? 'IN ZONE' : 'Off'))}</strong>
-          <em>${cell.avgBpm != null ? `${Math.round(cell.avgBpm)} bpm` : '--'}</em>
-          ${cell.bandLabel ? `<em class="coach-zone-heat-band">${escapeHTML(cell.bandLabel)}</em>` : ''}
-        </div>
-      `).join('')}</div>`;
-    }
+    heatBody.innerHTML = renderZoneHeatmapCells(cells);
   }
 
   const paceBody = document.getElementById('coach-athlete-hr-pace-body');
@@ -2764,4 +2843,7 @@ export {
   injectPreviewAthleteAlert,
   completionOccurrenceAt,
   skipAlertEventAt,
+  renderSessionRows,
+  renderZoneHeatmapCells,
+  proofScreenshotAriaLabel,
 };
