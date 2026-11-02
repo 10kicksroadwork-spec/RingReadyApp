@@ -3726,6 +3726,16 @@
   gap: 8px;
 }
 
+.coach-zone-heat-item {
+  min-width: 0;
+  display: grid;
+}
+
+.coach-zone-heat-item > .coach-zone-heat-cell {
+  height: 100%;
+  box-sizing: border-box;
+}
+
 .coach-zone-heat-cell {
   display: grid;
   gap: 2px;

@@ -2127,8 +2127,17 @@ function sessionDetail(session) {
 }
 
 function proofScreenshotAriaLabel(subject) {
-  const workout = String(subject?.type || subject?.label || 'Workout').trim() || 'Workout';
-  return `${workout} screenshot (opens in a new tab)`;
+  const type = String(subject?.type || 'Workout').trim() || 'Workout';
+  let weekPart = String(subject?.weekLabel || '').trim();
+  if (!weekPart && Number.isFinite(Number(subject?.weekIndex))) {
+    weekPart = `Week ${Number(subject.weekIndex) + 1}`;
+  }
+  const day = String(subject?.day || '').trim();
+  const when = [weekPart, day].filter(Boolean).join(' ');
+  if (when) return `${when}, ${type} screenshot — opens in a new tab`;
+  const fallbackLabel = String(subject?.label || '').trim();
+  if (fallbackLabel) return `${fallbackLabel}, ${type} screenshot — opens in a new tab`;
+  return `${type} screenshot — opens in a new tab`;
 }
 
 function renderProofScreenshotCue(proofLink) {
@@ -2180,15 +2189,20 @@ function renderZoneHeatmapCells(cells) {
           ${cell.bandLabel ? `<em class="coach-zone-heat-band">${escapeHTML(cell.bandLabel)}</em>` : ''}
           ${renderProofScreenshotCue(cell.proofLink)}
         `;
+    // Keep listitem on a wrapper so the anchor retains native link semantics.
     if (canOpenProofScreenshot(cell.proofLink)) {
       return `
-        <a class="${cellClass}" role="listitem" href="${escapeHTML(cell.proofLink.url)}" target="_blank" rel="noopener noreferrer" aria-label="${escapeHTML(proofScreenshotAriaLabel(cell))}" title="${escapeHTML(cell.type || '')}">
-          ${body}
-        </a>`;
+        <div class="coach-zone-heat-item" role="listitem">
+          <a class="${cellClass}" href="${escapeHTML(cell.proofLink.url)}" target="_blank" rel="noopener noreferrer" aria-label="${escapeHTML(proofScreenshotAriaLabel(cell))}" title="${escapeHTML(cell.type || '')}">
+            ${body}
+          </a>
+        </div>`;
     }
     return `
-        <div class="${cellClass}" role="listitem" title="${escapeHTML(cell.type || '')}">
-          ${body}
+        <div class="coach-zone-heat-item" role="listitem">
+          <div class="${cellClass}" title="${escapeHTML(cell.type || '')}">
+            ${body}
+          </div>
         </div>`;
   }).join('')}</div>`;
 }
@@ -2831,4 +2845,5 @@ export {
   skipAlertEventAt,
   renderSessionRows,
   renderZoneHeatmapCells,
+  proofScreenshotAriaLabel,
 };
