@@ -1410,6 +1410,7 @@ function buildZoneHeatmap(athlete, helpers = {}) {
       return {
         weekIndex: Number(session.weekIndex),
         workoutIndex: Number(session.workoutIndex),
+        key: session.key || `${Number(session.weekIndex)}:${Number(session.workoutIndex)}`,
         day: session.day || '',
         type: session.type || '',
         avgBpm: Number(session.avgBpm) || null,
@@ -1424,6 +1425,8 @@ function buildZoneHeatmap(athlete, helpers = {}) {
         bandLow: measurement.bandLow,
         bandHigh: measurement.bandHigh,
         bandLabel: measurement.bandLabel,
+        // Carry originating session proof identity — never re-match by label/order.
+        ...(session.proofLink ? { proofLink: session.proofLink } : {}),
       };
     })
     .filter(Boolean);
