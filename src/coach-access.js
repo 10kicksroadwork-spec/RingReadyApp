@@ -12,12 +12,17 @@ export const COACH_EMAILS = [
  * Hidden from the live coach roster even when they have athlete profiles.
  * Keep in sync with scripts/seeds/production-coach-roster-exclusions.sql
  * (and DB table coach_roster_exclusions after the seed is applied).
+ *
+ * Temporary camp allowlist (only these five visible until further notice) is
+ * applied by scripts/seeds/production-coach-roster-allowlist-only.sql.
  */
 export const ROSTER_EXCLUDED_USER_IDS = [
   '81c1f795-cd72-416d-b56d-4c3578a7c7f9',
   '0c4d24e9-9778-456f-b046-970f32235fff',
   '05a75ab0-ebac-4a2b-b959-6820225bd028',
   '77481fd7-1411-4799-96bb-42daa347ab6a',
+  '2d434b72-b2f7-4ae6-8d8e-e8d6e1c7a9e0',
+  'f895b8fe-5f3a-45d4-83a3-08ad820741cc',
 ];
 
 export const ROSTER_EXCLUDED_EMAILS = [
@@ -25,6 +30,8 @@ export const ROSTER_EXCLUDED_EMAILS = [
   'kellimbergmann@gmail.com',
   'ryankfisch@gmail.com',
   'simonbhyard@gmail.com',
+  '10kicksmuaythai@gmail.com',
+  'taylormatthew808@gmail.com',
 ];
 
 export function isCoachEmail(email) {

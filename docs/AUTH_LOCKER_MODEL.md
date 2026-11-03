@@ -118,7 +118,7 @@ On Athlete A → Athlete B sign-in (including multi-tab `SIGNED_IN(B)` with **no
 
 1. Update `public.is_coach()` in a **new** numbered migration (do not edit history casually on production without a forward migration).
 2. Update `COACH_EMAILS` in `src/coach-access.js` in the **same PR**.
-3. For roster exclusions: update `scripts/seeds/production-coach-roster-exclusions.sql` **and** `ROSTER_EXCLUDED_*` constants together; apply the seed on production after the auth users exist.
+3. For roster exclusions: update `scripts/seeds/production-coach-roster-exclusions.sql` **and** `ROSTER_EXCLUDED_*` constants together; apply the seed on production after the auth users exist. For a temporary coaches-app allowlist (hide everyone except named user_ids), re-run `scripts/seeds/production-coach-roster-allowlist-only.sql` on production.
 4. Run `tests/auth-locker-model.test.js` (allowlist/exclusion sync gate).
 
 ## Out of scope (do not sneak into Foxtrot follow-ups without review)
