@@ -139,6 +139,36 @@ export function getWeek(index) {
   return PROGRAM[Math.max(0, Math.min(PROGRAM.length - 1, index))];
 }
 
+/** Normalize camp length to 4 or 7. Accepts number or string. */
+export function normalizeCampLength(campLength) {
+  return Number(campLength) === 4 || String(campLength) === '4' ? 4 : 7;
+}
+
+/**
+ * Canonical camp-length-aware program selector.
+ * - 7-week: returns the shared PROGRAM reference unchanged.
+ * - 4-week: returns Weeks 1–4 with Week 4 weekend Long Run removed.
+ * Never mutates PROGRAM. Week 4 workout indices 0–3 stay unchanged.
+ */
+export function getProgramForCampLength(campLength) {
+  if (normalizeCampLength(campLength) !== 4) {
+    return PROGRAM;
+  }
+
+  return PROGRAM.slice(0, 4).map((week, weekIndex) => {
+    if (weekIndex !== 3) return week;
+    return {
+      ...week,
+      workouts: week.workouts.slice(0, 4),
+    };
+  });
+}
+
+export function getWeekForCampLength(campLength, index) {
+  const program = getProgramForCampLength(campLength);
+  return program[Math.max(0, Math.min(program.length - 1, Number(index) || 0))];
+}
+
 /** Presentation-only. Do not use for persistence, identity, scheduling, or sync. */
 export function formatWorkoutDayLabel(day) {
   const value = String(day ?? '');
